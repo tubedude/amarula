@@ -38,3 +38,6 @@ creds.term
 /test/fixtures/initiator_pkmsg.json
 /test/fixtures/outbound_message.json
 /test/fixtures/session_reply.json
+
+# Claude Code local worktrees/state
+.claude/

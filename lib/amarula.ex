@@ -502,6 +502,16 @@ defmodule Amarula do
   defdelegate request_resend(conn, message_key), to: Connection
 
   @doc """
+  Ask the phone for older history of a chat (a PEER_DATA_OPERATION on-demand
+  request). `oldest_key` is the oldest message you already have, `oldest_ts` its
+  millisecond timestamp, and `count` how many older messages to request. The
+  history arrives **asynchronously** later via the normal `:history_sync` event.
+  Returns `{:ok, request_msg_id}` or `{:error, :not_authenticated}`.
+  """
+  @spec fetch_history(conn(), message_key(), integer(), non_neg_integer()) :: send_result()
+  defdelegate fetch_history(conn, oldest_key, oldest_ts, count), to: Connection
+
+  @doc """
   Resolve the original message a reply quotes.
 
     1. If the reply carries the inline copy WhatsApp ships (`msg.quoted.message`),

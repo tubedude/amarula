@@ -259,6 +259,33 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
     }
   end
 
+  @doc """
+  A PEER_DATA_OPERATION on-demand history request — sent to our own devices to ask
+  the phone for older messages of a chat (Baileys fetchMessageHistory). `oldest_key`
+  is the oldest message we already have; the phone replies with an `ON_DEMAND`
+  HistorySync notification carrying up to `count` older messages.
+  """
+  @spec history_sync_on_demand_request(Proto.MessageKey.t(), integer(), non_neg_integer()) ::
+          Proto.Message.t()
+  def history_sync_on_demand_request(%Proto.MessageKey{} = oldest_key, oldest_ts, count) do
+    %Proto.Message{
+      protocolMessage: %Proto.Message.ProtocolMessage{
+        type: :PEER_DATA_OPERATION_REQUEST_MESSAGE,
+        peerDataOperationRequestMessage: %Proto.Message.PeerDataOperationRequestMessage{
+          peerDataOperationRequestType: :HISTORY_SYNC_ON_DEMAND,
+          historySyncOnDemandRequest:
+            %Proto.Message.PeerDataOperationRequestMessage.HistorySyncOnDemandRequest{
+              chatJid: oldest_key.remoteJid,
+              oldestMsgFromMe: oldest_key.fromMe,
+              oldestMsgId: oldest_key.id,
+              oldestMsgTimestampMs: oldest_ts,
+              onDemandMsgCount: count
+            }
+        }
+      }
+    }
+  end
+
   # writeRandomPadMax16: padLength in 1..16, that many bytes each == padLength.
   @spec pad_random_max16(binary()) :: binary()
   defp pad_random_max16(bytes) do

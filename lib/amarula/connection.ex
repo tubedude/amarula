@@ -373,6 +373,11 @@ defmodule Amarula.Connection do
     GenServer.call(pid, {:request_resend, message_key}, @send_call_timeout)
   end
 
+  @doc "Ask the phone for older history of a chat (PEER_DATA_OPERATION on-demand)."
+  def fetch_history(pid \\ __MODULE__, %Proto.MessageKey{} = oldest_key, oldest_ts, count) do
+    GenServer.call(pid, {:fetch_history, oldest_key, oldest_ts, count}, @send_call_timeout)
+  end
+
   @doc """
   Send a poll to `jid`. Returns `{:ok, msg_id, message_secret}` — keep the secret
   to tally incoming votes. `opts`: `:selectable`, `:announcement`, `:message_secret`.
@@ -666,6 +671,26 @@ defmodule Amarula.Connection do
       pdo = MessageEncoder.placeholder_resend_request(message_key)
       # A PEER_DATA_OPERATION request is sent to OURSELVES (own devices) with the
       # peer category + high push priority, so the phone re-delivers the original.
+      payload = %{
+        message: pdo,
+        stanza_attrs: %{"category" => "peer", "push_priority" => "high_force"}
+      }
+
+      deliver_async(state, me_id, payload, from)
+    else
+      {:reply, {:error, :not_authenticated}, state}
+    end
+  end
+
+  @impl GenServer
+  def handle_call({:fetch_history, oldest_key, oldest_ts, count}, from, state) do
+    me_id = get_in(state.auth_creds, [:me, :id])
+
+    if me_id do
+      pdo = MessageEncoder.history_sync_on_demand_request(oldest_key, oldest_ts, count)
+      # An on-demand history request is a PEER_DATA_OPERATION sent to OURSELVES
+      # (own devices) with the peer category + high push priority; the phone
+      # replies later with an ON_DEMAND HistorySync notification.
       payload = %{
         message: pdo,
         stanza_attrs: %{"category" => "peer", "push_priority" => "high_force"}
@@ -1666,14 +1691,16 @@ defmodule Amarula.Connection do
     # Built-in DETS cache first, then the consumer-supplied get_message callback
     # (a store plugin) for messages older than the cache.
     case lookup_for_resend(state, msg_id) do
-      {recipient, message} ->
+      {recipient, message, stanza_attrs} ->
         Logger.debug("Resending #{msg_id} to #{participant} (retry)")
 
         # Re-encrypt + resend the original (same id, so the recipient replaces
         # rather than duplicates). A fresh ConversationSender pass picks up the
-        # session the retry's <keys> bundle just injected. Fire-and-forget: no
-        # caller is waiting, so `from` is nil.
-        deliver_async(state, recipient, %{msg_id: msg_id, message: message}, nil)
+        # session the retry's <keys> bundle just injected. Replay the original
+        # stanza_attrs so a peer/edit stanza keeps its category/edit on resend.
+        # Fire-and-forget: no caller is waiting, so `from` is nil.
+        payload = %{msg_id: msg_id, message: message, stanza_attrs: stanza_attrs}
+        deliver_async(state, recipient, payload, nil)
 
       nil ->
         Logger.debug("Retry for #{msg_id} but no cached/stored copy — cannot resend")
@@ -1682,11 +1709,14 @@ defmodule Amarula.Connection do
 
   defp lookup_for_resend(state, msg_id) do
     case Amarula.RetryCache.get(retry_cache(state), profile(state), msg_id) do
-      {:ok, %{recipient_jid: recipient, message: message}} ->
-        {recipient, message}
+      {:ok, %{recipient_jid: recipient, message: message} = entry} ->
+        {recipient, message, Map.get(entry, :stanza_attrs, %{})}
 
       :error ->
-        get_message_via_callback(state, msg_id)
+        case get_message_via_callback(state, msg_id) do
+          {recipient, message} -> {recipient, message, %{}}
+          nil -> nil
+        end
     end
   end
 

@@ -48,6 +48,45 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
   end
 
+  describe "history_sync_on_demand_request/3" do
+    setup do
+      {:ok, key: %Proto.MessageKey{remoteJid: "x@s.whatsapp.net", fromMe: false, id: "ABC"}}
+    end
+
+    test "builds a PEER_DATA_OPERATION on-demand history request", %{key: key} do
+      msg = MessageEncoder.history_sync_on_demand_request(key, 1_700_000_000_000, 50)
+
+      assert msg.protocolMessage.type == :PEER_DATA_OPERATION_REQUEST_MESSAGE
+
+      pdo = msg.protocolMessage.peerDataOperationRequestMessage
+      assert pdo.peerDataOperationRequestType == :HISTORY_SYNC_ON_DEMAND
+
+      req = pdo.historySyncOnDemandRequest
+      assert req.chatJid == "x@s.whatsapp.net"
+      assert req.oldestMsgFromMe == false
+      assert req.oldestMsgId == "ABC"
+      assert req.oldestMsgTimestampMs == 1_700_000_000_000
+      assert req.onDemandMsgCount == 50
+    end
+
+    test "round-trips through encode", %{key: key} do
+      encoded =
+        key
+        |> MessageEncoder.history_sync_on_demand_request(1_700_000_000_000, 50)
+        |> MessageEncoder.encode()
+
+      pad = :binary.last(encoded)
+      decoded = Proto.Message.decode(:binary.part(encoded, 0, byte_size(encoded) - pad))
+
+      assert decoded.protocolMessage.type == :PEER_DATA_OPERATION_REQUEST_MESSAGE
+      req = decoded.protocolMessage.peerDataOperationRequestMessage.historySyncOnDemandRequest
+      assert req.chatJid == "x@s.whatsapp.net"
+      assert req.oldestMsgId == "ABC"
+      assert req.oldestMsgTimestampMs == 1_700_000_000_000
+      assert req.onDemandMsgCount == 50
+    end
+  end
+
   describe "edit/2" do
     test "builds a MESSAGE_EDIT protocolMessage with the new text" do
       key = %Proto.MessageKey{remoteJid: "x@s.whatsapp.net", fromMe: true, id: "ABC"}

@@ -6,7 +6,7 @@ defmodule Amarula.RetryCache.Step do
   that never transforms or halts.
 
   Expects the send ctx to carry `:retry_cache` (scope), `:profile`, `:msg_id`,
-  `:message`, and `:to`.
+  `:message`, `:to`, and (optionally) `:stanza_attrs`.
   """
 
   alias Amarula.RetryCache
@@ -17,6 +17,10 @@ defmodule Amarula.RetryCache.Step do
     entry = %{
       recipient_jid: ctx.to,
       message: ctx.message,
+      # Replayed verbatim on a retry-receipt resend so a peer/edit stanza keeps
+      # its category/edit attrs (without these, a retried peer PDO loses
+      # category=peer and is dropped as :not_on_whatsapp).
+      stanza_attrs: Map.get(ctx, :stanza_attrs, %{}),
       ts: System.system_time(:millisecond)
     }
 

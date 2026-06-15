@@ -197,26 +197,30 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
     # Run the send plugin pipeline (before encrypt): steps may transform the
     # message or halt the send. The built-in retry-cache step records it here.
-    case run_send_steps(state.conn, msg_id, jid, message_content(msg)) do
+    stanza_attrs = Map.get(msg, :stanza_attrs, %{})
+
+    case run_send_steps(state.conn, msg_id, jid, message_content(msg), stanza_attrs) do
       {:halt, reason} ->
         Logger.debug("Send #{msg_id} to #{jid} halted by a plugin: #{inspect(reason)}")
         {:halted, reason}
 
       {:cont, %{message: message}} ->
         store_own_lid_mapping(state)
-        do_send(state, msg_id, jid, kind, message, Map.get(msg, :stanza_attrs, %{}))
+        do_send(state, msg_id, jid, kind, message, stanza_attrs)
     end
   end
 
   # The plugin send pipeline. ctx carries the message + addressing + the scopes a
-  # step needs (e.g. the retry cache). Returns {:cont, ctx} (possibly transformed)
-  # or {:halt, reason}.
-  defp run_send_steps(conn, msg_id, jid, message) do
+  # step needs (e.g. the retry cache). `stanza_attrs` rides along so the retry
+  # cache can replay a peer/edit stanza verbatim on a retry-receipt resend.
+  # Returns {:cont, ctx} (possibly transformed) or {:halt, reason}.
+  defp run_send_steps(conn, msg_id, jid, message, stanza_attrs) do
     ctx = %{
       message: message,
       to: jid,
       profile: conn.profile,
       msg_id: msg_id,
+      stanza_attrs: stanza_attrs,
       retry_cache: conn.retry_cache
     }
 
@@ -322,17 +326,27 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   defp resolve_devices(%{kind: :dm} = ctx) do
     with {:ok, devices} <- user_devices(ctx, [ctx.target_jid | own_id_list(ctx)]) do
-      # If the recipient resolved to no real devices, the number isn't reachable on
-      # WhatsApp (unregistered / wrong number). Fail instead of fabricating a device
-      # and producing a "sent" message the server silently drops — Baileys#2635. The
-      # recipient must contribute at least one device (our own devices don't count).
-      if recipient_devices?(ctx, devices) do
+      # A peer-category send (PEER_DATA_OPERATION: placeholder resend, on-demand
+      # history) is addressed to OURSELVES — every resolved device is our own, so
+      # the recipient-devices guard below doesn't apply. Baileys sends these to
+      # jidNormalizedUser(me.id) with no such check (sendPeerDataOperationMessage).
+      #
+      # Otherwise: if the recipient resolved to no real devices, the number isn't
+      # reachable on WhatsApp (unregistered / wrong number). Fail instead of
+      # fabricating a device and producing a "sent" message the server silently
+      # drops — Baileys#2635. The recipient must contribute at least one device
+      # (our own devices don't count).
+      if peer_send?(ctx) or recipient_devices?(ctx, devices) do
         {:ok, %{ctx | devices: devices}}
       else
         {:error, {:resolve_devices, :not_on_whatsapp}}
       end
     end
   end
+
+  # A peer-category stanza targets our own devices (PEER_DATA_OPERATION).
+  defp peer_send?(%{stanza_attrs: %{"category" => "peer"}}), do: true
+  defp peer_send?(_), do: false
 
   # The device set for a list of user jids: cache-hit users skip USync; misses
   # are fetched in one query. {:ok, flat device list} | {:error, {stage, reason}}.

@@ -72,7 +72,7 @@ defmodule Amarula.Protocol.Presence do
   @spec parse_update(Node.t()) :: {:ok, update()} | {:error, :invalid}
   def parse_update(%Node{tag: "presence", attrs: attrs}) do
     presence = if attrs["type"] == "unavailable", do: :unavailable, else: :available
-    {:ok, attrs |> base_update(presence) |> Map.put(:last_seen, last_seen(attrs))}
+    {:ok, base_update(attrs, presence)}
   end
 
   def parse_update(%Node{tag: "chatstate", attrs: attrs, content: [%Node{} = child | _]}) do
@@ -88,7 +88,13 @@ defmodule Amarula.Protocol.Presence do
 
   defp base_update(attrs, presence) do
     jid = attrs["from"]
-    %{jid: jid, participant: attrs["participant"] || jid, presence: presence}
+
+    %{
+      jid: jid,
+      participant: attrs["participant"] || jid,
+      presence: presence,
+      last_seen: last_seen(attrs)
+    }
   end
 
   defp last_seen(%{"last" => last}) when last != "deny" do

@@ -121,6 +121,18 @@ defmodule Amarula.Protocol.PresenceTest do
       assert {:ok, %{presence: :available}} = Presence.parse_update(node)
     end
 
+    test "chatstate update always includes :last_seen (defaults to nil)" do
+      node = %Node{
+        tag: "chatstate",
+        attrs: %{"from" => "999@lid"},
+        content: [%Node{tag: "composing", attrs: %{}, content: nil}]
+      }
+
+      assert {:ok, update} = Presence.parse_update(node)
+      assert Map.has_key?(update, :last_seen)
+      assert update.last_seen == nil
+    end
+
     test "malformed chatstate is rejected" do
       assert {:error, :invalid} =
                Presence.parse_update(%Node{tag: "chatstate", attrs: %{}, content: nil})

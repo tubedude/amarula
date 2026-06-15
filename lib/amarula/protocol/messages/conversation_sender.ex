@@ -108,29 +108,42 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       replies the parked caller the failure immediately.
 
   Returns `{:ok, pid}` — the (started or reused) sender pid, so Connection can
-  monitor it and fail the recipient's parked sends if it crashes mid-pipe.
+  monitor it and fail the recipient's parked sends if it crashes mid-pipe — or
+  `{:error, reason}` if the sender could not be started (e.g. `:max_children`).
+  A start failure is a recoverable send failure: Connection maps it to a
+  `{:send_failed, msg_id, reason}` for the parked caller rather than crashing.
   """
-  @spec deliver(keyword(), map()) :: {:ok, pid()}
+  @spec deliver(keyword(), map()) :: {:ok, pid()} | {:error, term()}
   def deliver(opts, msg) do
     registry = Keyword.fetch!(opts, :registry)
     recipient = Keyword.fetch!(opts, :recipient_jid)
 
-    pid =
-      case Registry.lookup(registry, recipient) do
-        [{pid, _}] -> pid
-        [] -> start_child(opts)
-      end
-
-    GenServer.cast(pid, {:send, msg})
-    {:ok, pid}
+    with {:ok, pid} <- find_or_start(registry, recipient, opts) do
+      GenServer.cast(pid, {:send, msg})
+      {:ok, pid}
+    end
   end
 
+  defp find_or_start(registry, recipient, opts) do
+    case Registry.lookup(registry, recipient) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> start_child(opts)
+    end
+  end
+
+  # Normalize every DynamicSupervisor.start_child/2 outcome to a tagged tuple.
+  # A lost race (:already_started) is success — reuse the live sender. Anything
+  # else ({:error, reason} | :ignore | {:error, :max_children}) is a recoverable
+  # start failure, surfaced as {:error, reason} so the send fails cleanly instead
+  # of raising a CaseClauseError inside Connection.
   defp start_child(opts) do
     spec = {__MODULE__, opts}
 
     case DynamicSupervisor.start_child(Keyword.fetch!(opts, :supervisor), spec) do
-      {:ok, pid} -> pid
-      {:error, {:already_started, pid}} -> pid
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      :ignore -> {:error, :sender_start_ignored}
+      {:error, reason} -> {:error, reason}
     end
   end
 

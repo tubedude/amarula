@@ -24,6 +24,11 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
   @doc """
   Start a connection instance. `opts` may carry `:parent_pid`. Returns
   `{:ok, sup_pid, connection_pid}` — `connection_pid` is the consumer handle.
+
+  The tree is started under the library-owned `Amarula.ConnectionsSupervisor`
+  (a `DynamicSupervisor`), **not** linked to the calling consumer. A connection
+  crash is therefore observable by the consumer through `parent_pid` events but
+  never delivers an exit signal that would take the consumer down.
   """
   @spec start_instance(Amarula.Conn.t(), keyword()) ::
           {:ok, pid(), pid()} | {:error, term()}
@@ -31,8 +36,16 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
     instance_id = make_ref()
     init_arg = %{instance_id: instance_id, conn: conn, opts: opts}
 
+    spec = %{
+      id: supervisor_name(instance_id),
+      start:
+        {Supervisor, :start_link, [__MODULE__, init_arg, [name: supervisor_name(instance_id)]]},
+      type: :supervisor,
+      restart: :temporary
+    }
+
     with {:ok, sup} <-
-           Supervisor.start_link(__MODULE__, init_arg, name: supervisor_name(instance_id)),
+           DynamicSupervisor.start_child(Amarula.Application.connections_supervisor(), spec),
          connection when is_pid(connection) <- whereis(instance_id, :connection) do
       {:ok, sup, connection}
     else

@@ -1234,10 +1234,19 @@ defmodule Amarula.Connection do
     # The Sender carries the msg_id and reports its pipe result back to `cm`
     # (Connection) — it no longer holds the consumer's `from`.
     msg = Map.put(payload, :msg_id, msg_id)
-    {:ok, sender} = ConversationSender.deliver(opts, msg)
 
-    state = ensure_sender_monitor(state, jid, sender)
-    {:noreply, park_ack(state, msg_id, from, shape, jid)}
+    case ConversationSender.deliver(opts, msg) do
+      {:ok, sender} ->
+        state = ensure_sender_monitor(state, jid, sender)
+        {:noreply, park_ack(state, msg_id, from, shape, jid)}
+
+      {:error, reason} ->
+        # The sender could not be started (e.g. :max_children). No frame went
+        # out and no process exists to monitor — park the caller, then resolve
+        # it immediately as a recoverable send failure rather than crashing.
+        state = park_ack(state, msg_id, from, shape, jid)
+        {:noreply, resolve_ack(state, msg_id, fn _shape -> {:error, reason} end)}
+    end
   end
 
   # Monitor a recipient's sender once, the first time we park a send for it. The

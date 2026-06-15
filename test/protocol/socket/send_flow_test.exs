@@ -14,6 +14,14 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     * `connection_state: :connected` — start connected without a real handshake
     * `{:inject_node, node}` — feed a synthetic server reply; for a query_iq the
       reply unblocks the waiting sender via GenServer.reply.
+    * `ack_timeout_ms` — shrink the ack-timeout for the timeout test.
+
+  Ack-on-send (Design 2): a consumer send now completes only when the server's
+  `<ack class="message" id=msg_id>` arrives. Sends are driven through the real
+  `Connection.send_*` client API (in a Task so the test stays free to inject) so
+  `Connection` parks the caller's `from` under msg_id; the test injects the
+  USync/bundle replies, observes the relayed `<message>` (whose `id` is the
+  msg_id), then injects the `<ack>` to unblock the caller.
   """
 
   use ExUnit.Case, async: false
@@ -25,6 +33,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   alias Amarula.Protocol.Messages.ConversationSender
   alias Amarula.Protocol.Proto
   alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionStore}
+  alias Amarula.Protocol.Socket.ConnectionSupervisor
   alias Amarula.Connection
 
   # Obviously-fake placeholder JIDs — not real numbers.
@@ -149,28 +158,45 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     ])
   end
 
-  setup do
+  setup context do
     dir = Path.join(System.tmp_dir!(), "amarula_sendflow_#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(dir) end)
 
-    config = %{
-      wa_websocket_url: "wss://test.example.com/ws",
-      max_retries: 1,
-      retry_delay: 100,
-      connection_state: :connected,
-      frame_sink: self(),
-      profile: :test,
-      storage: {Amarula.Storage.File, root: dir},
-      auth: creds()
-    }
+    config =
+      %{
+        wa_websocket_url: "wss://test.example.com/ws",
+        max_retries: 1,
+        retry_delay: 100,
+        connection_state: :connected,
+        frame_sink: self(),
+        profile: :test,
+        storage: {Amarula.Storage.File, root: dir},
+        auth: creds()
+      }
+      |> maybe_put(:ack_timeout_ms, context[:ack_timeout_ms])
 
-    {:ok, pid} = Connection.start_link(config)
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
-
-    # Per-recipient sender infra (normally owned by ConnectionSupervisor).
-    registry = :"send_flow_registry_#{System.unique_integer([:positive])}"
+    # A real per-instance Registry + sender DynamicSupervisor, registered under the
+    # names ConnectionSupervisor derives from instance_id — so Connection's
+    # `deliver_async` dispatches to the per-recipient ConversationSender exactly as
+    # in production (it looks them up by instance_id). Driving sends through
+    # Connection.send_* (below) thus exercises the real ack-parking path.
+    instance_id = make_ref()
+    registry = ConnectionSupervisor.registry_name(instance_id)
     {:ok, _} = Registry.start_link(keys: :unique, name: registry)
-    {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+    {:ok, sup} =
+      DynamicSupervisor.start_link(
+        strategy: :one_for_one,
+        name: ConnectionSupervisor.name(instance_id, :sender_supervisor)
+      )
+
+    {:ok, pid} =
+      Connection.start_link(config,
+        name: :"conn_#{:erlang.phash2(instance_id)}",
+        instance_id: instance_id
+      )
+
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     # Stable creds for the whole test (a fresh keypair per send would break
     # multi-send cases that reuse a session).
@@ -178,45 +204,46 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
      pid: pid, conn: Amarula.Conn.new(config), registry: registry, supervisor: sup, creds: creds()}
   end
 
-  # Trigger a send the way Socket.send_text does: deliver to the recipient's
-  # ConversationSender. Returns the msg_id. The sender runs the blocking pipe in
-  # its own process; the test answers its query_iq calls via inject_node.
-  # Sends are synchronous now (deliver is a GenServer.call that blocks through the
-  # USync + bundle round-trips). The test process must stay free to inject the
-  # server replies the send is waiting on. deliver/2 is now a non-blocking cast,
-  # so fire-and-forget sends just call it; the test stays free to inject replies.
-  defp send_text(ctx, jid, text) do
-    {msg_id, _ref} = send_text_async(ctx, jid, text)
-    msg_id
-  end
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
-  # Send with a reply target: the sender GenServer.replies the send result to us
-  # (via the {self(), ref} from), which await_send_result/1 receives. This mirrors
-  # how Socket forwards its caller's `from`.
+  # Drive a send through the real consumer API. `Connection.send_text` is a
+  # blocking GenServer.call that completes only on the server's <ack> (ack-on-send,
+  # Design 2), so run it in a Task to keep THIS process free to inject the
+  # USync/bundle/ack replies the send is waiting on. Returns the Task — await its
+  # reply with await_send_result/1. The msg_id isn't known up front; read it from
+  # the relayed <message> frame (recv_frame) and feed it back via ack/2.
   defp send_text_async(ctx, jid, text) do
-    msg_id = "3EB0" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :upper))
-    ref = make_ref()
-
-    opts = [
-      registry: ctx.registry,
-      supervisor: ctx.supervisor,
-      cm: ctx.pid,
-      conn: ctx.conn,
-      creds: ctx.creds,
-      recipient_jid: jid
-    ]
-
-    msg = %{msg_id: msg_id, text: text, reply_to: {self(), ref}}
-    :ok = ConversationSender.deliver(opts, msg)
-    {msg_id, ref}
+    Task.async(fn -> Connection.send_text(ctx.pid, jid, text) end)
   end
 
-  defp await_send_result(ref) do
-    receive do
-      {^ref, result} -> result
-    after
-      2000 -> flunk("timed out waiting for the send result")
+  # The fire-and-forget convenience for tests that only assert on frames, not the
+  # reply: start the send and return the Task (the caller may ignore it).
+  defp send_text(ctx, jid, text) do
+    send_text_async(ctx, jid, text)
+  end
+
+  defp await_send_result(task) do
+    case Task.yield(task, 2000) || Task.shutdown(task) do
+      {:ok, result} -> result
+      nil -> flunk("timed out waiting for the send result")
     end
+  end
+
+  # An inbound server <ack class="message" id=msg_id [error=code]> — the
+  # confirmation (or rejection) that completes a parked send.
+  defp ack(ctx, msg_id, opts \\ []) do
+    attrs = %{"class" => "message", "id" => msg_id}
+    attrs = if code = opts[:error], do: Map.put(attrs, "error", code), else: attrs
+    inject(ctx, Node.create("ack", attrs, nil))
+  end
+
+  # Run the USync + bundle round-trips for a single-recipient text send, returning
+  # the relayed <message> frame (whose `id` attr is the msg_id to ack).
+  defp relay_text(ctx) do
+    usync = recv_frame()
+    inject(ctx, usync_devices_reply(attr(usync, "id")))
+    drain_until_message(ctx)
   end
 
   defp recv_frame do
@@ -275,7 +302,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   end
 
   test "resolves devices, fetches a bundle, then relays a participants stanza", ctx do
-    msg_id = send_text(ctx, @jid, "hello from amarula")
+    task = send_text_async(ctx, @jid, "hello from amarula")
 
     # Stage 1: USync devices query went out.
     usync_iq = recv_frame()
@@ -300,7 +327,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
     message = recv_frame()
     assert message.tag == "message"
-    assert message.attrs["id"] == msg_id
+    msg_id = message.attrs["id"]
     assert message.attrs["to"] == @jid
     assert message.attrs["type"] == "text"
 
@@ -316,6 +343,10 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # pkmsg ⇒ device-identity must be attached so the peer can verify us.
     assert %Node{content: identity} = NodeUtils.get_binary_node_child(message, "device-identity")
     assert is_binary(identity) and byte_size(identity) > 0
+
+    # Ack-on-send: the caller stays blocked until the server confirms the msg_id.
+    ack(ctx, msg_id)
+    assert {:ok, ^msg_id} = await_send_result(task)
   end
 
   test "emits an [:amarula, :send, :stop] telemetry span on a successful send", ctx do
@@ -329,14 +360,16 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       nil
     )
 
-    {_msg_id, ref} = send_text_async(ctx, @jid, "hi")
+    task = send_text_async(ctx, @jid, "hi")
     usync = recv_frame()
     inject(ctx, usync_devices_reply(attr(usync, "id")))
     bundle = recv_frame()
     inject(ctx, bundle_reply(attr(bundle, "id")))
-    _message = recv_frame()
-    # No reply_shape set in the test helper → raw run_send result (:ok).
-    assert :ok = await_send_result(ref)
+    message = recv_frame()
+    msg_id = message.attrs["id"]
+    # The send completes on the server ack; the default reply is {:ok, msg_id}.
+    ack(ctx, msg_id)
+    assert {:ok, ^msg_id} = await_send_result(task)
 
     assert_receive {:telemetry, [:amarula, :send, :stop], measurements, metadata}
     assert is_integer(measurements.duration)
@@ -357,13 +390,14 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
     log =
       capture_log(fn ->
-        {_msg_id, ref} = send_text_async(ctx, @jid, "to an unknown number")
+        task = send_text_async(ctx, @jid, "to an unknown number")
         usync_iq = recv_frame()
         assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
         inject(ctx, usync_empty_reply(attr(usync_iq, "id"), @jid))
 
-        # The send resolves to no recipient devices → errors, never relays.
-        assert {:error, :not_on_whatsapp} = await_send_result(ref)
+        # The send resolves to no recipient devices → the pipe fails before any
+        # frame goes out, so Connection replies the error immediately (no ack).
+        assert {:error, :not_on_whatsapp} = await_send_result(task)
         refute_receive {:frame_out, _}, 100
       end)
 
@@ -371,66 +405,108 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   end
 
   @tag :capture_log
-  test "concurrent sends complete in the server's REPLY order, not the send order", ctx do
+  test "concurrent sends complete in the server's ACK order, not the send order", ctx do
     # Three sends to three different recipients → three ConversationSenders running
-    # in parallel. Socket does not block on any one, so a send whose server reply
-    # comes back first completes first — regardless of which was issued first.
+    # in parallel + three parked acks in Connection. A send completes only on its
+    # own <ack class=message id=msg_id>, so completion follows the ack-injection
+    # order, regardless of which send was issued first.
     a = "20000000001@s.whatsapp.net"
     b = "20000000002@s.whatsapp.net"
     c = "20000000003@s.whatsapp.net"
 
     # Issue A, then B, then C (send order).
-    {_, ref_a} = send_text_async(ctx, a, "A")
-    {_, ref_b} = send_text_async(ctx, b, "B")
-    {_, ref_c} = send_text_async(ctx, c, "C")
+    task_a = send_text_async(ctx, a, "A")
+    task_b = send_text_async(ctx, b, "B")
+    task_c = send_text_async(ctx, c, "C")
 
-    # Each sender emits its USync IQ; collect all three and index by recipient.
-    iqs =
+    # Drive all three through USync + bundle to their relayed <message> frames,
+    # then map each recipient to its minted msg_id (read off the wire).
+    by_recipient =
       for _ <- 1..3, into: %{} do
-        iq = recv_frame()
-        {usync_target(iq), attr(iq, "id")}
+        message = relay_one_message(ctx)
+        {message.attrs["to"], message.attrs["id"]}
       end
 
-    # The "server" replies in a DIFFERENT order: C, then A, then B. Each empty
-    # reply → that send resolves to no devices → {:error, :not_on_whatsapp}.
-    inject(ctx, usync_empty_reply(iqs[c], c))
-    assert {:error, :not_on_whatsapp} = await_send_result(ref_c)
-    # A and B are still blocked (their replies haven't been injected yet).
-    refute_received {^ref_a, _}
-    refute_received {^ref_b, _}
+    tasks = %{a => task_a, b => task_b, c => task_c}
 
-    inject(ctx, usync_empty_reply(iqs[a], a))
-    assert {:error, :not_on_whatsapp} = await_send_result(ref_a)
-    refute_received {^ref_b, _}
+    # Ack in a DIFFERENT order: C, then A, then B. Each ack completes exactly its
+    # own send; the not-yet-acked sends stay blocked.
+    ack(ctx, by_recipient[c])
+    assert {:ok, id_c} = await_send_result(task_c)
+    assert id_c == by_recipient[c]
+    refute Task.yield(tasks[a], 0)
+    refute Task.yield(tasks[b], 0)
 
-    inject(ctx, usync_empty_reply(iqs[b], b))
-    assert {:error, :not_on_whatsapp} = await_send_result(ref_b)
+    ack(ctx, by_recipient[a])
+    assert {:ok, id_a} = await_send_result(task_a)
+    assert id_a == by_recipient[a]
+    refute Task.yield(tasks[b], 0)
+
+    ack(ctx, by_recipient[b])
+    assert {:ok, id_b} = await_send_result(task_b)
+    assert id_b == by_recipient[b]
   end
 
-  test "a send-plugin halt drops the send with {:halted, reason} and no frame", ctx do
-    # A recv-irrelevant send step that halts every send.
+  # Drive one send (USync devices reply + bundle replies) to its <message> frame,
+  # interleaving across the concurrent senders (each frame is handled in arrival
+  # order). Returns the next relayed <message>.
+  defp relay_one_message(ctx) do
+    case recv_frame() do
+      %{tag: "message"} = message ->
+        message
+
+      %{tag: "iq"} = iq ->
+        answer_send_iq(ctx, iq)
+        relay_one_message(ctx)
+    end
+  end
+
+  # Answer whichever send IQ this is: a USync devices query → a single-device
+  # reply for the queried user; an encrypt bundle fetch → bundles for the jids.
+  defp answer_send_iq(ctx, iq) do
+    case attr(iq, "xmlns") do
+      "usync" ->
+        user = usync_target(iq)
+        inject(ctx, usync_one_device_reply(attr(iq, "id"), user))
+
+      "encrypt" ->
+        requested =
+          iq
+          |> NodeUtils.get_binary_node_child("key")
+          |> Map.get(:content)
+          |> Enum.map(&NodeUtils.get_attr(&1, "jid"))
+
+        inject(ctx, bundle_reply(attr(iq, "id"), requested))
+    end
+  end
+
+  # A USync devices result for an arbitrary user jid (single device 0).
+  defp usync_one_device_reply(id, jid) do
+    user = usync_user_node(jid, ["0"])
+    usync = Node.create("usync", %{}, [Node.create("list", %{}, [user])])
+    with_id(Node.create("iq", %{"type" => "result"}, [usync]), id)
+  end
+
+  test "a send-plugin halt reports {:send_failed, msg_id, {:halted, reason}} and no frame", ctx do
+    # The sender no longer replies the consumer — it reports its pipe result back
+    # to Connection (`cm`). Point `cm` at the test process to observe the report
+    # contract directly: a plugin halt → {:send_failed, msg_id, {:halted, reason}}
+    # and nothing on the wire (Connection then replies the parked caller {:error,
+    # {:halted, reason}} — covered by the deliver_async path's unit behaviour).
     conn = Amarula.Plugin.on_send(ctx.conn, fn _ctx -> {:halt, :blocked} end)
 
     opts = [
       registry: ctx.registry,
       supervisor: ctx.supervisor,
-      cm: ctx.pid,
+      cm: self(),
       conn: conn,
       creds: ctx.creds,
       recipient_jid: @jid
     ]
 
-    ref = make_ref()
+    :ok = ConversationSender.deliver(opts, %{msg_id: "3EB0HALT", text: "nope"})
 
-    :ok =
-      ConversationSender.deliver(opts, %{
-        msg_id: "3EB0HALT",
-        text: "nope",
-        reply_to: {self(), ref}
-      })
-
-    # A plugin halt returns {:halted, reason} and nothing goes on the wire.
-    assert {:halted, :blocked} = await_send_result(ref)
+    assert_receive {:send_failed, "3EB0HALT", {:halted, :blocked}}, 2000
     refute_receive {:frame_out, _}, 100
   end
 
@@ -466,7 +542,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     _first_msg = recv_frame()
 
     # Second send: USync still runs, but the session now exists so no bundle IQ.
-    msg_id = send_text(ctx, @jid, "second")
+    send_text(ctx, @jid, "second")
     usync_iq = recv_frame()
     assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
 
@@ -475,7 +551,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # Next frame should be the message directly (not an encrypt/get bundle IQ).
     next = recv_frame()
     assert next.tag == "message"
-    assert next.attrs["id"] == msg_id
+    assert is_binary(next.attrs["id"])
 
     # The key assertion is that NO bundle fetch happened between the USync reply
     # and this message — the existing session was reused. (The enc stays a pkmsg
@@ -550,7 +626,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # Pre-seed the mapping so the USync result reports nothing new.
     LidMappingFileStore.store_mappings(ctx.conn, [{lid, @jid}])
 
-    msg_id = send_text(ctx, @jid, "no refresh")
+    send_text(ctx, @jid, "no refresh")
     usync_iq = recv_frame()
     inject(ctx, usync_devices_reply(attr(usync_iq, "id"), lid))
 
@@ -567,7 +643,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
     inject(ctx, bundle_reply(attr(bundle_iq, "id")))
     message = recv_frame()
-    assert message.attrs["id"] == msg_id
+    assert is_binary(message.attrs["id"])
   end
 
   test "fans out a DSM copy to our own companion device", ctx do
@@ -626,11 +702,11 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
     # Second send: devices are cached → no USync; sessions exist → no bundle
     # fetch. First (and only) frame is the message itself.
-    msg_id = send_text(ctx, @jid, "second")
+    send_text(ctx, @jid, "second")
     frame = recv_frame()
 
     assert frame.tag == "message"
-    assert frame.attrs["id"] == msg_id
+    assert is_binary(frame.attrs["id"])
   end
 
   test "group send: metadata → participant USync → skmsg + SKDM fan-out", ctx do
@@ -638,7 +714,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # Group has us + one other member (both PN-addressed).
     members = [@me_jid, @jid]
 
-    msg_id = send_text(ctx, group, "hello group")
+    task = send_text_async(ctx, group, "hello group")
 
     # Stage 1a: group metadata query (w:g2) goes out.
     meta_iq = recv_frame()
@@ -655,7 +731,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # Stage 2 + 4: bundle fetches for missing sessions, then the group stanza.
     message = drain_until_message(ctx)
     assert message.tag == "message"
-    assert message.attrs["id"] == msg_id
+    msg_id = message.attrs["id"]
     assert message.attrs["to"] == group
 
     # The group ciphertext: one top-level <enc type=skmsg>.
@@ -676,6 +752,10 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # pkmsg SKDMs ⇒ device-identity attached.
     assert %Node{content: identity} = NodeUtils.get_binary_node_child(message, "device-identity")
     assert is_binary(identity) and byte_size(identity) > 0
+
+    # One group message stanza ⇒ one server ack completes the send.
+    ack(ctx, msg_id)
+    assert {:ok, ^msg_id} = await_send_result(task)
   end
 
   test "lid group: USyncs participants by PN (not lid) and stores LID mappings", ctx do
@@ -708,5 +788,71 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
     # The PN↔LID mapping from metadata is persisted.
     assert LidMappingFileStore.lid_for_pn(ctx.conn, member_pn) == "44444444444444"
+  end
+
+  # --- Ack-on-send (Design 2) ---
+
+  test "a plain server ack completes the send with {:ok, msg_id}", ctx do
+    task = send_text_async(ctx, @jid, "ack me")
+    message = relay_text(ctx)
+    msg_id = message.attrs["id"]
+
+    # Caller is still blocked until the server confirms the relayed frame.
+    refute Task.yield(task, 0)
+
+    ack(ctx, msg_id)
+    assert {:ok, ^msg_id} = await_send_result(task)
+  end
+
+  test "an ack carrying an error attr fails the send with {:send_rejected, code}", ctx do
+    task = send_text_async(ctx, @jid, "will be rejected")
+    message = relay_text(ctx)
+    msg_id = message.attrs["id"]
+
+    # A class=message ack with an `error` attr is a server rejection — NOT a
+    # success, and never a resend (Baileys handleBadAck loops on resend).
+    ack(ctx, msg_id, error: "479")
+    assert {:error, {:send_rejected, "479"}} = await_send_result(task)
+  end
+
+  test "a phash ack (no error attr) is success, never a resend", ctx do
+    # Baileys handleBadAck warns a phash-driven resend loops. A plain ack — even
+    # one carrying a phash — is success; only an `error` attr is a failure.
+    task = send_text_async(ctx, @jid, "phash ack")
+    message = relay_text(ctx)
+    msg_id = message.attrs["id"]
+
+    inject(
+      ctx,
+      Node.create("ack", %{"class" => "message", "id" => msg_id, "phash" => "1:abc"}, nil)
+    )
+
+    assert {:ok, ^msg_id} = await_send_result(task)
+    # No resend frame went out after the ack.
+    refute_receive {:frame_out, _}, 100
+  end
+
+  @tag ack_timeout_ms: 80
+  test "a relayed send with no ack times out with {:error, :ack_timeout}", ctx do
+    # The ack-timeout is shrunk to 80ms via config (see setup). The frame is
+    # written but no <ack> is injected, so Connection reports it unconfirmed.
+    task = send_text_async(ctx, @jid, "never acked")
+    _message = relay_text(ctx)
+
+    assert {:error, :ack_timeout} = await_send_result(task)
+  end
+
+  test "an ack for an unknown msg_id is ignored (no crash, no stray reply)", ctx do
+    task = send_text_async(ctx, @jid, "real send")
+    message = relay_text(ctx)
+    msg_id = message.attrs["id"]
+
+    # An ack for a different id must not resolve our parked send.
+    ack(ctx, "3EB0DEADBEEF")
+    refute Task.yield(task, 50)
+
+    # The correct ack still completes it — the connection survived the stray ack.
+    ack(ctx, msg_id)
+    assert {:ok, ^msg_id} = await_send_result(task)
   end
 end

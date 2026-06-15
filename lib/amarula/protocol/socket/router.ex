@@ -39,6 +39,7 @@ defmodule Amarula.Protocol.Socket.Router do
           | :retry_receipt
           | :receipt_ack
           | :call_ack
+          | :message_ack
           | :unhandled
 
   @doc """
@@ -49,6 +50,7 @@ defmodule Amarula.Protocol.Socket.Router do
   def route(%Node{} = node) do
     first_child = NodeUtils.get_first_child_tag(node)
     xmlns = NodeUtils.get_attr(node, "xmlns")
+    class = NodeUtils.get_attr(node, "class")
 
     case {node.tag, NodeUtils.get_attr(node, "type"), first_child, xmlns} do
       {"iq", "set", "pair-device", _} -> :pair_device
@@ -68,6 +70,9 @@ defmodule Amarula.Protocol.Socket.Router do
       {"ib", _, "dirty", _} -> :dirty
       {"ib", _, "thread_metadata", _} -> :ignore
       {"notification", _, _, _} -> :notification
+      # Only a class="message" ack confirms a send we parked by msg_id. Other
+      # acks (receipts, notifications, …) carry no send correlation — ignore them.
+      {"ack", _, _, _} when class == "message" -> :message_ack
       {"ack", _, _, _} -> :ignore
       {"receipt", "retry", _, _} -> :retry_receipt
       {"receipt", _, _, _} -> :receipt_ack

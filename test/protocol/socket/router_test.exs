@@ -43,7 +43,11 @@ defmodule Amarula.Protocol.Socket.RouterTest do
 
   test "notifications, acks, receipts, calls" do
     assert Router.route(n("notification")) == :notification
+    # A bare ack (or any non-message class) carries no send correlation.
     assert Router.route(n("ack")) == :ignore
+    assert Router.route(n("ack", %{"class" => "receipt"})) == :ignore
+    # Only a class="message" ack confirms a parked send.
+    assert Router.route(n("ack", %{"class" => "message"})) == :message_ack
     assert Router.route(n("receipt", %{"type" => "retry"})) == :retry_receipt
     assert Router.route(n("receipt", %{"type" => "read"})) == :receipt_ack
     assert Router.route(n("receipt")) == :receipt_ack

@@ -18,9 +18,47 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   blocks until the matching websocket reply arrives. A step failure crashes the
   process (the DynamicSupervisor reaps it); the pipe carries no error branches.
 
-  Lifecycle: started on demand via the Registry/DynamicSupervisor, stays alive
-  after draining its queue, stops after `@idle_timeout_ms` of inactivity, and is
-  respawned on the next message to that recipient.
+  ## Lifecycle & registry presence
+
+  **Identity.** A sender's identity *is* its recipient JID. It is registered in
+  the per-instance Registry under `{registry, recipient_jid}` — so at most one
+  sender per recipient exists at a time, and `deliver/2` is a find-or-start on
+  that key.
+
+  **Birth (lazy).** Started on the first `deliver/2` to a recipient with no live
+  sender: find-or-start via `Registry.lookup` → else `DynamicSupervisor.start_child`.
+  The `{:error, {:already_started, pid}}` branch makes the start race-safe even
+  though, in practice, only `Connection` calls `deliver` (single process, so no
+  concurrent start for the same recipient).
+
+  **Registration.** Automatic, via the `:via` name in `start_link` — the Registry
+  registers the pid on start and **auto-unregisters it on death** (it monitors the
+  pid). So a dead sender's key vanishes; there are never stale registry entries to
+  reap.
+
+  **Life.** Serializes all sends to its recipient (one pipe at a time → ordered
+  ratchet advance, no per-address lock). Different recipients run in parallel.
+  Holds no durable state: sessions/keys live in Storage, the consumer's `from`
+  is parked in `Connection`. So a sender is cheap to lose and cheap to respawn.
+
+  **Death (three ways).**
+    1. *Idle.* After `@idle_timeout_ms` with an empty mailbox it `{:stop, :normal}`s.
+    2. *Crash.* A raise in the pipe (Signal error, USync blowup, bad bundle) kills
+       it. `restart: :temporary` ⇒ the supervisor does NOT restart it; the next
+       `deliver` respawns a fresh one. In-flight + queued sends are lost.
+    3. *Shutdown.* The connection's supervision tree going down takes it too.
+    All three auto-unregister the Registry key (the Registry's pid monitor).
+
+  **Rebirth.** The next `deliver/2` to that recipient starts a fresh sender — no
+  carried state; it re-reads sessions from Storage.
+
+  **Crash ⇒ parked-send recovery.** Because the consumer's `from` lives in
+  `Connection` (not in the dying sender), `Connection` monitors each sender and,
+  on its `:DOWN`, fails every parked send for that recipient with
+  `{:error, {:sender_crashed, reason}}` — promptly, instead of letting the caller
+  hang to the ack-timeout. A `:normal` idle-stop fails nothing (no in-flight
+  sends). See `Amarula.Connection` (`ensure_sender_monitor` / the `:DOWN` handler)
+  and `docs/plans/SENDER_CRASH_FIX.plan.md`.
   """
 
   use GenServer, restart: :temporary

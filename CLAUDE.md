@@ -142,6 +142,28 @@ ConnectionSupervisor (per instance)
 `Socket` GenServer was merged into it (one process per connection, no double hop).
 Storage is a config concern (a scope on the `Conn`), not a process.
 
+The **per-instance Registry** maps `recipient_jid → sender pid`. It earns its keep
+for one specific job: the sender key space is *unbounded and user-controlled* (any
+number you message), so it cannot be static atom names (atoms never GC). A Registry
+keyed by the JID term find-or-starts a sender per recipient and auto-unregisters it
+on death. (A *consumer→Connection* handle, by contrast, is bounded by profile and
+needs no per-instance registry.)
+
+**ConversationSender lifecycle.** One sender per recipient JID, `restart: :temporary`:
+
+- *Born* lazily on the first send to a recipient (find-or-start, race-safe).
+- *Registered* automatically via `:via`; the Registry auto-unregisters it on death
+  — no stale keys.
+- *Lives* serializing that recipient's sends (ordered ratchet), parallel across
+  recipients; holds no durable state (sessions in Storage, the caller's `from`
+  parked in `Connection`).
+- *Dies* three ways — idle-stop (`:normal`), pipe crash (not restarted; respawned
+  on the next send; in-flight sends lost), or tree shutdown.
+- *Crash recovery*: `Connection` monitors each sender and on `:DOWN` fails that
+  recipient's parked sends with `{:error, {:sender_crashed, reason}}` (fast, not a
+  30s ack-timeout). See the `ConversationSender` moduledoc and
+  `docs/plans/SENDER_CRASH_FIX.plan.md`.
+
 ### Data Flow
 
 **Connection**: `Amarula.connect/2` → `Connection` opens the

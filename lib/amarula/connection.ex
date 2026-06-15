@@ -1514,6 +1514,8 @@ defmodule Amarula.Connection do
   defp dispatch_node(state, :dirty, node), do: handle_dirty(state, node)
   # Server notifications (group changes, app-state collections, ...).
   defp dispatch_node(state, :notification, node), do: handle_notification(state, node)
+  # Inbound presence (<presence>) / typing (<chatstate>) → :presence_update.
+  defp dispatch_node(state, :presence, node), do: handle_presence(state, node)
   # type="retry" receipt = recipient asking us to re-encrypt+resend; others just ack.
   defp dispatch_node(state, :retry_receipt, node), do: handle_retry_receipt(state, node)
   defp dispatch_node(state, :receipt_ack, node), do: handle_receipt(state, node)
@@ -1587,6 +1589,30 @@ defmodule Amarula.Connection do
         state
 
       {:error, _} ->
+        state
+    end
+  end
+
+  # A contact/group sent us a presence (<presence available|unavailable>) or a
+  # typing indicator (<chatstate><composing|recording|paused/>). These are
+  # unsolicited (no ack), so just parse and surface as :presence_update. jid +
+  # participant are converted to %Amarula.Address{} (consistent with receipts).
+  defp handle_presence(state, node) do
+    case Amarula.Protocol.Presence.parse_update(node) do
+      {:ok, update} ->
+        data = %{
+          jid: Amarula.Address.parse(update.jid),
+          participant: Amarula.Address.parse(update.participant),
+          presence: update.presence,
+          last_seen: update.last_seen
+        }
+
+        Logger.debug("Presence #{update.presence} for #{update.participant}")
+        emit_to_subscribers(state, :presence_update, data)
+        state
+
+      {:error, _} ->
+        Logger.warning("Invalid presence node: #{inspect(node)}")
         state
     end
   end

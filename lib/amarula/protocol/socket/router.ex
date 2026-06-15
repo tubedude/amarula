@@ -36,6 +36,7 @@ defmodule Amarula.Protocol.Socket.Router do
           | :dirty
           | :ignore
           | :notification
+          | :presence
           | :retry_receipt
           | :receipt_ack
           | :call_ack
@@ -70,6 +71,9 @@ defmodule Amarula.Protocol.Socket.Router do
       {"ib", _, "dirty", _} -> :dirty
       {"ib", _, "thread_metadata", _} -> :ignore
       {"notification", _, _, _} -> :notification
+      # Contact/group presence + typing (chatstate) updates → presence.update.
+      {"presence", _, _, _} -> :presence
+      {"chatstate", _, _, _} -> :presence
       # Only a class="message" ack confirms a send we parked by msg_id. Other
       # acks (receipts, notifications, …) carry no send correlation — ignore them.
       {"ack", _, _, _} when class == "message" -> :message_ack

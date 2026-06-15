@@ -54,8 +54,12 @@ defmodule Amarula.Protocol.Socket.RouterTest do
     assert Router.route(n("call")) == :call_ack
   end
 
+  test "presence + chatstate route to :presence" do
+    assert Router.route(n("presence")) == :presence
+    assert Router.route(n("chatstate", %{}, [child("composing")])) == :presence
+  end
+
   test "anything unrecognised is :unhandled" do
-    assert Router.route(n("presence")) == :unhandled
     assert Router.route(n("iq", %{"type" => "set"}, [child("something-new")])) == :unhandled
   end
 end

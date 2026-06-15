@@ -86,7 +86,7 @@ defmodule Amarula.Protocol.Messages.HistorySyncTest do
     sync = %Proto.HistorySync{
       syncType: :PUSH_NAME,
       pushnames: [
-        %Proto.Pushname{id: "15550001234@s.whatsapp.net", pushname: "Roberto"},
+        %Proto.Pushname{id: "15550001234@s.whatsapp.net", pushname: "Tester"},
         %Proto.Pushname{id: "x@s.whatsapp.net", pushname: nil}
       ]
     }
@@ -99,7 +99,7 @@ defmodule Amarula.Protocol.Messages.HistorySyncTest do
     }
 
     assert {:ok, result} = Amarula.Protocol.Messages.HistorySync.fetch(n)
-    assert result.push_names == [{"15550001234@s.whatsapp.net", "Roberto"}]
+    assert result.push_names == [{"15550001234@s.whatsapp.net", "Tester"}]
   end
 
   defp deflate(bin) do

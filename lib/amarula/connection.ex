@@ -1594,7 +1594,7 @@ defmodule Amarula.Connection do
   # picture — a contact/group avatar changed; surface it as a contact update so a
   # consumer can refresh the image (Baileys emits contacts.update imgUrl).
   defp dispatch_notification(state, "picture", node) do
-    from = NodeUtils.get_attr(node, "from")
+    from = node |> NodeUtils.get_attr("from") |> JID.jid_normalized_user()
     img_url = if NodeUtils.get_binary_node_child(node, "set"), do: "changed", else: "removed"
     Logger.debug("picture #{img_url} for #{from}")
     emit_to_subscribers(state, :contacts_update, [%{id: from, img_url: img_url}])

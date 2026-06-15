@@ -95,6 +95,13 @@ two purposes:
    On a Connection restart, `init` re-registers the same profile key, so the handle
    keeps resolving to the new pid (the raw pid from `connect/2` would go stale).
 
+**Releasing a profile.** `disconnect/1` only closes the websocket — the supervised
+tree stays up (and may reconnect), so the profile stays registered. To fully release
+a profile (stop the whole tree, free the registration so it can run again — here or,
+with a cluster registry, on another node) use `Amarula.stop/1` (by pid or profile).
+The tree is found by a name derived from its `instance_id`, so `stop/1` works without
+the consumer holding the supervisor pid.
+
 **Key = `profile`.** Uniqueness is the consumer's responsibility — the library
 trusts `profile <-> credentials` 1:1 and does not derive a fingerprint or validate
 it. A duplicate start is an explicit error (never silently idempotent).

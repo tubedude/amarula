@@ -31,13 +31,33 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
     instance_id = make_ref()
     init_arg = %{instance_id: instance_id, conn: conn, opts: opts}
 
-    with {:ok, sup} <- Supervisor.start_link(__MODULE__, init_arg),
+    with {:ok, sup} <-
+           Supervisor.start_link(__MODULE__, init_arg, name: supervisor_name(instance_id)),
          connection when is_pid(connection) <- whereis(instance_id, :connection) do
       {:ok, sup, connection}
     else
       :undefined -> {:error, :connection_not_started}
       {:error, _} = err -> err
     end
+  end
+
+  @doc """
+  Stop a whole connection tree by its `instance_id` (the supervisor + all children,
+  freeing the profile registration). Returns `:ok`, or `{:error, :not_found}` if no
+  such tree is running.
+  """
+  @spec stop_instance(reference()) :: :ok | {:error, :not_found}
+  def stop_instance(instance_id) do
+    case Process.whereis(supervisor_name(instance_id)) do
+      nil -> {:error, :not_found}
+      sup -> Supervisor.stop(sup)
+    end
+  end
+
+  @doc "The supervisor's registered name, derived from the instance ref."
+  @spec supervisor_name(reference()) :: atom()
+  def supervisor_name(instance_id) do
+    :"amarula_conn_sup_#{:erlang.phash2(instance_id)}"
   end
 
   @doc "The `:via` tuple addressing a sibling `role` in this instance's Registry."

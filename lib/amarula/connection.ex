@@ -228,6 +228,20 @@ defmodule Amarula.Connection do
   end
 
   @doc """
+  Stop the whole connection tree (this Connection, its caches + sender supervisor),
+  freeing the profile registration. Unlike `disconnect/1` (which only closes the
+  websocket, leaving the supervised tree up to reconnect), this releases the profile
+  so it can be started again elsewhere. Returns `:ok | {:error, :not_found}`.
+  """
+  @spec stop(pid()) :: :ok | {:error, :not_found}
+  def stop(pid) do
+    case GenServer.call(pid, :instance_id) do
+      nil -> {:error, :not_found}
+      instance_id -> ConnectionSupervisor.stop_instance(instance_id)
+    end
+  end
+
+  @doc """
   Gets the current connection state.
   """
   def get_connection_state(pid \\ __MODULE__) do
@@ -480,6 +494,11 @@ defmodule Amarula.Connection do
         new_state = attempt_connection(state)
         {:reply, :ok, new_state}
     end
+  end
+
+  @impl GenServer
+  def handle_call(:instance_id, _from, state) do
+    {:reply, state.instance_id, state}
   end
 
   @impl GenServer

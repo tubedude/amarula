@@ -216,6 +216,25 @@ defmodule Amarula do
   defdelegate disconnect(conn), to: Connection
 
   @doc """
+  Stop a connection entirely — the whole supervision tree — and release its profile
+  so it can be started again (here or, with a cluster registry, on another node).
+
+  Unlike `disconnect/1` (which only closes the websocket; the supervised tree stays
+  up and may reconnect), `stop/1` takes the tree down and frees the profile slot.
+  Accepts a connection pid or a `profile` (resolved via the default registry).
+  Returns `:ok | {:error, :not_found}`.
+  """
+  @spec stop(conn() | profile()) :: :ok | {:error, :not_found}
+  def stop(pid) when is_pid(pid), do: Connection.stop(pid)
+
+  def stop(profile) do
+    case whereis(profile) do
+      nil -> {:error, :not_found}
+      pid -> Connection.stop(pid)
+    end
+  end
+
+  @doc """
   Log out / forget this connection: unlink the companion on WhatsApp's side (the
   phone drops the device) and wipe all local storage for its profile, then
   disconnect. After this the profile must be re-paired to use again.

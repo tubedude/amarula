@@ -128,6 +128,31 @@ defmodule Amarula.ConnectionTest do
       assert is_pid(new_pid) and new_pid != pid
     end
 
+    test "stop/1 by pid takes the tree down and frees the profile",
+         %{conn: conn, profile: profile} do
+      {sup, pid} = start_tree(conn)
+      ref = Process.monitor(sup)
+
+      assert :ok = Amarula.stop(pid)
+      assert_receive {:DOWN, ^ref, :process, ^sup, _}, 1000
+      Process.sleep(20)
+      assert Amarula.whereis(profile) == nil
+    end
+
+    test "stop/1 by profile resolves then stops", %{conn: conn, profile: profile} do
+      {sup, _pid} = start_tree(conn)
+      ref = Process.monitor(sup)
+
+      assert :ok = Amarula.stop(profile)
+      assert_receive {:DOWN, ^ref, :process, ^sup, _}, 1000
+      Process.sleep(20)
+      assert Amarula.whereis(profile) == nil
+    end
+
+    test "stop/1 on an unknown profile is {:error, :not_found}" do
+      assert {:error, :not_found} = Amarula.stop(:"never_started_#{System.unique_integer()}")
+    end
+
     test "a custom :registry module from config is honored", %{conn: base_conn} do
       # A distinct local Registry instance proves the seam routes through config,
       # not the default ProfileRegistry.

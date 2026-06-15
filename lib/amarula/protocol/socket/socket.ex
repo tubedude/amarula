@@ -32,6 +32,11 @@ defmodule Amarula.Protocol.Socket do
           parent_pid: pid() | nil
         }
 
+  # A send blocks the caller until the per-recipient sender finishes (up to three
+  # IQ round-trips for a new recipient). The client-side call timeout must exceed
+  # that worst case — see ConversationSender's own bound.
+  @send_call_timeout 90_000
+
   # Client API
 
   @doc """
@@ -82,7 +87,7 @@ defmodule Amarula.Protocol.Socket do
   recipient's prekey bundle first if we have no session). Returns `{:ok, msg_id}`.
   """
   def send_text(pid \\ __MODULE__, jid, text) do
-    GenServer.call(pid, {:send_text, jid, text})
+    GenServer.call(pid, {:send_text, jid, text}, @send_call_timeout)
   end
 
   @doc "Set global presence (`:available`/`:unavailable`)."
@@ -133,12 +138,12 @@ defmodule Amarula.Protocol.Socket do
   reactions, edits, deletes and media. Returns `{:ok, msg_id}`.
   """
   def send_message(pid \\ __MODULE__, jid, %Proto.Message{} = message) do
-    GenServer.call(pid, {:send_message, jid, message})
+    GenServer.call(pid, {:send_message, jid, message}, @send_call_timeout)
   end
 
   @doc "Ask the phone to re-deliver a message by key (PEER_DATA_OPERATION resend)."
   def request_resend(pid \\ __MODULE__, %Proto.MessageKey{} = message_key) do
-    GenServer.call(pid, {:request_resend, message_key})
+    GenServer.call(pid, {:request_resend, message_key}, @send_call_timeout)
   end
 
   @doc """
@@ -146,7 +151,7 @@ defmodule Amarula.Protocol.Socket do
   to tally incoming votes. `opts`: `:selectable`, `:announcement`, `:message_secret`.
   """
   def send_poll(pid \\ __MODULE__, jid, name, options, opts \\ []) do
-    GenServer.call(pid, {:send_poll, jid, name, options, opts})
+    GenServer.call(pid, {:send_poll, jid, name, options, opts}, @send_call_timeout)
   end
 
   @doc "Send a contact (`display_name` + vCard string) to `jid`."
@@ -205,7 +210,7 @@ defmodule Amarula.Protocol.Socket do
   """
   def send_media(pid \\ __MODULE__, type, jid, data, opts \\ [])
       when type in [:image, :video, :audio, :document, :sticker] and is_binary(data) do
-    GenServer.call(pid, {:send_media, type, jid, data, opts}, 60_000)
+    GenServer.call(pid, {:send_media, type, jid, data, opts}, @send_call_timeout)
   end
 
   @doc "Convenience: `send_media(:image, ...)`."
@@ -289,8 +294,8 @@ defmodule Amarula.Protocol.Socket do
   end
 
   @impl GenServer
-  def handle_call({:send_text, jid, text}, _from, state) do
-    {:reply, deliver_to(state, jid, %{text: text}), state}
+  def handle_call({:send_text, jid, text}, from, state) do
+    deliver_async(state, jid, %{text: text}, from)
   end
 
   @impl GenServer
@@ -341,11 +346,11 @@ defmodule Amarula.Protocol.Socket do
   end
 
   @impl GenServer
-  def handle_call({:send_message, jid, message}, _from, state) do
-    {:reply, deliver_to(state, jid, %{message: message}), state}
+  def handle_call({:send_message, jid, message}, from, state) do
+    deliver_async(state, jid, %{message: message}, from)
   end
 
-  def handle_call({:request_resend, message_key}, _from, state) do
+  def handle_call({:request_resend, message_key}, from, state) do
     creds = ConnectionManager.get_auth_creds(state.connection_manager)
     me_id = get_in(creds, [:me, :id])
 
@@ -358,34 +363,36 @@ defmodule Amarula.Protocol.Socket do
         stanza_attrs: %{"category" => "peer", "push_priority" => "high_force"}
       }
 
-      {:reply, deliver_to(state, me_id, payload), state}
+      deliver_async(state, me_id, payload, from)
     else
       {:reply, {:error, :not_authenticated}, state}
     end
   end
 
   @impl GenServer
-  def handle_call({:send_poll, jid, name, options, opts}, _from, state) do
+  def handle_call({:send_poll, jid, name, options, opts}, from, state) do
     {message, secret} = MessageEncoder.poll(name, options, opts)
 
-    reply =
-      case deliver_to(state, jid, %{message: message}) do
-        {:ok, msg_id} -> {:ok, msg_id, secret}
-        other -> other
-      end
+    # Poll's reply carries the secret: {:ok, id} → {:ok, id, secret}.
+    shape = fn
+      :ok, msg_id -> {:ok, msg_id, secret}
+      result, msg_id -> default_send_reply(result, msg_id)
+    end
 
-    {:reply, reply, state}
+    deliver_async(state, jid, %{message: message}, from, shape)
   end
 
   @impl GenServer
-  def handle_call({:send_media, type, jid, data, opts}, _from, state) do
+  def handle_call({:send_media, type, jid, data, opts}, from, state) do
     mimetype = Keyword.get(opts, :mimetype, @media_default_mimetype[type])
 
+    # Media encrypt+upload happen on Socket (blocking) — they're independent of the
+    # recipient session; the per-recipient send is then dispatched async.
     with {:ok, enc} <- Media.encrypt(data, type),
          {:ok, uploaded} <-
            Media.upload(state.connection_manager, enc.enc, enc.file_enc_sha256, type) do
       info = Map.merge(enc, Map.put(uploaded, :mimetype, mimetype))
-      {:reply, deliver_to(state, jid, %{message: MessageEncoder.media(type, info, opts)}), state}
+      deliver_async(state, jid, %{message: MessageEncoder.media(type, info, opts)}, from)
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -458,9 +465,8 @@ defmodule Amarula.Protocol.Socket do
     # Re-encrypt + resend the original message (same id, so the recipient replaces
     # rather than duplicates). Fresh ConversationSender pass picks up the session
     # the retry's <keys> bundle just injected.
-    deliver_to(state, jid, %{msg_id: msg_id, message: message})
-
-    {:noreply, state}
+    # Fire-and-forget resend (no caller waiting → from = nil).
+    deliver_async(state, jid, %{msg_id: msg_id, message: message}, nil)
   end
 
   @impl GenServer
@@ -509,13 +515,19 @@ defmodule Amarula.Protocol.Socket do
     "3EB0" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :upper))
   end
 
-  # Hand a message off to the per-recipient ConversationSender. `payload` carries
-  # either %{text: ..} or %{message: %Proto.Message{}}; both reach the same pipe.
-  defp deliver_to(state, target, payload) do
-    # Boundary: accept a String or %Address{}; the protocol layer speaks jid strings.
+  # Dispatch a message to the per-recipient ConversationSender and DON'T block:
+  # the caller's `from` is forwarded so the sender replies directly when the send
+  # finishes. Socket returns `{:noreply, state}` and is immediately free for other
+  # sends (to other recipients, in parallel). The caller still blocks on its own
+  # GenServer.call until the sender answers.
+  #
+  # `from` nil = fire-and-forget (a retry resend, no caller waiting). `shape` maps
+  # the raw send result to the caller's reply (default: {:ok, msg_id}/{:error,..}).
+  defp deliver_async(state, target, payload, from, shape \\ &default_send_reply/2) do
     jid = Amarula.Address.to_wire(target)
-    # A resend reuses the original id (payload carries :msg_id); a new send mints one.
     msg_id = Map.get(payload, :msg_id) || generate_message_id()
+    # The sender applies `shape.(result, msg_id)` to build the caller's reply.
+    reply_shape = &shape.(&1, msg_id)
 
     opts = [
       registry: ConnectionSupervisor.registry_name(state.instance_id),
@@ -526,14 +538,19 @@ defmodule Amarula.Protocol.Socket do
       recipient_jid: jid
     ]
 
-    # Synchronous: the result reflects the actual send. A consumer that wants
-    # fire-and-forget can wrap the call in its own Task.
-    case ConversationSender.deliver(opts, Map.put(payload, :msg_id, msg_id)) do
-      :ok -> {:ok, msg_id}
-      {:error, reason} -> {:error, reason}
-      {:halted, reason} -> {:error, {:halted, reason}}
-    end
+    msg =
+      payload
+      |> Map.put(:msg_id, msg_id)
+      |> Map.put(:reply_to, from)
+      |> Map.put(:reply_shape, reply_shape)
+
+    :ok = ConversationSender.deliver(opts, msg)
+    {:noreply, state}
   end
+
+  defp default_send_reply(:ok, msg_id), do: {:ok, msg_id}
+  defp default_send_reply({:error, reason}, _msg_id), do: {:error, reason}
+  defp default_send_reply({:halted, reason}, _msg_id), do: {:error, {:halted, reason}}
 
   defp emit_event(state, event_type, data) do
     send(state.parent_pid, {:whatsapp, event_type, data})

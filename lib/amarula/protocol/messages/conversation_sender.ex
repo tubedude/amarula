@@ -54,28 +54,17 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   # --- API ---
 
-  # The outer (caller-facing) send timeout. A send blocks on up to THREE sequential
-  # IQ round-trips — group metadata, USync devices, prekey-bundle fetch — each
-  # bounded by the CM's ~20s IQ timeout. This must exceed the worst case (3 × ~20s)
-  # so a stalled round-trip surfaces as a tagged {:error, {stage, :timeout}} from
-  # an inner IQ, never as an :exit from this call blowing first.
-  @send_timeout_ms 90_000
-
   @doc """
-  Start-or-lookup the sender for `recipient_jid` under `supervisor` (registered in
-  `registry`), then send `msg` through it, synchronously. Idempotent: an
-  already-running sender for that recipient is reused, and sends to one recipient
-  are serialized (each blocks behind the prior).
+  Hand a message to the recipient's sender (start-or-lookup), asynchronously. The
+  send runs on the per-recipient process — serialized per recipient, parallel
+  across recipients — so the CALLING process (Socket) is not blocked.
 
-  `opts` must carry `:registry`, `:supervisor`, `:cm`, `:conn`, `:creds`,
-  `:recipient_jid`.
-
-  Returns `:ok` on a successful relay, `{:error, reason}` if the send couldn't be
-  delivered (e.g. `:not_on_whatsapp`, a timed-out IQ), or `{:halted, reason}` if a
-  send-plugin dropped it. A consumer that wants fire-and-forget can wrap the call
-  in its own `Task`.
+  `msg` may carry `:reply_to` (a `GenServer.from` to answer when the send
+  finishes) and `:reply_shape` (a `fun result -> reply`, default identity). When
+  `:reply_to` is set the sender `GenServer.reply`s the (shaped) result to that
+  caller; when nil it's fire-and-forget (e.g. a retry resend). Returns `:ok`.
   """
-  @spec deliver(keyword(), map()) :: :ok | {:error, term()} | {:halted, term()}
+  @spec deliver(keyword(), map()) :: :ok
   def deliver(opts, msg) do
     registry = Keyword.fetch!(opts, :registry)
     recipient = Keyword.fetch!(opts, :recipient_jid)
@@ -86,7 +75,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         [] -> start_child(opts)
       end
 
-    GenServer.call(pid, {:send, msg}, @send_timeout_ms)
+    GenServer.cast(pid, {:send, msg})
   end
 
   defp start_child(opts) do
@@ -119,8 +108,18 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   end
 
   @impl true
-  def handle_call({:send, msg}, _from, state) do
-    {:reply, run_send(msg, state), state, @idle_timeout_ms}
+  def handle_cast({:send, msg}, state) do
+    result = run_send(msg, state)
+
+    # Reply to the original caller (Socket forwarded its `from`), if any. The send
+    # ran here, on the per-recipient process, so Socket stayed free for other
+    # recipients while this one was in flight.
+    case Map.get(msg, :reply_to) do
+      nil -> :ok
+      from -> GenServer.reply(from, Map.get(msg, :reply_shape, & &1).(result))
+    end
+
+    {:noreply, state, @idle_timeout_ms}
   end
 
   @impl true

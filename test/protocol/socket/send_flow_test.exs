@@ -183,16 +183,19 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   # its own process; the test answers its query_iq calls via inject_node.
   # Sends are synchronous now (deliver is a GenServer.call that blocks through the
   # USync + bundle round-trips). The test process must stay free to inject the
-  # server replies the send is waiting on, so we drive deliver from a Task and
-  # return the msg_id immediately. Tests that care about the send's result use
-  # send_text_task/3 + Task.await.
+  # server replies the send is waiting on. deliver/2 is now a non-blocking cast,
+  # so fire-and-forget sends just call it; the test stays free to inject replies.
   defp send_text(ctx, jid, text) do
-    {msg_id, _task} = send_text_task(ctx, jid, text)
+    {msg_id, _ref} = send_text_async(ctx, jid, text)
     msg_id
   end
 
-  defp send_text_task(ctx, jid, text) do
+  # Send with a reply target: the sender GenServer.replies the send result to us
+  # (via the {self(), ref} from), which await_send_result/1 receives. This mirrors
+  # how Socket forwards its caller's `from`.
+  defp send_text_async(ctx, jid, text) do
     msg_id = "3EB0" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :upper))
+    ref = make_ref()
 
     opts = [
       registry: ctx.registry,
@@ -203,8 +206,17 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       recipient_jid: jid
     ]
 
-    task = Task.async(fn -> ConversationSender.deliver(opts, %{msg_id: msg_id, text: text}) end)
-    {msg_id, task}
+    msg = %{msg_id: msg_id, text: text, reply_to: {self(), ref}}
+    :ok = ConversationSender.deliver(opts, msg)
+    {msg_id, ref}
+  end
+
+  defp await_send_result(ref) do
+    receive do
+      {^ref, result} -> result
+    after
+      2000 -> flunk("timed out waiting for the send result")
+    end
   end
 
   defp recv_frame do
@@ -317,13 +329,14 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       nil
     )
 
-    {_msg_id, task} = send_text_task(ctx, @jid, "hi")
+    {_msg_id, ref} = send_text_async(ctx, @jid, "hi")
     usync = recv_frame()
     inject(ctx, usync_devices_reply(attr(usync, "id")))
     bundle = recv_frame()
     inject(ctx, bundle_reply(attr(bundle, "id")))
     _message = recv_frame()
-    assert :ok = Task.await(task)
+    # No reply_shape set in the test helper → raw run_send result (:ok).
+    assert :ok = await_send_result(ref)
 
     assert_receive {:telemetry, [:amarula, :send, :stop], measurements, metadata}
     assert is_integer(measurements.duration)
@@ -344,13 +357,13 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
     log =
       capture_log(fn ->
-        {_msg_id, task} = send_text_task(ctx, @jid, "to an unknown number")
+        {_msg_id, ref} = send_text_async(ctx, @jid, "to an unknown number")
         usync_iq = recv_frame()
         assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
         inject(ctx, usync_empty_reply(attr(usync_iq, "id")))
 
         # The send resolves to no recipient devices → errors, never relays.
-        assert {:error, :not_on_whatsapp} = Task.await(task)
+        assert {:error, :not_on_whatsapp} = await_send_result(ref)
         refute_receive {:frame_out, _}, 100
       end)
 
@@ -370,13 +383,17 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       recipient_jid: @jid
     ]
 
-    task =
-      Task.async(fn ->
-        ConversationSender.deliver(opts, %{msg_id: "3EB0HALT", text: "nope"})
-      end)
+    ref = make_ref()
+
+    :ok =
+      ConversationSender.deliver(opts, %{
+        msg_id: "3EB0HALT",
+        text: "nope",
+        reply_to: {self(), ref}
+      })
 
     # A plugin halt returns {:halted, reason} and nothing goes on the wire.
-    assert {:halted, :blocked} = Task.await(task)
+    assert {:halted, :blocked} = await_send_result(ref)
     refute_receive {:frame_out, _}, 100
   end
 

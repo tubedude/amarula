@@ -1,0 +1,16 @@
+Amarula
+Copyright (c) 2026 Roberto Trevisan
+
+This product is a port of Baileys to Elixir.
+
+Baileys
+https://github.com/WhiskeySockets/Baileys
+Copyright (c) 2025 Rajeh Taher/WhiskeySockets
+Licensed under the MIT License.
+
+Amarula reimplements the WhatsApp Web protocol logic from Baileys in Elixir.
+The Baileys MIT license (reproduced in full in the LICENSE file) permits this
+use; its copyright and permission notice are retained as required.
+
+This is an unofficial library and is not affiliated with, endorsed by, or
+sponsored by WhatsApp or Meta.

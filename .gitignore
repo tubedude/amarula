@@ -1,0 +1,40 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where third-party dependencies like ExDoc output generated docs.
+/doc/
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+erl_crash.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.ez
+
+# Ignore package tarball (built via "mix hex.build").
+amarula-*.tar
+
+# Temporary files, for example, from tests.
+/tmp/
+
+.DS_Store
+# Persisted WhatsApp credentials (never commit)
+/amarula_auth/
+/amarula_data/
+/amarula_store/
+creds.term
+
+# Captured frames for offline replay
+/captures/
+*.bin
+
+# Crosslang test outputs — regenerated each run (fresh keypairs) for the
+# verify_*.mjs scripts to decode; not source, don't track.
+/test/fixtures/initiator_pkmsg.json
+/test/fixtures/outbound_message.json
+/test/fixtures/session_reply.json

@@ -1,0 +1,20 @@
+{
+  "bob": {
+    "registrationId": 122,
+    "identityPub": "BSR005i7MOP/U+tQmUHDpV6Q1mZrXUp4D3Wi4INxsFBN",
+    "identityPriv": "aL64Yf9K/OvVvAbkXsS3kzKxBF2Su7m0zl++IT/IYUU=",
+    "signedPreKeyId": 1,
+    "signedPreKeyPub": "BavlMtcgzk+eA1v5epGdrjfEA/tAbao38bkKvsI5ex1W",
+    "signedPreKeyPriv": "QCNsJmy1TjEZhq+xWTbXjXgWViO3hp5jPASsb4RfH34=",
+    "signedPreKeySig": "IjBqroEdMklUxuEPutVP+lO1yDvqynweYCl+S6xhvwK4efpDjyp3OXrJt2RCZKwHy5AjWD/uFdLDhw9B4TpVjQ==",
+    "preKeyId": 1337,
+    "preKeyPub": "BRIYhrXro1/xpLaKJS/A3GfhM+qcxzEkaxnLJTzLExIg",
+    "preKeyPriv": "QHMIlcm2wEy23y5bnnk8SGF2MVsFdzATZ6c3t0jf0lY="
+  },
+  "aliceToBob": {
+    "type": 3,
+    "body": "Mwi5ChIhBVopOCMEgQNz9CJ1lhwGNRzERIsdldDt2Xo8x1DqiKUWGiEFA6lH16Isf/Q3KdimdKXRKqcpvkk/tRZrWJ2tITEd2VMiUjMKIQXe/ztpautVBoeG+7tZMZoDrtTZ3SVq/MdikbacBjX9MBAAGAAiILqOBvRj+RKyw7FvliFwwr0BJGWM9cG9VRIA/KQ8DO6y6W8Yv08jkZsoswEwAQ=="
+  },
+  "aliceIdentityPub": "BQOpR9eiLH/0NynYpnSl0SqnKb5JP7UWa1idrSExHdlT",
+  "aliceAddr": "alice"
+}

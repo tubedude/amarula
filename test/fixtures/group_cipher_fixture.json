@@ -1,0 +1,16 @@
+{
+  "groupId": "group1",
+  "senderId": "55119",
+  "deviceId": 0,
+  "skdm": "MwjCpKCJBhAAGiByN4dYJDa3VuZO/g+ygW3blrLJPd2ebheNLsXgugAPNSIhBVAEXNpoIMkNo7l/0LCgfFTebgGgo3zaYmVZPebg0+1D",
+  "messages": [
+    {
+      "plaintext": "hello from baileys",
+      "ciphertext": "MwjCpKCJBhAAGiDF7H8Clah/TmBYsAF6ovxwebfPOHy23okcEdehberJVsSBwTxhI8KLeMG7BIC81o5uA1ZifElA8QHwcx69RXqTu8xCsDJ2vaIOqIG/uPacvQl3oQJ8r8AtwZTtPsv5/A4="
+    },
+    {
+      "plaintext": "second message",
+      "ciphertext": "MwjCpKCJBhACGhCQwz5DTA7IGd7FeY3C06NygtODp1c24cpiFIPN73wD+zl/zm/4VUGgfS8q65fh660uOShUe8DT99O1BSC9ItTfT5voX7VnFyLFyMDPpIo4Dw=="
+    }
+  ]
+}

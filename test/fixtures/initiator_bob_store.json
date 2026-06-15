@@ -1,0 +1,15 @@
+{
+  "identityPub": "BaQw0dsowfnpOiWwce4ADwnq6VyKGUwd9c3rW72IyLgd",
+  "identityPriv": "OAuWEiB/NIUC5gWlL2qem0MYbqKDL+li0Lfk0l9zGkg=",
+  "registrationId": 47,
+  "signedPreKey": {
+    "keyId": 1,
+    "pub": "BVilxU/0IbclzYBXYyusQ7BpdPvtJOSvANRUcJcep6UY",
+    "priv": "eNM0fFCcChLqqZF+EBrPYtYbP48l2AmN4ZNsmDqHE30="
+  },
+  "preKey": {
+    "keyId": 31337,
+    "pub": "BaYD34ZXGaFWG8QJlTvQlBm0nZGnokPXHtcO8HxQ3xRO",
+    "priv": "OLvDkTu04eb7J+PyXk/7dYwefc0M9CwGJv760pjYz0A="
+  }
+}

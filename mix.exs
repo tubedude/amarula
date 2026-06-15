@@ -64,7 +64,7 @@ defmodule Amarula.MixProject do
       {:protobuf, "~> 0.15.0"},
 
       # HTTP client
-      {:req, "~> 0.4.0"},
+      {:req, "~> 0.4"},
 
       # UUID generation
       {:uuid, "~> 1.1"},

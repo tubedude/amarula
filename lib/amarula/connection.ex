@@ -1504,12 +1504,21 @@ defmodule Amarula.Connection do
   defp first_child_tag(_), do: nil
 
   # The server confirmed (or rejected) a message we sent. `<ack class="message"
-  # id=msg_id [error=code]>`. Reply the parked consumer and drop the entry:
-  #   - plain ack (no `error`) → success → the parked ack-success shape `on_ack.(:ok)`.
-  #   - ack carrying `error` → {:error, {:send_rejected, code}}.
-  # NEVER auto-resend on a `phash` ack — a plain ack (even with phash) is success;
-  # only an `error` attr is a failure (Baileys handleBadAck loops otherwise). An
-  # ack for an unknown/already-resolved id is a no-op (resolve_ack handles it).
+  # id=msg_id [error=code] [phash=...]>`. Reply the parked consumer and drop the
+  # entry:
+  #   - no `error` → success → the parked ack-success shape `on_ack.(:ok)`.
+  #   - `error` attr → {:error, {:send_rejected, code}}.
+  #
+  # Multiple acks for one id (the group / multi-device case): a stanza to a group
+  # is a single `<message>` with one id, but the server MAY emit a `phash` ack
+  # ("not all devices have it yet") before/with the terminal ack. We resolve on the
+  # FIRST no-error ack regardless of phash — the server has ACCEPTED the message;
+  # phash concerns device propagation, not acceptance. The first ack drops the
+  # entry, so any later ack for the same id (a second phash, the clean follow-up,
+  # or a duplicate) is a harmless no-op via `resolve_ack`. We NEVER auto-resend on
+  # phash (the commented-out Baileys handleBadAck path loops). An `error` ack
+  # arrives instead of a plain one, not after it, so resolving on the first no-error
+  # ack cannot mask a later error for the same id.
   defp handle_message_ack(state, node) do
     msg_id = NodeUtils.get_attr(node, "id")
 

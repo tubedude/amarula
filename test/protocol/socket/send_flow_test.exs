@@ -230,11 +230,13 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     end
   end
 
-  # An inbound server <ack class="message" id=msg_id [error=code]> — the
-  # confirmation (or rejection) that completes a parked send.
+  # An inbound server <ack class="message" id=msg_id [error=code] [phash=...]> —
+  # the confirmation (or rejection) that completes a parked send. `:phash` models
+  # the group/multi-device "not all devices yet" ack the server may emit.
   defp ack(ctx, msg_id, opts \\ []) do
     attrs = %{"class" => "message", "id" => msg_id}
     attrs = if code = opts[:error], do: Map.put(attrs, "error", code), else: attrs
+    attrs = if ph = opts[:phash], do: Map.put(attrs, "phash", ph), else: attrs
     inject(ctx, Node.create("ack", attrs, nil))
   end
 
@@ -854,6 +856,64 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # The correct ack still completes it — the connection survived the stray ack.
     ack(ctx, msg_id)
     assert {:ok, ^msg_id} = await_send_result(task)
+  end
+
+  # --- Multi-ack (group / multi-device): the server may send a phash ack ("not all
+  # devices yet") and/or more than one ack for a single message id. We resolve on
+  # the first no-error ack; later acks for the same id are no-ops.
+
+  test "a phash ack resolves the send {:ok} (server accepted it)", ctx do
+    task = send_text_async(ctx, @jid, "to a group-ish recipient")
+    message = relay_text(ctx)
+    msg_id = message.attrs["id"]
+
+    # phash = propagation not complete to all devices — but the server ACCEPTED the
+    # message, so the caller completes {:ok}.
+    ack(ctx, msg_id, phash: "1:abc")
+    assert {:ok, ^msg_id} = await_send_result(task)
+  end
+
+  test "a second ack for the same id (phash then clean) is a harmless no-op", ctx do
+    task = send_text_async(ctx, @jid, "double-acked")
+    message = relay_text(ctx)
+    msg_id = message.attrs["id"]
+
+    ack(ctx, msg_id, phash: "1:abc")
+    assert {:ok, ^msg_id} = await_send_result(task)
+
+    # The clean follow-up ack for the same (already-resolved) id must not crash the
+    # connection or produce a stray reply.
+    ack(ctx, msg_id)
+    refute_receive _, 50
+    assert Process.alive?(ctx.pid)
+  end
+
+  test "group send: a single ack completes it; a duplicate ack is a no-op", ctx do
+    group = "120363000000000099@g.us"
+    members = [@me_jid, @jid]
+
+    task = send_text_async(ctx, group, "hello group multi-ack")
+
+    meta_iq = recv_frame()
+    assert attr(meta_iq, "xmlns") == "w:g2"
+    inject(ctx, group_metadata_reply(attr(meta_iq, "id"), group, members))
+
+    usync_iq = recv_frame()
+    assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
+    inject(ctx, usync_members_reply(attr(usync_iq, "id"), members))
+
+    message = drain_until_message(ctx)
+    msg_id = message.attrs["id"]
+    assert message.attrs["to"] == group
+
+    # One stanza → one id; the first ack completes it.
+    ack(ctx, msg_id)
+    assert {:ok, ^msg_id} = await_send_result(task)
+
+    # A duplicate ack for the same group msg_id is a no-op.
+    ack(ctx, msg_id)
+    refute_receive _, 50
+    assert Process.alive?(ctx.pid)
   end
 
   # --- Sender crash (#7): Connection monitors each sender; its :DOWN fails the

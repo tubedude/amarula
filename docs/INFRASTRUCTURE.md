@@ -155,6 +155,13 @@ is merely written. Mechanics:
 - **Never auto-resends** on a phash ack — a plain ack (even with phash) is success;
   only an `error` attr is failure (auto-resend is the Baileys `handleBadAck` loop
   trap).
+- **Multiple acks for one id** (group / multi-device): a group stanza is a single
+  `<message>` with one id, but the server may emit a `phash` ack ("not all devices
+  yet") before/with the terminal ack. We resolve on the **first no-error ack**
+  regardless of phash (the server has accepted the message; phash is about device
+  propagation, not acceptance), drop the entry, and treat any later ack for the same
+  id as a no-op. An `error` ack comes *instead* of a plain one, never after, so this
+  cannot mask a later failure.
 
 Because `Connection` parks the `from` and routes replies by id, sends to different
 recipients **complete out-of-order** without blocking each other: a later send can

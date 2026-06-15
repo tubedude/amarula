@@ -624,4 +624,57 @@ defmodule Amarula.Protocol.Crypto.NoiseHandlerTest do
       assert updated_state.write_counter == high_counter + 1
     end
   end
+
+  describe "verify_certificate/1" do
+    alias Amarula.Protocol.Proto.CertChain
+    alias Amarula.Protocol.Proto.CertChain.NoiseCertificate
+
+    # Build a cert chain. `int_key` signs the leaf; the intermediate is signed by
+    # `root_priv` (defaults to a NON-WhatsApp key, so the pinned-root check fails).
+    defp build_chain(opts \\ []) do
+      int = Crypto.generate_key_pair()
+      root = Crypto.generate_key_pair()
+      root_priv = Keyword.get(opts, :root_priv, root.private)
+      serial = Keyword.get(opts, :serial, 0)
+
+      int_details =
+        CertChain.NoiseCertificate.Details.encode(%CertChain.NoiseCertificate.Details{
+          serial: 1,
+          issuerSerial: serial,
+          key: int.public
+        })
+
+      leaf_details = "leaf-details-bytes"
+
+      leaf = %NoiseCertificate{
+        details: leaf_details,
+        signature: Keyword.get(opts, :leaf_sig, Crypto.sign(leaf_details, int.private))
+      }
+
+      intermediate = %NoiseCertificate{
+        details: int_details,
+        signature: Keyword.get(opts, :int_sig, Crypto.sign(int_details, root_priv))
+      }
+
+      CertChain.encode(%CertChain{leaf: leaf, intermediate: intermediate})
+    end
+
+    test "rejects a chain whose intermediate is not signed by the pinned WA root" do
+      # Leaf signature is valid, but the intermediate is signed by a random key.
+      assert {:error, :intermediate_signature_invalid} =
+               NoiseHandler.verify_certificate(build_chain())
+    end
+
+    test "rejects a tampered leaf signature" do
+      assert {:error, :leaf_signature_invalid} =
+               NoiseHandler.verify_certificate(
+                 build_chain(leaf_sig: :crypto.strong_rand_bytes(64))
+               )
+    end
+
+    # NOTE: a positive (accept) case can't be unit-tested — it requires a chain whose
+    # intermediate is signed by WhatsApp's private root key, which we don't have. The
+    # real WA cert is verified by the live handshake; these tests prove the chain is
+    # REJECTED when the pinned-root or leaf signatures don't hold.
+  end
 end

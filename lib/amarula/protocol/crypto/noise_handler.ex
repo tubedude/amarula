@@ -13,6 +13,15 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
   require Logger
   alias Amarula.Protocol.Crypto.{Crypto, Constants}
 
+  # Pinned WhatsApp root certificate (Baileys WA_CERT_DETAILS). The Noise_XX
+  # handshake's server authentication is only anchored to WhatsApp by verifying the
+  # cert chain's intermediate signature against THIS key — without it any cert with
+  # issuerSerial=0 would pass.
+  @wa_cert_public_key Base.decode16!(
+                        "142375574D0A587166AAE71EBE516437C4A28B73E3695C6CE1F7F9545DA8EE6B"
+                      )
+  @wa_cert_serial 0
+
   @type noise_state :: %{
           ephemeral_key_pair: Crypto.key_pair(),
           hash: binary(),
@@ -372,23 +381,49 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
     {frame_data, state}
   end
 
-  # Certificate verification helper
-  defp verify_certificate(cert_decoded) do
-    with %{intermediate: intermediate} when not is_nil(intermediate) <-
+  # Verify the server's Noise certificate chain (Baileys noise-handler.ts). Three
+  # checks, ALL required:
+  #   1. the leaf is signed by the intermediate's key,
+  #   2. the intermediate is signed by the pinned WhatsApp root key (@wa_cert_public_key),
+  #   3. the intermediate's issuerSerial is the pinned serial (0).
+  # Check #2 is what actually authenticates the server as WhatsApp; #1 chains the
+  # leaf to it. Signatures are XEd25519 (Crypto.verify = XEdDSA), keyed by a 32-byte
+  # Montgomery key — strip a leading 0x05 type byte if present.
+  @doc false
+  @spec verify_certificate(binary()) :: :ok | {:error, term()}
+  def verify_certificate(cert_decoded) do
+    with %{intermediate: intermediate, leaf: leaf}
+         when not is_nil(intermediate) and not is_nil(leaf) <-
            Amarula.Protocol.Proto.CertChain.decode(cert_decoded),
-         details_binary <- normalize_certificate_details(intermediate.details),
-         %{issuerSerial: 0} <-
-           Amarula.Protocol.Proto.CertChain.NoiseCertificate.Details.decode(details_binary) do
+         %{details: int_details, signature: int_sig}
+         when is_binary(int_details) and is_binary(int_sig) <-
+           intermediate,
+         %{details: leaf_details, signature: leaf_sig}
+         when is_binary(leaf_details) and is_binary(leaf_sig) <-
+           leaf,
+         details = Amarula.Protocol.Proto.CertChain.NoiseCertificate.Details.decode(int_details),
+         :ok <- verify_sig(leaf_details, leaf_sig, details.key, :leaf_signature_invalid),
+         :ok <-
+           verify_sig(int_details, int_sig, @wa_cert_public_key, :intermediate_signature_invalid),
+         :ok <-
+           check(details.issuerSerial == @wa_cert_serial, {:issuer_serial, details.issuerSerial}) do
       :ok
     else
-      %{issuerSerial: issuer_serial} ->
-        {:error, "Invalid issuer serial: #{issuer_serial}, expected: 0"}
-
-      other ->
-        {:error, "No intermediate certificate found: #{inspect(other)}"}
+      {:error, _reason} = err -> err
+      other -> {:error, {:invalid_certificate, other}}
     end
   end
 
-  defp normalize_certificate_details(d) when is_binary(d), do: d
-  defp normalize_certificate_details(d), do: inspect(d)
+  defp verify_sig(data, signature, public_key, reason) do
+    check(Crypto.verify(data, signature, strip5(public_key)), reason)
+  end
+
+  defp check(true, _reason), do: :ok
+  defp check(false, reason), do: {:error, reason}
+
+  # WhatsApp pubkeys are sometimes prefixed with a 0x05 type byte; XEdDSA wants the
+  # raw 32-byte Montgomery key.
+  defp strip5(<<5, key::binary-size(32)>>), do: key
+  defp strip5(<<key::binary-size(32)>>), do: key
+  defp strip5(other), do: other
 end

@@ -266,7 +266,9 @@ For production observability prefer [`Amarula.Telemetry`](lib/amarula/telemetry.
 ## Documentation
 
 - [`Amarula`](lib/amarula.ex) — the public API and entry point
-- [`docs/`](docs/) — architecture notes and design/port plans
+- [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — process model, supervision
+  tree, and send/ack/crash semantics (the living architecture reference)
+- [`docs/`](docs/) — design/port plans (point-in-time)
 - [`AGENTS.md`](AGENTS.md) — Elixir coding guidelines for this codebase
 
 ## Development

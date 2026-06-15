@@ -55,6 +55,31 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStoreTest do
     end
   end
 
+  describe "canonical_jid building blocks" do
+    # `Amarula.Connection.canonical_jid/2` (public facade `Amarula.canonical_jid/2`)
+    # is built on `pn_for_lid/2` + `JID`. These guard the pieces it depends on so
+    # the facade helper keeps producing `<pn>@s.whatsapp.net` from a mapped LID.
+    test "a mapped LID resolves to its PN user, ready to re-encode as a PN jid", %{conn: conn} do
+      Store.store_mappings(conn, [{@lid, @pn}])
+
+      pn_user = Store.pn_for_lid(conn, @lid)
+      assert pn_user == "10000000001"
+
+      canonical =
+        Amarula.Protocol.Binary.JID.encode(%{
+          user: pn_user,
+          server: "s.whatsapp.net",
+          device: 0
+        })
+
+      assert canonical == @pn
+    end
+
+    test "an unmapped LID has no PN (helper leaves it unchanged)", %{conn: conn} do
+      assert Store.pn_for_lid(conn, "99999999999@lid") == nil
+    end
+  end
+
   describe "lookups" do
     test "return nil when unmapped", %{conn: conn} do
       assert Store.lid_for_pn(conn, @pn) == nil

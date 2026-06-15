@@ -59,6 +59,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Proto
 
   alias Amarula.Protocol.Signal.{PreKeys, SessionInjector, SessionStore, DeviceListCache}
+  alias Amarula.Protocol.Signal.LidMappingFileStore
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
 
@@ -214,6 +215,18 @@ defmodule Amarula.Connection do
   defp already_running_reason({:already_registered, pid}), do: {:already_running, pid}
   defp already_running_reason(_), do: nil
 
+  # LID → PN canonicalization. Non-LID jids and unmapped LIDs pass through.
+  defp do_canonical_jid(conn, jid) do
+    with true <- JID.is_lid_user?(jid),
+         pn_user when is_binary(pn_user) <- LidMappingFileStore.pn_for_lid(conn, jid),
+         %{} = decoded <- JID.decode(jid) do
+      device = Map.get(decoded, :device, 0) || 0
+      JID.encode(%{user: pn_user, server: "s.whatsapp.net", device: device})
+    else
+      _ -> jid
+    end
+  end
+
   @doc """
   Connects to the WebSocket server.
   """
@@ -247,6 +260,20 @@ defmodule Amarula.Connection do
   """
   def get_connection_state(pid \\ __MODULE__) do
     GenServer.call(pid, :get_connection_state)
+  end
+
+  @doc """
+  Canonicalize `jid` to its phone-number identity. If `jid` is a LID
+  (`<n>@lid`) with a stored PN mapping, returns the equivalent
+  `<pn>@s.whatsapp.net` (preserving any device). Any other jid — already a PN,
+  a group, or a LID with no known mapping — is returned unchanged.
+
+  This is the public entry point to the LID↔PN mapping the library maintains
+  internally; consumers no longer need to reach into `Protocol.Signal.*`.
+  """
+  @spec canonical_jid(GenServer.server(), String.t()) :: String.t()
+  def canonical_jid(pid \\ __MODULE__, jid) when is_binary(jid) do
+    GenServer.call(pid, {:canonical_jid, jid})
   end
 
   @doc """
@@ -525,6 +552,11 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call(:instance_id, _from, state) do
     {:reply, state.instance_id, state}
+  end
+
+  @impl GenServer
+  def handle_call({:canonical_jid, jid}, _from, state) do
+    {:reply, do_canonical_jid(state.conn, jid), state}
   end
 
   @impl GenServer

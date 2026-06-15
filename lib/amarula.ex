@@ -39,7 +39,7 @@ defmodule Amarula do
   ## The QR code
 
   The `qr` in a `:connection_update` is a plain string — *you* turn it into a
-  scannable image, with whatever you like (a terminal renderer, an `eqrcode`
+  scannable image, with whatever you like (a terminal renderer, a `qr_code`
   PNG, an HTML `<img>`, …). There is no built-in renderer and no login-phase
   plugin hook: rendering is entirely the consumer's, via this event. (The
   handshake/pairing crypto is deliberately closed to plugins — the send/receive
@@ -57,10 +57,12 @@ defmodule Amarula do
     * `advSecretKeyB64` — the companion adv secret key (base64).
 
   The phone reads our public keys + ref from the image to link the device. Render
-  it as-is — don't reformat the string. Example with `eqrcode`:
+  it as-is — don't reformat the string. Example with `qr_code` (note its API is
+  `Result`-tuple based — `create/1` returns `{:ok, qr}` and `render/2` takes that
+  tuple, so you pipe straight through):
 
       {:whatsapp, :connection_update, %{qr: qr}} when is_binary(qr) ->
-        qr |> EQRCode.encode() |> EQRCode.png() |> then(&File.write!("qr.png", &1))
+        qr |> QRCode.create() |> QRCode.render(:png) |> QRCode.save("qr.png")
 
   ## Addressing
 
@@ -88,6 +90,20 @@ defmodule Amarula do
   carries `[%Amarula.Msg{}]` — the consumer-friendly message view (`type` +
   `content`), never the raw protobuf. Match on `msg.type`; for media, fetch the
   bytes lazily with `download_media/1`.
+
+  ## What Amarula does NOT store
+
+  Amarula keeps only what the *protocol* needs (credentials, Signal sessions,
+  device/LID mappings). It is **not** a message archive and keeps **no chat or
+  DM list**: there is no "list my conversations" call, and incoming messages are
+  delivered once via `:messages_upsert` and then forgotten. If your app needs an
+  inbox, a contact list, or scrollback, persist it yourself from the events —
+  Amarula won't do it for you.
+
+  History *sync* (`:history_sync` events, and `fetch_history/4` to pull more on
+  demand) delivers WhatsApp's own history to you the same way — as events to
+  store, not a queryable archive Amarula maintains. `resolve_quoted/2` is the one
+  read-back helper, and only for a reply's quoted message you still hold.
   """
 
   alias Amarula.Connection
@@ -136,6 +152,8 @@ defmodule Amarula do
       pairing code to display (from `request_pairing_code/3`)
     * `:pairing_success`   — `%{jid, lid, platform}` (QR) or `%{via: :link_code}`
       (phone-number pairing)
+    * `:history_sync`      — a batch of synced history (chats/contacts/messages)
+      delivered asynchronously after connect (`Amarula.Protocol.Messages.HistorySync`)
     * `:error`             — a connection error term
 
   Credentials are persisted by Amarula itself (scoped to the connection's
@@ -153,6 +171,7 @@ defmodule Amarula do
           | :blocklist_update
           | :pairing_code
           | :pairing_success
+          | :history_sync
           | :error
 
   @doc """
@@ -219,9 +238,21 @@ defmodule Amarula do
   @spec via(profile()) :: {:via, module(), {atom(), profile()}}
   def via(profile), do: ProfileRegistry.via(%{}, profile)
 
-  @doc "Disconnect the connection. Returns `:ok | {:error, reason}`."
+  @doc """
+  Close the connection's websocket without taking the supervision tree down.
+  Pair with `reconnect/1` to bring it back up; use `stop/1` to release the
+  profile entirely. Returns `:ok | {:error, reason}`.
+  """
   @spec disconnect(conn()) :: :ok | {:error, term()}
   defdelegate disconnect(conn), to: Connection
+
+  @doc """
+  (Re)open the connection's websocket on an already-started connection — the
+  inverse of `disconnect/1`. Runs the handshake and logs in again with the
+  profile's stored credentials. Returns `:ok | {:error, reason}`.
+  """
+  @spec reconnect(conn()) :: :ok | {:error, term()}
+  defdelegate reconnect(conn), to: Connection, as: :connect
 
   @doc """
   Stop a connection entirely — the whole supervision tree — and release its profile
@@ -253,6 +284,24 @@ defmodule Amarula do
   @doc "Current connection state (e.g. `:disconnected`, `:connecting`, `:connected`)."
   @spec connection_state(conn()) :: atom()
   defdelegate connection_state(conn), to: Connection, as: :get_connection_state
+
+  @doc """
+  Canonicalize `jid` to its phone-number identity.
+
+  WhatsApp's multi-device addresses a contact by either a LID (`<n>@lid`) or a
+  phone number (`<n>@s.whatsapp.net`); the same person can appear under both.
+  Amarula tracks the mapping internally — this is the public way to read it.
+
+  If `jid` is a LID with a known PN mapping, returns the equivalent
+  `<pn>@s.whatsapp.net` (preserving any device suffix). Any other jid — an
+  already-canonical PN, a group, or a LID we have no mapping for — is returned
+  unchanged, so it's safe to call on every inbound jid.
+
+      Amarula.canonical_jid(conn, "111111111111111@lid")
+      #=> "5511999999999@s.whatsapp.net"   # if mapped
+  """
+  @spec canonical_jid(conn(), String.t()) :: String.t()
+  defdelegate canonical_jid(conn, jid), to: Connection
 
   @doc "Send a 1:1/group text message to `jid`."
   @spec send_text(conn(), jid(), String.t()) :: send_result()

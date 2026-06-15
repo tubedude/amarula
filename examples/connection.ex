@@ -125,7 +125,11 @@ defmodule Amarula.Examples.Connection do
        # set true when a history-sync arrives (first-link sync done)
        synced: false,
        # set by start_poll: %{id, secret, message} for live vote tally
-       poll: nil
+       poll: nil,
+       # `{:phone, "<e164-digits>"}` to pair by phone number instead of QR
+       pairing: Keyword.get(opts, :pairing),
+       # guards a single request_pairing_code/3 call across QR rotations
+       pairing_requested: false
      }}
   end
 
@@ -167,8 +171,41 @@ defmodule Amarula.Examples.Connection do
   # --- events from the connection (parent_pid messages) ---
 
   @impl true
+  # Phone-number pairing: on the first QR (while unregistered), request a
+  # link-code instead of rendering the QR. Guard so QR rotations don't re-request.
+  def handle_info(
+        {:whatsapp, :connection_update, %{qr: qr}},
+        %{pairing: {:phone, number}, pairing_requested: false} = state
+      )
+      when not is_nil(qr) do
+    case Amarula.request_pairing_code(state.socket, number) do
+      {:ok, code} ->
+        Logger.info("🔢 Enter this code in WhatsApp → Linked Devices → Link with phone number:")
+        Logger.info("    #{code}")
+
+      {:error, reason} ->
+        Logger.error("request_pairing_code failed: #{inspect(reason)}")
+    end
+
+    {:noreply, %{state | pairing_requested: true}}
+  end
+
+  # Already requested a code (or pairing by phone) — ignore QR rotations.
+  def handle_info(
+        {:whatsapp, :connection_update, %{qr: qr}},
+        %{pairing: {:phone, _}} = state
+      )
+      when not is_nil(qr) do
+    {:noreply, state}
+  end
+
   def handle_info({:whatsapp, :connection_update, %{qr: qr}}, state) when not is_nil(qr) do
     render_qr(qr)
+    {:noreply, state}
+  end
+
+  def handle_info({:whatsapp, :pairing_code, %{code: code}}, state) do
+    Logger.info("🔢 Pairing code: #{code}")
     {:noreply, state}
   end
 

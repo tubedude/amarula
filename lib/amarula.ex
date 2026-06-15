@@ -129,7 +129,10 @@ defmodule Amarula do
     * `:receipt_update`    — `%{message_ids, from, participant, status, timestamp}`
       a message we sent was delivered/read/played (`Amarula.Protocol.Messages.Receipt`)
     * `:blocklist_update`  — `[%{jid, action}]` block/unblock changes
-    * `:pairing_success`   — `%{jid: jid, lid: lid, platform: platform}`
+    * `:pairing_code`      — `%{code: code}` the 8-char link-code (phone-number)
+      pairing code to display (from `request_pairing_code/3`)
+    * `:pairing_success`   — `%{jid, lid, platform}` (QR) or `%{via: :link_code}`
+      (phone-number pairing)
     * `:error`             — a connection error term
 
   Credentials are persisted by Amarula itself (scoped to the connection's
@@ -144,6 +147,7 @@ defmodule Amarula do
           | :group_update
           | :receipt_update
           | :blocklist_update
+          | :pairing_code
           | :pairing_success
           | :error
 
@@ -261,6 +265,24 @@ defmodule Amarula do
   @doc "Subscribe to a contact's presence updates."
   @spec presence_subscribe(conn(), jid()) :: :ok
   defdelegate presence_subscribe(conn, jid), to: Connection
+
+  @doc """
+  Request a link-code (phone-number) pairing code for `phone` (E.164 digits;
+  any `+`, spaces, or dashes are stripped).
+
+  Call this during the QR window while unregistered — on the first
+  `:connection_update` carrying a `qr`. Returns `{:ok, code}` with an 8-char
+  code the user types into WhatsApp → Linked Devices → "Link with phone number".
+  Amarula finishes the handshake internally; the usual 515 restart then logs in
+  (watch for `:pairing_success` then `connection: :open`). The same code is also
+  delivered as a `:pairing_code` event.
+
+  `opts`: `:custom_code` — a fixed 8-char code to use instead of a random one.
+  """
+  @spec request_pairing_code(conn(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def request_pairing_code(conn, phone, opts \\ []),
+    do: Connection.request_pairing_code(conn, phone, opts)
 
   @doc """
   Send a read receipt for `message_ids` in chat `jid` (pass `participant` for a

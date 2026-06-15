@@ -19,7 +19,8 @@ defmodule Amarula.Connection do
 
   alias Amarula.Protocol.Socket.{Types, WebSocketClient, ConnectionSupervisor}
   alias Amarula.Protocol.{Crypto.NoiseHandler, Auth.AuthUtils, Socket.ConnectionValidator}
-  alias Amarula.Protocol.Auth.DeviceIdentity
+  alias Amarula.Protocol.Auth.{DeviceIdentity, CompanionReg}
+  alias Amarula.Protocol.Crypto.Crypto
   alias Amarula.ProfileRegistry
   alias Amarula.Protocol.Socket.{IQ, Login, Router}
   alias Amarula.Protocol.Binary.{Decoder, JID, NodeUtils, Encoder, Node}
@@ -287,6 +288,26 @@ defmodule Amarula.Connection do
           :ok
   def send_chatstate(pid \\ __MODULE__, jid, type),
     do: GenServer.call(pid, {:send_chatstate, jid, type})
+
+  @doc """
+  Request a link-code (phone-number) pairing code for `phone` (digits only,
+  E.164 without `+`).
+
+  Call this during the QR window while unregistered (on the first
+  `:connection_update` carrying a `qr`). Returns `{:ok, code}` with an 8-char
+  code the user types into WhatsApp → Linked Devices → "Link with phone number".
+  The server later pushes a `link_code_companion_reg` notification, which we
+  finish internally; the usual 515 restart then logs in.
+
+  Pass `custom_code: "ABCD2345"` to use a fixed 8-char code instead of a random
+  one.
+  """
+  @spec request_pairing_code(GenServer.server(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def request_pairing_code(pid \\ __MODULE__, phone, opts \\ []) do
+    digits = String.replace(phone, ~r/\D/, "")
+    GenServer.call(pid, {:request_pairing_code, digits, Keyword.get(opts, :custom_code)})
+  end
 
   @doc "Subscribe to a contact's presence."
   @spec presence_subscribe(GenServer.server(), Amarula.jid()) :: :ok
@@ -592,6 +613,18 @@ defmodule Amarula.Connection do
   def handle_call({:send_chatstate, jid, type}, _from, state) do
     node = Amarula.Protocol.Presence.chatstate(type, Amarula.Address.to_wire(jid), me(state))
     {:reply, :ok, send_binary_node(state, node)}
+  end
+
+  @impl GenServer
+  def handle_call({:request_pairing_code, phone, custom_code}, _from, state) do
+    case build_pairing_code(custom_code) do
+      {:ok, code} ->
+        state = start_link_code_pairing(state, phone, code)
+        {:reply, {:ok, code}, state}
+
+      {:error, _} = err ->
+        {:reply, err, state}
+    end
   end
 
   @impl GenServer
@@ -1760,9 +1793,113 @@ defmodule Amarula.Connection do
     state
   end
 
+  # link_code_companion_reg — the phone confirmed our pairing code. Finish the
+  # handshake (companion_finish IQ + adv_secret re-key + registered=true); the
+  # server's subsequent 515 then logs us in via the normal login path.
+  #
+  # The same tag also arrives as a fieldless notification (Baileys #2600). Guard
+  # buffer extraction with `with` so a missing field logs-and-skips rather than
+  # crashing the connection.
+  defp dispatch_notification(state, "link_code_companion_reg", node) do
+    inner = NodeUtils.get_binary_node_child(node, "link_code_companion_reg")
+
+    with reg when not is_nil(reg) <- inner,
+         ref when not is_nil(ref) <- child_buffer(reg, "link_code_pairing_ref"),
+         primary_identity_pub when not is_nil(primary_identity_pub) <-
+           child_buffer(reg, "primary_identity_pub"),
+         wrapped when not is_nil(wrapped) <-
+           child_buffer(reg, "link_code_pairing_wrapped_primary_ephemeral_pub") do
+      finish_link_code_pairing(state, ref, primary_identity_pub, wrapped)
+    else
+      _ ->
+        Logger.debug("link_code_companion_reg notification missing fields — skipping")
+        state
+    end
+  end
+
   defp dispatch_notification(state, type, _node) do
     Logger.debug("Notification (type=#{type}) acked — no handler")
     state
+  end
+
+  # Mirror of Baileys' link_code_companion_reg handler: decipher the phone's
+  # ephemeral key, build the encrypted key bundle, re-key adv_secret, send
+  # companion_finish, mark registered, emit :pairing_success.
+  defp finish_link_code_pairing(state, ref, primary_identity_pub, wrapped) do
+    creds = state.auth_creds
+
+    code_pairing_pub = decipher_link_public_key(creds, wrapped)
+
+    companion_shared =
+      Crypto.shared_key(creds.pairing_ephemeral_key_pair.private, code_pairing_pub)
+
+    random = Crypto.random_bytes(32)
+    link_code_salt = Crypto.random_bytes(32)
+
+    expanded =
+      Crypto.hkdf(
+        companion_shared,
+        32,
+        link_code_salt,
+        "link_code_pairing_key_bundle_encryption_key"
+      )
+
+    payload = creds.signed_identity_key.public <> primary_identity_pub <> random
+    iv = Crypto.random_bytes(12)
+    {:ok, encrypted} = Crypto.aes_encrypt_gcm(payload, expanded, iv, <<>>)
+    encrypted_payload = link_code_salt <> iv <> encrypted
+
+    identity_shared = Crypto.shared_key(creds.signed_identity_key.private, primary_identity_pub)
+
+    adv_secret =
+      Crypto.hkdf(companion_shared <> identity_shared <> random, 32, <<>>, "adv_secret")
+      |> Base.encode64()
+
+    creds = %{creds | adv_secret_key: adv_secret, registered: true}
+
+    iq = %Node{
+      tag: "iq",
+      attrs: [
+        {"to", Constants.s_whatsapp_net()},
+        {"type", "set"},
+        {"id", generate_message_tag(state)},
+        {"xmlns", "md"}
+      ],
+      content: [
+        %Node{
+          tag: "link_code_companion_reg",
+          attrs: [{"jid", me(state).id}, {"stage", "companion_finish"}],
+          content: [
+            child("link_code_pairing_wrapped_key_bundle", encrypted_payload),
+            child("companion_identity_public", creds.signed_identity_key.public),
+            child("link_code_pairing_ref", ref)
+          ]
+        }
+      ]
+    }
+
+    Logger.info("Finishing link-code pairing — sending companion_finish")
+    state = send_binary_node(state, iq)
+    state = update_creds(state, creds)
+    emit_to_subscribers(state, :pairing_success, %{via: :link_code})
+  end
+
+  # salt(0..32) <> iv(32..48) <> payload(48..80); AES-CTR-decrypt the wrapped pub.
+  defp decipher_link_public_key(creds, buffer) do
+    <<salt::binary-size(32), iv::binary-size(16), payload::binary-size(32), _rest::binary>> =
+      buffer
+
+    key = Crypto.derive_pairing_code_key(creds.pairing_code, salt)
+    Crypto.aes_decrypt_ctr(payload, key, iv)
+  end
+
+  # Fetch a named child's content, but only if it's a binary buffer (the #2600
+  # guard — a fieldless notification yields nil, not a crash).
+  defp child_buffer(node, tag) do
+    case NodeUtils.get_binary_node_child(node, tag) do
+      %Node{content: content} when is_binary(content) -> content
+      _ -> nil
+    end
   end
 
   # No `from` (or the server jid) → pre-key top-up; any other origin is a peer
@@ -2306,6 +2443,79 @@ defmodule Amarula.Connection do
   end
 
   defp companion_platform_id(_), do: "9"
+
+  # ── Link-code (phone-number) pairing ──────────────────────────────────────
+  # Mirrors Baileys requestPairingCode / generatePairingKey (socket.ts) on the
+  # request side and the link_code_companion_reg notification handler
+  # (messages-recv.ts) on the finish side. Plugs into the existing post-handshake
+  # IQ + notification machinery, parallel to QR pairing.
+
+  # nil → random 8-char Crockford code; a custom code must be exactly 8 chars.
+  defp build_pairing_code(nil), do: {:ok, CompanionReg.crockford_encode(Crypto.random_bytes(5))}
+  defp build_pairing_code(code) when is_binary(code) and byte_size(code) == 8, do: {:ok, code}
+  defp build_pairing_code(_), do: {:error, :custom_pairing_code_must_be_8_chars}
+
+  # Set me + pairing_code, persist, then send the companion_hello IQ and emit
+  # :pairing_code so the consumer can display the code.
+  defp start_link_code_pairing(state, phone, code) do
+    me = %{id: JID.encode(%{user: phone, server: "s.whatsapp.net"}), name: "~"}
+
+    creds =
+      state.auth_creds
+      |> Map.put(:me, me)
+      |> Map.put(:pairing_code, code)
+
+    state = update_creds(state, creds)
+
+    iq = %Node{
+      tag: "iq",
+      attrs: [
+        {"to", Constants.s_whatsapp_net()},
+        {"type", "set"},
+        {"id", generate_message_tag(state)},
+        {"xmlns", "md"}
+      ],
+      content: [
+        %Node{
+          tag: "link_code_companion_reg",
+          attrs: [
+            {"jid", me.id},
+            {"stage", "companion_hello"},
+            {"should_show_push_notification", "true"}
+          ],
+          content: [
+            child(
+              "link_code_pairing_wrapped_companion_ephemeral_pub",
+              generate_pairing_key(creds)
+            ),
+            child("companion_server_auth_key_pub", creds.noise_key.public),
+            child("companion_platform_id", companion_platform_id(state.config.browser)),
+            child("companion_platform_display", platform_display(state.config.browser)),
+            child("link_code_pairing_nonce", "0")
+          ]
+        }
+      ]
+    }
+
+    Logger.info("Requested link-code pairing for #{phone} — code #{code}")
+    state = send_binary_node(state, iq)
+    emit_to_subscribers(state, :pairing_code, %{code: code})
+  end
+
+  # salt(32) <> iv(16) <> AES-CTR(pairing ephemeral pub, derivePairingCodeKey(code, salt), iv)
+  defp generate_pairing_key(creds) do
+    salt = Crypto.random_bytes(32)
+    iv = Crypto.random_bytes(16)
+    key = Crypto.derive_pairing_code_key(creds.pairing_code, salt)
+    ciphered = Crypto.aes_encrypt_ctr(creds.pairing_ephemeral_key_pair.public, key, iv)
+    salt <> iv <> ciphered
+  end
+
+  # Baileys `${browser[1]} (${browser[0]})` → "Chrome (Mac OS)".
+  defp platform_display([os, browser_name | _]), do: "#{browser_name} (#{os})"
+  defp platform_display(_), do: "Chrome"
+
+  defp child(tag, content), do: %Node{tag: tag, attrs: [], content: content}
 
   defp start_server_response_timeout(state) do
     # Set a 15-second timeout for server response

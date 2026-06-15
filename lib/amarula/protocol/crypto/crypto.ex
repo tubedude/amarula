@@ -213,7 +213,7 @@ defmodule Amarula.Protocol.Crypto.Crypto do
     # Generate 2 random bytes and mask to 14 bits (0x3FFF = 16383)
     # Matches Baileys: Uint16Array.from(randomBytes(2))[0] & 16383
     <<id::16>> = random_bytes(2)
-    Bitwise.band(id, 16383)
+    Bitwise.band(id, 16_383)
   end
 
   @doc """

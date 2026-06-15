@@ -13,7 +13,10 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
   Baileys #2600 guard (a fieldless notification is skipped, not a crash), and
   custom-code validation.
   """
-  use ExUnit.Case, async: true
+  # async: false — these start real Connections that register in the shared,
+  # process-global Amarula.ProfileRegistry; running them concurrently races
+  # registration/deregistration across tests.
+  use ExUnit.Case, async: false
 
   @moduletag :capture_log
 
@@ -33,12 +36,21 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
       connection_state: :connected,
       frame_sink: self(),
       browser: ["Mac OS", "Chrome", "14.4.1"],
-      profile: :linkcode_test,
+      # Unique per test: the profile registry (one Connection per profile) would
+      # otherwise reject a second concurrent start of the same profile.
+      profile: :"linkcode_test_#{System.unique_integer([:positive])}",
       storage: {Amarula.Storage.File, root: dir},
       auth: AuthUtils.init_auth_creds()
     }
 
-    {:ok, pid} = Connection.start_link(config, parent_pid: self())
+    # A unique registered name: start_link defaults to `name: Amarula.Connection`,
+    # which collides across this async test file's concurrent starts.
+    {:ok, pid} =
+      Connection.start_link(config,
+        name: :"linkcode_conn_#{System.unique_integer([:positive])}",
+        parent_pid: self()
+      )
+
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     {:ok, pid: pid}

@@ -360,7 +360,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
         {_msg_id, ref} = send_text_async(ctx, @jid, "to an unknown number")
         usync_iq = recv_frame()
         assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
-        inject(ctx, usync_empty_reply(attr(usync_iq, "id")))
+        inject(ctx, usync_empty_reply(attr(usync_iq, "id"), @jid))
 
         # The send resolves to no recipient devices → errors, never relays.
         assert {:error, :not_on_whatsapp} = await_send_result(ref)
@@ -368,6 +368,43 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       end)
 
     assert log =~ "not_on_whatsapp"
+  end
+
+  @tag :capture_log
+  test "concurrent sends complete in the server's REPLY order, not the send order", ctx do
+    # Three sends to three different recipients → three ConversationSenders running
+    # in parallel. Socket does not block on any one, so a send whose server reply
+    # comes back first completes first — regardless of which was issued first.
+    a = "20000000001@s.whatsapp.net"
+    b = "20000000002@s.whatsapp.net"
+    c = "20000000003@s.whatsapp.net"
+
+    # Issue A, then B, then C (send order).
+    {_, ref_a} = send_text_async(ctx, a, "A")
+    {_, ref_b} = send_text_async(ctx, b, "B")
+    {_, ref_c} = send_text_async(ctx, c, "C")
+
+    # Each sender emits its USync IQ; collect all three and index by recipient.
+    iqs =
+      for _ <- 1..3, into: %{} do
+        iq = recv_frame()
+        {usync_target(iq), attr(iq, "id")}
+      end
+
+    # The "server" replies in a DIFFERENT order: C, then A, then B. Each empty
+    # reply → that send resolves to no devices → {:error, :not_on_whatsapp}.
+    inject(ctx, usync_empty_reply(iqs[c], c))
+    assert {:error, :not_on_whatsapp} = await_send_result(ref_c)
+    # A and B are still blocked (their replies haven't been injected yet).
+    refute_received {^ref_a, _}
+    refute_received {^ref_b, _}
+
+    inject(ctx, usync_empty_reply(iqs[a], a))
+    assert {:error, :not_on_whatsapp} = await_send_result(ref_a)
+    refute_received {^ref_b, _}
+
+    inject(ctx, usync_empty_reply(iqs[b], b))
+    assert {:error, :not_on_whatsapp} = await_send_result(ref_b)
   end
 
   test "a send-plugin halt drops the send with {:halted, reason} and no frame", ctx do
@@ -399,15 +436,24 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
   # A USync result for a number with no WhatsApp devices: the user node carries an
   # empty device-list.
-  defp usync_empty_reply(id) do
+  defp usync_empty_reply(id, jid) do
     user =
-      Node.create("user", %{"jid" => @jid}, [
+      Node.create("user", %{"jid" => jid}, [
         Node.create("devices", %{}, [Node.create("device-list", %{}, [])])
       ])
 
     list = Node.create("list", %{}, [user])
     usync = Node.create("usync", %{}, [list])
     with_id(Node.create("iq", %{"type" => "result"}, [usync]), id)
+  end
+
+  # The <user jid> a USync IQ frame is asking about (which recipient it's for).
+  defp usync_target(iq) do
+    iq
+    |> NodeUtils.get_binary_node_child("usync")
+    |> NodeUtils.get_binary_node_child("list")
+    |> NodeUtils.get_binary_node_child("user")
+    |> NodeUtils.get_attr("jid")
   end
 
   test "skips the bundle fetch when a session already exists", ctx do

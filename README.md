@@ -141,7 +141,7 @@ sequenceDiagram
     Note over App,WA: Incoming
     WA-->>A: encrypted message
     A-->>App: {:messages_upsert, %{from, id, messages: [%Amarula.Msg{}]}}
-    Note right of App: read msg.type and msg.content — download_media for files
+    Note right of App: read msg.type and msg.content, download_media for files
 
     Note over App,WA: Outgoing
     App->>A: Amarula.send_text(conn, jid, "hi")
@@ -149,10 +149,54 @@ sequenceDiagram
     WA-->>A: receipt (delivered / read / played)
     A-->>App: {:receipt_update, %{message_ids, status, ...}}
 
-    Note over App,WA: Background — whenever they change
+    Note over App,WA: Background, whenever they change
     WA-->>A: group change / block / contact photo / app-state
     A-->>App: {:group_update | :blocklist_update | :contacts_update | :chats_update, ...}
 ```
+
+### Sending (synchronous to you, concurrent underneath)
+
+`Amarula.send_text/3` (and friends) **block until the send actually completes** —
+you get the real `{:ok, msg_id}` or `{:error, reason}`, not a fire-and-forget
+acknowledgement. But under the hood sends are **non-blocking and concurrent**:
+
+- The connection process (Socket) doesn't wait — it hands your send to a
+  **per-recipient sender** and is immediately free for the next send.
+- Sends to **different recipients run in parallel**; sends to the **same
+  recipient are serialized** (so that recipient's Signal session/ratchet is only
+  ever advanced by one send at a time).
+- Your caller still waits for *its own* result — the sender replies to you
+  directly when done. A fast send (cached session) returns while a slow one (new
+  recipient: USync + key-bundle fetch) is still in flight.
+
+**The consequence:** if you fire two sends in parallel (from two processes, or
+two `Task`s), you may get the **second** one's result *before* the first's — each
+returns when its own send finishes, not in call order. Within a single sequential
+caller it still looks plain synchronous; the concurrency only shows when you
+actually send in parallel.
+
+It's a bar counter: you place your order and step aside (the counter takes the
+next order); your drink is made in parallel; you're called back when *yours* is
+ready — fast orders come out first.
+
+```mermaid
+sequenceDiagram
+    participant App as Your app
+    participant S as Socket
+    participant SA as SenderAlice
+    participant SB as SenderBob
+
+    App->>S: send_text bob ... slow, new recipient
+    S-->>SB: dispatch, Socket returns at once
+    App->>S: send_text alice ... fast, cached session
+    S-->>SA: dispatch, Socket still free
+    Note over SB: USync + bundle fetch, slow
+    SA-->>App: {:ok, alice_msg_id} Alice finishes first
+    SB-->>App: {:ok, bob_msg_id} Bob finishes later
+```
+
+> Want true fire-and-forget? Wrap the call in your own `Task` — the library gives
+> you the honest result and lets *you* choose the concurrency.
 
 ### Event reference
 

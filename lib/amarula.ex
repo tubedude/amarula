@@ -91,11 +91,18 @@ defmodule Amarula do
   """
 
   alias Amarula.Connection
+  alias Amarula.ProfileRegistry
   alias Amarula.Protocol.Messages.Media
   alias Amarula.Protocol.Proto
 
-  @typedoc "A connection handle: the pid from `connect/2` (or a registered name)."
+  @typedoc """
+  A connection handle: the pid from `connect/2`, a registered name, or the `:via`
+  tuple from `via/1` (resolve a profile to a restart-safe handle with `whereis/1`).
+  """
   @type conn :: GenServer.server()
+
+  @typedoc "A connection's profile name (its identity + storage scope)."
+  @type profile :: atom() | String.t()
 
   @typedoc ~S|A send target: an `Amarula.Address` or a wire jid string (`"<n>@s.whatsapp.net"` / `"<id>@g.us"`).|
   @type jid :: String.t() | Amarula.Address.t()
@@ -163,17 +170,46 @@ defmodule Amarula do
 
       {:ok, pid} = Amarula.new(config) |> Amarula.connect()
 
+  Only one connection per profile may run at a time (within the registry's reach —
+  one per node by default; see `Amarula.ProfileRegistry`). Connecting a profile
+  that's already live returns `{:error, {:already_running, pid}}` — use `whereis/1`
+  to get the existing one.
+
   `opts`:
     * `:parent_pid` — process to receive `{:whatsapp, ..}` events (default: caller)
     * `:name`       — optional registered name for the connection
   """
-  @spec connect(Amarula.Conn.t(), keyword()) :: {:ok, conn()} | {:error, term()}
+  @spec connect(Amarula.Conn.t(), keyword()) ::
+          {:ok, conn()} | {:error, {:already_running, pid()}} | {:error, term()}
   def connect(%Amarula.Conn{} = conn, opts \\ []) do
     with {:ok, pid} <- Connection.make_socket(conn, opts),
          :ok <- Connection.connect(pid) do
       {:ok, pid}
     end
   end
+
+  @doc """
+  The live connection pid for `profile`, or `nil`. A restart-safe handle: the pid
+  changes if the connection restarts, but the profile resolves to the current one.
+
+  Assumes the default `Amarula.ProfileRegistry`. With a custom `:registry` config,
+  pass the `Conn` (or config) as the first arg: `whereis(conn, profile)`.
+  """
+  @spec whereis(profile()) :: pid() | nil
+  def whereis(profile), do: ProfileRegistry.whereis(%{}, profile)
+
+  @doc "As `whereis/1`, but resolves through `conn_or_config`'s `:registry`."
+  @spec whereis(Amarula.Conn.t() | map(), profile()) :: pid() | nil
+  defdelegate whereis(conn_or_config, profile), to: ProfileRegistry
+
+  @doc """
+  A `:via` handle for `profile` — usable anywhere a `conn()` is accepted, so calls
+  route to whatever pid currently holds the profile (restart-safe). Assumes the
+  default registry; for a custom one, build it from the `Conn` via
+  `Amarula.ProfileRegistry.via/2`.
+  """
+  @spec via(profile()) :: {:via, module(), {atom(), profile()}}
+  def via(profile), do: ProfileRegistry.via(%{}, profile)
 
   @doc "Disconnect the connection. Returns `:ok | {:error, reason}`."
   @spec disconnect(conn()) :: :ok | {:error, term()}

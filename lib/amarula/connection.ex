@@ -20,6 +20,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Socket.{Types, WebSocketClient, ConnectionSupervisor}
   alias Amarula.Protocol.{Crypto.NoiseHandler, Auth.AuthUtils, Socket.ConnectionValidator}
   alias Amarula.Protocol.Auth.DeviceIdentity
+  alias Amarula.ProfileRegistry
   alias Amarula.Protocol.Socket.{IQ, Login, Router}
   alias Amarula.Protocol.Binary.{Decoder, JID, NodeUtils, Encoder, Node}
   alias Amarula.Protocol.Messages.{ConversationSender, Media, MessageEncoder}
@@ -174,13 +175,43 @@ defmodule Amarula.Connection do
 
   `opts` may carry `:parent_pid` (events sink, default the caller).
   """
-  @spec make_socket(Amarula.Conn.t(), keyword()) :: {:ok, pid()} | {:error, term()}
+  @spec make_socket(Amarula.Conn.t(), keyword()) ::
+          {:ok, pid()} | {:error, {:already_running, pid()}} | {:error, term()}
   def make_socket(%Amarula.Conn{} = conn, opts \\ []) do
-    case ConnectionSupervisor.start_instance(conn, opts) do
-      {:ok, _sup, conn_pid} -> {:ok, conn_pid}
-      {:error, _} = err -> err
+    # One connection per profile. The profile registration in `init` is the atomic
+    # guard (closes the start race); this lookup is a fast-path for the common
+    # case so we don't spin up a tree only to tear it down.
+    case ProfileRegistry.whereis(conn, conn.profile) do
+      pid when is_pid(pid) ->
+        {:error, {:already_running, pid}}
+
+      nil ->
+        start_instance(conn, opts)
     end
   end
+
+  defp start_instance(conn, opts) do
+    case ConnectionSupervisor.start_instance(conn, opts) do
+      {:ok, _sup, conn_pid} ->
+        {:ok, conn_pid}
+
+      {:error, reason} ->
+        # `init` stops with {:already_registered, winner} when it loses the
+        # profile-registration race; the Supervisor wraps that in
+        # {:shutdown, {:failed_to_start_child, Connection, reason}}. Unwrap it to
+        # the same {:already_running, winner} the fast-path returns.
+        case already_running_reason(reason) do
+          {:already_running, _pid} = mapped -> {:error, mapped}
+          nil -> {:error, reason}
+        end
+    end
+  end
+
+  defp already_running_reason({:shutdown, {:failed_to_start_child, _child, inner}}),
+    do: already_running_reason(inner)
+
+  defp already_running_reason({:already_registered, pid}), do: {:already_running, pid}
+  defp already_running_reason(_), do: nil
 
   @doc """
   Connects to the WebSocket server.
@@ -423,7 +454,20 @@ defmodule Amarula.Connection do
       qr_timer: nil
     }
 
-    {:ok, state}
+    # Register under the profile in the app-level registry (the one-per-profile
+    # guard + the consumer's restart-safe handle). On a restart this re-registers
+    # the same key, so a profile ref keeps resolving to the (new) pid. A clashing
+    # registration means another connection for this profile is already live: stop
+    # so the tree unwinds and `make_socket` reports {:already_running, winner}.
+    {module, name} = ProfileRegistry.resolve(conn)
+
+    case module.register(name, conn.profile, nil) do
+      {:ok, _} ->
+        {:ok, state}
+
+      {:error, {:already_registered, pid}} ->
+        {:stop, {:already_registered, pid}}
+    end
   end
 
   @impl GenServer

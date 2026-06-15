@@ -62,6 +62,87 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "one connection per profile (profile registry)" do
+    setup do
+      root =
+        Path.join(System.tmp_dir!(), "amarula_reg_#{System.unique_integer([:positive])}")
+
+      on_exit(fn -> File.rm_rf(root) end)
+      profile = :"reg_#{System.unique_integer([:positive])}"
+      conn = Amarula.new(%{profile: profile, storage: {Amarula.Storage.File, root: root}})
+      {:ok, conn: conn, profile: profile}
+    end
+
+    # Start a full connection tree and stop it (the supervisor) on exit — stopping
+    # the Connection child alone would just be restarted by its :one_for_one parent.
+    # `start_instance` uses Supervisor.start_link, so the tree is LINKED to the
+    # test process and dies automatically when the test ends — no on_exit cleanup
+    # needed (and stopping a linked, already-terminating supervisor from on_exit
+    # races teardown). Tests that need an explicit shutdown call Supervisor.stop/1.
+    defp start_tree(conn) do
+      {:ok, sup, pid} = Amarula.Protocol.Socket.ConnectionSupervisor.start_instance(conn)
+      {sup, pid}
+    end
+
+    test "make_socket registers the profile; whereis resolves it", %{conn: conn, profile: profile} do
+      assert Amarula.whereis(profile) == nil
+      {_sup, pid} = start_tree(conn)
+      assert Amarula.whereis(profile) == pid
+    end
+
+    test "a second start for a live profile is {:error, {:already_running, pid}}",
+         %{conn: conn} do
+      {_sup, pid} = start_tree(conn)
+      assert {:error, {:already_running, ^pid}} = Connection.make_socket(conn)
+    end
+
+    test "tree shutdown unregisters the profile (whereis -> nil)",
+         %{conn: conn, profile: profile} do
+      {sup, _pid} = start_tree(conn)
+      assert is_pid(Amarula.whereis(profile))
+
+      Supervisor.stop(sup)
+      # Registry unregisters on the registered pid's death; give it a beat.
+      Process.sleep(20)
+      assert Amarula.whereis(profile) == nil
+    end
+
+    test "a restart re-registers the profile (handle stays resolvable)",
+         %{conn: conn, profile: profile} do
+      {_sup, pid} = start_tree(conn)
+      assert Amarula.whereis(profile) == pid
+
+      # Kill the Connection child; its :one_for_one supervisor restarts it, and
+      # init re-registers the same profile → whereis resolves to the NEW pid.
+      Process.exit(pid, :kill)
+
+      new_pid =
+        Enum.find_value(1..50, fn _ ->
+          case Amarula.whereis(profile) do
+            ^pid -> nil
+            other when is_pid(other) -> other
+            nil -> nil
+          end || (Process.sleep(10) && nil)
+        end)
+
+      assert is_pid(new_pid) and new_pid != pid
+    end
+
+    test "a custom :registry module from config is honored", %{conn: base_conn} do
+      # A distinct local Registry instance proves the seam routes through config,
+      # not the default ProfileRegistry.
+      name = :"custom_reg_#{System.unique_integer([:positive])}"
+      start_supervised!({Registry, keys: :unique, name: name})
+
+      conn = %{base_conn | config: Map.put(base_conn.config, :registry, name)}
+      {_sup, pid} = start_tree(conn)
+
+      # Registered in the custom registry, not the default one.
+      assert [{^pid, _}] = Registry.lookup(name, conn.profile)
+      assert Amarula.whereis(conn.profile) == nil
+    end
+  end
+
   describe "credential persistence (Amarula owns it)" do
     alias Amarula.Storage
 

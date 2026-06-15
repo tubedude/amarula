@@ -78,6 +78,46 @@ One sender per recipient JID, `restart: :temporary`.
 - **Rebirth.** The next `deliver/2` to that recipient starts a fresh sender; no
   carried state — it re-reads sessions from Storage.
 
+## Profile registry — one connection per profile + restart-safe handle
+
+Distinct from the per-instance Registry (intra-tree wiring) there is one
+**app-level registry** mapping `profile -> Connection pid`, started by
+`Amarula.Application` as `Amarula.ProfileRegistry` (a local `Registry`). It serves
+two purposes:
+
+1. **One connection per profile.** `make_socket` refuses to start a profile that is
+   already live, returning `{:error, {:already_running, pid}}`. The registration in
+   `Connection.init` is the atomic guard (the pre-check is a fast path) — two
+   websockets on one set of credentials would corrupt the shared Signal ratchet, so
+   this is a correctness invariant, not just dedup.
+2. **Restart-safe handle.** `Amarula.whereis(profile)` resolves to the current pid;
+   `Amarula.via(profile)` is a `:via` handle usable anywhere a `conn()` is accepted.
+   On a Connection restart, `init` re-registers the same profile key, so the handle
+   keeps resolving to the new pid (the raw pid from `connect/2` would go stale).
+
+**Key = `profile`.** Uniqueness is the consumer's responsibility — the library
+trusts `profile <-> credentials` 1:1 and does not derive a fingerprint or validate
+it. A duplicate start is an explicit error (never silently idempotent).
+
+### Cluster readiness (the seam, not an opinion)
+
+The registry is a config seam (`:registry` = `{module, name}` or bare `name`). The
+library only uses the standard `Registry`/`:via` contract (`register/3`,
+`lookup/2`, `{:via, mod, {name, key}}`), so **uniqueness reach = the registry's
+reach**:
+
+- default local `Registry` → one connection per profile **per node**;
+- a `:via`-compatible cluster registry (`Horde.Registry`, a `:global`/`:pg` shim) →
+  one **cluster-wide**, for free — "already registered" then means "running
+  anywhere in the cluster."
+
+So the consumer distributes credentials across the cluster and picks the registry;
+Amarula enforces one-conn-per-profile against whatever reach that registry has. The
+library never decides clustering. Caveats: `:global` is best-effort (a netsplit can
+briefly allow two registrations, reconciled on heal); the robust production answer
+is usually an external lease (DB row / Redis) the consumer's orchestrator holds per
+profile — the seam composes with that rather than replacing it.
+
 ## Send flow & completion semantics
 
 `Amarula.send_text/3` → `Connection` → the recipient's `ConversationSender`, which

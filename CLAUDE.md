@@ -71,86 +71,89 @@ lib/amarula/protocol/
 
 ### Key Components
 
+**Public API**:
+- `Amarula` (`lib/amarula.ex`): the facade consumers call. `new/1` builds a
+  `%Amarula.Conn{}`, `connect/2` starts it; `send_*`, `group_*`, `download_media`,
+  presence/read helpers delegate to `Socket`. Events reach the consumer's
+  `parent_pid` as `{:whatsapp, type, data}` (see `t:event/0`).
+- Consumer structs: `Amarula.Msg` (a received message — `type` + `content`, never
+  the raw proto), `Amarula.Address` (PN/LID/group boundary type), `Amarula.Chat`,
+  `Amarula.Contact`, `Amarula.Group`, `Amarula.Conn`.
+
 **Socket Layer** (`lib/amarula/protocol/socket/`):
-- `Socket`: Main GenServer coordinating the entire connection lifecycle. Acts as the primary API entry point.
-- `ConnectionManager`: Handles WebSocket connections, retry logic, handshake orchestration, and event emission.
-- `WebSocketClient`: Low-level WebSocketEx wrapper for sending/receiving frames.
-- `ConnectionValidator`: Validates connection state and handles connection-related errors.
+- `Socket`: per-connection facade GenServer; forwards ConnectionManager events to
+  `parent_pid` and delegates sends.
+- `ConnectionManager`: the sole websocket owner — Noise handshake, IQ correlation,
+  credential resolve/persist (via the Storage seam), 515 restart, offline batch,
+  notification dispatch. The big coordinator (intentionally; not a god object —
+  decision/domain logic live in their own modules).
+- `Router`: pure node→handler-tag routing table (`route/1`).
+- `IQ`: pure IQ-correlation state (`track/wait/resolve/timeout`).
+- `Login`: pure handshake/login step builders.
+- `WebSocketClient`: low-level frame I/O. `ConnectionValidator`: state checks.
 
 **Crypto Layer** (`lib/amarula/protocol/crypto/`):
-- `NoiseHandler`: Implements Noise Protocol XX pattern for initial handshake. This is critical for establishing the secure channel before authentication.
-- `Crypto`: Core cryptographic primitives (encryption, hashing, key generation).
-- `Constants`: Cryptographic constants and WhatsApp-specific protocol values.
+- `NoiseHandler`: Noise_XX handshake. `Crypto`: primitives. `Constants`.
 
 **Authentication** (`lib/amarula/protocol/auth/`):
-- `SessionManager`: GenServer managing authentication state, credentials, and session lifecycle.
-- `QRCodeGenerator`: Generates and refreshes QR codes for mobile device pairing.
-- `ETSKeyStore`: ETS-based key-value store implementing `KeyStoreBehaviour` for credential persistence.
-- `EventPublisher`: GenServer for publishing authentication events (QR codes, pairing success/failure).
-- `BaileysCredentialLoader`: Utility for loading credentials from Baileys (TypeScript implementation) for comparison/testing.
+- `QRCodeGenerator`: QR string build/parse. `AuthUtils`: initial credential
+  generation. `DeviceIdentity`: pure pairing crypto (verify + counter-sign the ADV
+  device identity). Credentials are persisted by `ConnectionManager` through the
+  `Amarula.Storage` seam (`:creds`/`:self`), scoped to the connection's `:profile`
+  — there is no SessionManager/ETSKeyStore/EventPublisher (removed).
 
 **Binary Protocol** (`lib/amarula/protocol/binary/`):
-- `Encoder`/`Decoder`: Serialize/deserialize WhatsApp's custom binary node format.
-- `Node`: Binary node structure representing WhatsApp protocol messages.
-- `NodeUtils`: Helper functions for node manipulation and validation.
-- `JID`: JID (Jabber ID) parsing and manipulation for WhatsApp identifiers.
-- `Constants`: Protocol constants and tags.
+- `Encoder`/`Decoder` (custom binary node format), `Node`, `NodeUtils`, `JID`,
+  `Constants`.
 
 **Message Handling** (`lib/amarula/protocol/messages/`):
-- `Messages`: Main public API for sending/receiving messages.
-- `Sender`: Message generation and sending logic.
-- `Receiver`: Incoming message processing and parsing.
-- `Media`: Media message encryption, decryption, and processing.
-- `Reactions`: Reactions and replies to messages.
-- `Edit`: Message editing and deletion.
-- `Events`: GenServer-based event subscription system for real-time updates.
+- `ConversationSender`: per-recipient send GenServer; runs the blocking pipe
+  `resolve_devices → ensure_sessions → encrypt → relay` and returns
+  `:ok | {:error, {stage, reason}}`. Sends are synchronous.
+- `MessageEncoder` (build outgoing protos), `MessageContent` (classify incoming →
+  used by `Amarula.Msg`), `MessageDecryptor`, `Receipt`, `Media`, `HistorySync`.
 
 **Signal Protocol** (`lib/amarula/protocol/signal/`):
-- `Repository`: Signal Protocol session/key management.
-- `LidMappingStore`: LID (Local ID) to JID mapping for multi-device.
-- `group/`: Group messaging specific Signal Protocol components.
+- `Repository` (sessions/keys), `SessionStore`, `SessionInjector`, `SessionCipher`,
+  `PreKeys`, `DeviceListCache`, `LidMappingFileStore` (LID↔PN), `group/`
+  (sender-key cipher).
+
+**Storage** (`lib/amarula/storage*`): pluggable `Amarula.Storage` behaviour scoped
+by `{profile, namespace, key}`; `File` + `DETS` adapters. Holds creds, sessions,
+sender keys, LID mappings, device lists, app-state. `Amarula.RetryCache` is a
+separate pluggable seam.
 
 ### Process Model
 
-Amarula uses OTP principles with a supervision tree:
+Each connection is an independent supervision tree (so many accounts run side by
+side), started by `ConnectionSupervisor`:
 
 ```
-Socket (GenServer)
-├── ConnectionManager (GenServer)
-│   └── WebSocketClient (WebSocketEx process)
-├── SessionManager (GenServer)
-│   └── ETSKeyStore (ETS table)
-├── QRCodeGenerator (started on-demand)
-└── EventPublisher (GenServer)
+ConnectionSupervisor (per instance)
+├── ConnectionManager (GenServer) — owns the WebSocketClient + Noise/IQ state
+├── Socket (GenServer) — facade, forwards events to parent_pid
+├── Repository (Signal sessions)
+└── ConversationSender DynamicSupervisor — one sender GenServer per recipient
 ```
 
-Each socket connection is an independent GenServer that coordinates child processes. The architecture supports multiple concurrent connections (though typically one per application instance).
+Storage is a config concern (a scope on the `Conn`), not a process.
 
 ### Data Flow
 
-**Connection Flow**:
-1. `Socket.make_socket/1` creates socket GenServer
-2. `Socket.connect/1` initiates connection
-3. `ConnectionManager` establishes WebSocket
-4. Noise Protocol handshake (3 messages)
-5. `QRCodeGenerator` starts and emits QR codes
-6. Mobile device scans QR code
-7. Pairing completed, session established
+**Connection**: `Amarula.connect/2` → `Socket` → `ConnectionManager` opens the
+WebSocket → Noise XX handshake → first run emits `:connection_update` with a `qr`
+string (consumer renders it) → phone scans → `:pairing_success` → creds persisted
+internally → 515 restart (auto) → `:connection_update` `connection: :open`.
 
-**Message Sending**:
-1. Application calls `Messages.send_text/3` (or other send function)
-2. `Sender` generates message structure with ID, timestamp
-3. `Sender.build_message_node/1` creates binary node
-4. `Socket.send_message/2` → `ConnectionManager` → `WebSocketClient`
-5. WebSocket frame sent to WhatsApp servers
+**Sending**: `Amarula.send_text/3` → `Socket` → per-recipient `ConversationSender`
+→ `resolve_devices` (device cache / USync) → `ensure_sessions` (prekey bundle
+fetch) → `encrypt` (per device) → `relay` (frame via ConnectionManager). Returns
+`{:ok, msg_id}` or `{:error, reason}` (e.g. `:not_on_whatsapp`).
 
-**Message Receiving**:
-1. WebSocket frame arrives at `WebSocketClient`
-2. `ConnectionManager` decodes binary node via `Decoder`
-3. Routed to `Receiver.process_message_node/1`
-4. Message parsed and normalized
-5. `Events` emits `:messages_upsert` event
-6. Subscribed processes receive message
+**Receiving**: frame → `ConnectionManager` decodes + `Router.route/1` → `handle_message`
+→ `MessageDecryptor` → wrapped as `[%Amarula.Msg{}]` → `:messages_upsert` event to
+`parent_pid`. Receipts/notifications dispatch to their own handlers + events
+(`:receipt_update`, `:group_update`, ...).
 
 ### Important Architectural Patterns
 

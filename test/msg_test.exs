@@ -59,4 +59,22 @@ defmodule Amarula.MsgTest do
     msg = build(%Proto.Message{})
     assert msg.type == :other
   end
+
+  test "pass-through classes carry the struct as content" do
+    contact = %Proto.Message.ContactMessage{displayName: "Bob"}
+    assert %{type: :contact, content: ^contact} = build(%Proto.Message{contactMessage: contact})
+
+    loc = %Proto.Message.LocationMessage{degreesLatitude: 1.0}
+    assert %{type: :location, content: ^loc} = build(%Proto.Message{locationMessage: loc})
+
+    poll = %Proto.Message.PollCreationMessage{name: "Q"}
+    assert %{type: :poll, content: ^poll} = build(%Proto.Message{pollCreationMessage: poll})
+  end
+
+  test "protocol messages surface as {:protocol, %{type, message}}" do
+    pm = %Proto.Message.ProtocolMessage{type: :APP_STATE_SYNC_KEY_SHARE}
+    msg = build(%Proto.Message{protocolMessage: pm})
+    assert msg.type == :protocol
+    assert msg.content == %{type: :APP_STATE_SYNC_KEY_SHARE, message: pm}
+  end
 end

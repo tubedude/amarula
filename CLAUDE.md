@@ -74,19 +74,20 @@ lib/amarula/protocol/
 **Public API**:
 - `Amarula` (`lib/amarula.ex`): the facade consumers call. `new/1` builds a
   `%Amarula.Conn{}`, `connect/2` starts it; `send_*`, `group_*`, `download_media`,
-  presence/read helpers delegate to `Socket`. Events reach the consumer's
-  `parent_pid` as `{:whatsapp, type, data}` (see `t:event/0`).
+  presence/read helpers delegate to `Amarula.Connection`. Events reach the
+  consumer's `parent_pid` as `{:whatsapp, type, data}` (see `t:event/0`).
 - Consumer structs: `Amarula.Msg` (a received message — `type` + `content`, never
   the raw proto), `Amarula.Address` (PN/LID/group boundary type), `Amarula.Chat`,
   `Amarula.Contact`, `Amarula.Group`, `Amarula.Conn`.
 
 **Socket Layer** (`lib/amarula/protocol/socket/`):
-- `Socket`: per-connection facade GenServer; forwards ConnectionManager events to
-  `parent_pid` and delegates sends.
-- `ConnectionManager`: the sole websocket owner — Noise handshake, IQ correlation,
-  credential resolve/persist (via the Storage seam), 515 restart, offline batch,
-  notification dispatch. The big coordinator (intentionally; not a god object —
-  decision/domain logic live in their own modules).
+- `Amarula.Connection` (`lib/amarula/connection.ex`): the single per-connection
+  process and the consumer's endpoint (the pid `connect/2` returns). The sole
+  websocket owner — Noise handshake, IQ correlation, credential resolve/persist
+  (via the Storage seam), 515 restart, offline batch, notification dispatch,
+  send dispatch — and it delivers consumer events straight to `parent_pid`
+  (no relay process, no subscriber registry). The big coordinator (intentionally;
+  not a god object — decision/domain logic live in their own modules).
 - `Router`: pure node→handler-tag routing table (`route/1`).
 - `IQ`: pure IQ-correlation state (`track/wait/resolve/timeout`).
 - `Login`: pure handshake/login step builders.
@@ -98,7 +99,7 @@ lib/amarula/protocol/
 **Authentication** (`lib/amarula/protocol/auth/`):
 - `QRCodeGenerator`: QR string build/parse. `AuthUtils`: initial credential
   generation. `DeviceIdentity`: pure pairing crypto (verify + counter-sign the ADV
-  device identity). Credentials are persisted by `ConnectionManager` through the
+  device identity). Credentials are persisted by `Amarula.Connection` through the
   `Amarula.Storage` seam (`:creds`/`:self`), scoped to the connection's `:profile`
   — there is no SessionManager/ETSKeyStore/EventPublisher (removed).
 
@@ -130,27 +131,32 @@ side), started by `ConnectionSupervisor`:
 
 ```
 ConnectionSupervisor (per instance)
-├── ConnectionManager (GenServer) — owns the WebSocketClient + Noise/IQ state
-├── Socket (GenServer) — facade, forwards events to parent_pid
-├── Repository (Signal sessions)
+├── Registry (per-instance, keyed by {instance_id, role})
+├── TableOwner — per-connection retry-cache ETS
+├── Connection (GenServer) — owns the WebSocketClient + Noise/IQ state, the
+│     consumer API, and consumer-event delivery to parent_pid
 └── ConversationSender DynamicSupervisor — one sender GenServer per recipient
 ```
 
+`Connection` is both the websocket owner and the consumer's endpoint — the relay
+`Socket` GenServer was merged into it (one process per connection, no double hop).
 Storage is a config concern (a scope on the `Conn`), not a process.
 
 ### Data Flow
 
-**Connection**: `Amarula.connect/2` → `Socket` → `ConnectionManager` opens the
+**Connection**: `Amarula.connect/2` → `Connection` opens the
 WebSocket → Noise XX handshake → first run emits `:connection_update` with a `qr`
 string (consumer renders it) → phone scans → `:pairing_success` → creds persisted
 internally → 515 restart (auto) → `:connection_update` `connection: :open`.
 
-**Sending**: `Amarula.send_text/3` → `Socket` → per-recipient `ConversationSender`
+**Sending**: `Amarula.send_text/3` → `Connection` → per-recipient `ConversationSender`
 → `resolve_devices` (device cache / USync) → `ensure_sessions` (prekey bundle
-fetch) → `encrypt` (per device) → `relay` (frame via ConnectionManager). Returns
-`{:ok, msg_id}` or `{:error, reason}` (e.g. `:not_on_whatsapp`).
+fetch) → `encrypt` (per device) → `relay` (frame via `Connection`). Returns
+`{:ok, msg_id}` or `{:error, reason}` (e.g. `:not_on_whatsapp`). `Connection`
+forwards the caller's `from` to the sender, which replies when the send finishes —
+so sends to different recipients complete out-of-order without blocking each other.
 
-**Receiving**: frame → `ConnectionManager` decodes + `Router.route/1` → `handle_message`
+**Receiving**: frame → `Connection` decodes + `Router.route/1` → `handle_message`
 → `MessageDecryptor` → wrapped as `[%Amarula.Msg{}]` → `:messages_upsert` event to
 `parent_pid`. Receipts/notifications dispatch to their own handlers + events
 (`:receipt_update`, `:group_update`, ...).
@@ -162,7 +168,7 @@ fetch) → `encrypt` (per device) → `relay` (frame via ConnectionManager). Ret
 - `← e, ee, s, es` (receive server keys, DH operations)
 - `→ s, se` (send identity, complete handshake)
 
-After handshake completion, all messages are encrypted/decrypted using derived keys. This is handled transparently by the `ConnectionManager`.
+After handshake completion, all messages are encrypted/decrypted using derived keys. This is handled transparently by `Amarula.Connection`.
 
 **Binary Node Protocol**: WhatsApp uses a custom binary format (not JSON). Every message is a "node" with:
 - Tag (string identifier like "message", "iq", "presence")
@@ -248,7 +254,7 @@ end
 - `examples/connection.ex` - GenServer that embeds a connection (pairing + listen + send)
 - `lib/amarula.ex` - The public API facade (the entry point library consumers use)
 - `lib/amarula/protocol/messages/ARCHITECTURE.md` - Detailed message handling architecture
-- `lib/amarula/protocol/socket/socket.ex` - Internal transport GenServer (the facade delegates here)
+- `lib/amarula/connection.ex` - The per-connection process: websocket + cipher + IQ + sends + consumer API (the facade delegates here)
 - `lib/amarula/protocol/crypto/noise_handler.ex` - Noise Protocol implementation
 - `AGENTS.md` - Comprehensive Elixir coding guidelines for this project
 

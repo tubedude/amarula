@@ -49,7 +49,7 @@ defmodule Amarula.Config do
       config :logger, level: :info
 
       # or, mute just Amarula (Elixir 1.13+):
-      Logger.put_module_level(Amarula.Protocol.Socket.ConnectionManager, :warning)
+      Logger.put_module_level(Amarula.Connection, :warning)
 
   Telemetry (`Amarula.Telemetry`) is the structured, log-independent way to observe
   Amarula in production.

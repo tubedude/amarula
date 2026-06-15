@@ -6,10 +6,10 @@ defmodule Amarula.Protocol.Groups.Metadata do
   addressing mode); description/community/etc. are skipped until a consumer needs
   them.
 
-  Usage (the IQ goes through `ConnectionManager.query_iq/2`):
+  Usage (the IQ goes through `Connection.query_iq/2`):
 
       iq = Metadata.query_iq(group_jid)
-      {:ok, reply} = ConnectionManager.query_iq(conn, iq)
+      {:ok, reply} = Connection.query_iq(conn, iq)
       {:ok, meta} = Metadata.parse(reply)
   """
 

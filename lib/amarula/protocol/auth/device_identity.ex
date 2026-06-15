@@ -3,7 +3,7 @@ defmodule Amarula.Protocol.Auth.DeviceIdentity do
   The pairing device-identity crypto: verify the primary's signed device identity,
   counter-sign it with our key, and derive the companion's signal identity. Pure
   (takes auth creds + the received identity, returns values) — extracted from
-  `ConnectionManager` so the connection process keeps only socket/state concerns.
+  `Connection` so the connection process keeps only socket/state concerns.
 
   Ported from Baileys' pair-success handling (`src/Socket/socket.ts`).
   """

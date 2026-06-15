@@ -6,7 +6,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   lock needed). Different recipients run in parallel under the DynamicSupervisor.
 
   A send is a branchless pipe of `ctx -> ctx` steps that block on IQ round-trips
-  through `ConnectionManager` (the sole websocket owner):
+  through `Connection` (the sole websocket owner):
 
       ctx
       |> resolve_devices()   # device-list cache, else a USync query
@@ -14,7 +14,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       |> encrypt()           # per device; plain vs DSM; advance ratchet
       |> relay()             # frame + send the <participants> stanza
 
-  Each step that needs server data calls `ConnectionManager.query_iq/2`, which
+  Each step that needs server data calls `Connection.query_iq/2`, which
   blocks until the matching websocket reply arrives. A step failure crashes the
   process (the DynamicSupervisor reaps it); the pipe carries no error branches.
 
@@ -47,7 +47,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     SenderKeyStore
   }
 
-  alias Amarula.Protocol.Socket.ConnectionManager
+  alias Amarula.Connection
   alias Amarula.Protocol.USync
 
   @idle_timeout_ms 5 * 60 * 1000
@@ -289,7 +289,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   defp group_devices(ctx) do
     iq = GroupMetadata.query_iq(ctx.target_jid)
 
-    with {:ok, reply} <- ConnectionManager.query_iq(ctx.cm, iq),
+    with {:ok, reply} <- Connection.query_iq(ctx.cm, iq),
          {:ok, meta} <- GroupMetadata.parse(reply) do
       store_participant_lid_mappings(ctx, meta)
       users = Enum.uniq(participant_user_jids(meta) ++ own_id_list(ctx))
@@ -355,7 +355,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
     {:ok, iq} = USync.build_iq(query)
 
-    case ConnectionManager.query_iq(ctx.cm, iq) do
+    case Connection.query_iq(ctx.cm, iq) do
       {:ok, reply} -> {:ok, parse_devices(ctx, reply)}
       {:error, reason} -> {:error, {:usync, reason}}
     end
@@ -419,7 +419,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       content: [%Node{tag: "key", attrs: %{}, content: users}]
     }
 
-    case ConnectionManager.query_iq(ctx.cm, iq) do
+    case Connection.query_iq(ctx.cm, iq) do
       {:ok, reply} -> {:ok, reply}
       {:error, reason} -> {:error, {:fetch_bundles, reason}}
     end
@@ -497,7 +497,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
     # relay_stanza enqueues the frame on the socket and replies :ok (it can't know
     # delivery — that's what later receipts report). Its :ok is this stage's result.
-    ConnectionManager.relay_stanza(ctx.cm, stanza)
+    Connection.relay_stanza(ctx.cm, stanza)
   end
 
   defp relay(ctx) do
@@ -513,10 +513,10 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
     Logger.debug("Relaying #{ctx.msg_id} (#{length(ctx.participants)} device(s))")
 
-    ConnectionManager.relay_stanza(ctx.cm, stanza)
+    Connection.relay_stanza(ctx.cm, stanza)
   end
 
-  # --- helpers (ported from the former ConnectionManager send path) ---
+  # --- helpers (ported from the former Connection send path) ---
 
   defp store_lid_mappings(ctx, list) do
     pairs = for %{id: pn} = e <- list, lid = Map.get(e, "lid"), is_binary(lid), do: {lid, pn}
@@ -526,7 +526,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       if count > 0, do: Logger.debug("Stored #{count} LID↔PN mapping(s) from USync")
 
       new_lids = for {lid, _pn} <- newly, do: lid
-      ConnectionManager.assert_lid_sessions(ctx.cm, new_lids)
+      Connection.assert_lid_sessions(ctx.cm, new_lids)
     end
 
     :ok

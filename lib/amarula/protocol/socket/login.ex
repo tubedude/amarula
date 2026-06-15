@@ -1,7 +1,7 @@
 defmodule Amarula.Protocol.Socket.Login do
   @moduledoc """
   The Noise XX handshake + login-bootstrap stanza builders, extracted from
-  `ConnectionManager`. Pure: these compute frames/nodes from inputs and return
+  `Connection`. Pure: these compute frames/nodes from inputs and return
   values — they do NOT touch the websocket, timers, or emit events. CM stays the
   process: it sends the frames/nodes, transitions state, and emits updates.
 

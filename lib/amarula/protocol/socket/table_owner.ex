@@ -1,7 +1,7 @@
 defmodule Amarula.Protocol.Socket.TableOwner do
   @moduledoc """
   Owns the per-connection retry-cache ETS table, created once at `init` — BEFORE
-  the ConnectionManager that reads it starts, since it's an early child of the
+  the Connection that reads it starts, since it's an early child of the
   `ConnectionSupervisor`.
 
   This is why `RetryCache.ETS` never creates its table lazily: the owner

@@ -6,7 +6,7 @@ defmodule Amarula.Protocol.AppState.Sync do
   `AppState.SyncAction` into consumer changes — given a key lookup and the prior
   collection state.
 
-  The wire round-trip + storage live in `ConnectionManager`; this module is the
+  The wire round-trip + storage live in `Connection`; this module is the
   pure glue between them and the decode stack.
   """
 

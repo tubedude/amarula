@@ -4,7 +4,7 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
 
   This module implements the Noise_XX_25519_AESGCM_SHA256 protocol used by WhatsApp
   for secure WebSocket communication. It provides stateless functions that operate
-  on noise state, which is stored in the ConnectionManager's GenServer state.
+  on noise state, which is stored in the Connection's GenServer state.
 
   The noise state is recreated on every new WebSocket connection with fresh ephemeral keys.
   """

@@ -1,4 +1,4 @@
-defmodule Amarula.Protocol.Socket.ConnectionManager do
+defmodule Amarula.Connection do
   @moduledoc """
   Connection manager for WebSocket connections.
 
@@ -106,7 +106,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     GenServer.start_link(__MODULE__, conn, name: name)
   end
 
-  # Supervisor-friendly form: child spec {ConnectionManager, {conn, opts}}.
+  # Supervisor-friendly form: child spec {Connection, {conn, opts}}.
   def child_spec({conn, opts}) do
     %{id: __MODULE__, start: {__MODULE__, :start_link, [conn, opts]}}
   end
@@ -137,7 +137,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
 
   Returns `{:ok, node}` on a `type="result"` reply, `{:error, node}` on an
   error reply, or `{:error, :timeout}` if no reply comes within the IQ timeout.
-  The caller (a `ConversationSender`) blocks; ConnectionManager keeps owning the
+  The caller (a `ConversationSender`) blocks; Connection keeps owning the
   socket and just routes the reply back. This is the only correlation primitive
   the send path needs — no continuation logic lives here.
   """
@@ -241,7 +241,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   @impl GenServer
   def init(arg) do
     # Accept a built %Conn{} (the normal path) or a bare config map (tests start
-    # ConnectionManager directly). Either way, carry the conn (for steps/scopes)
+    # Connection directly). Either way, carry the conn (for steps/scopes)
     # and config (for protocol settings via state.config.*).
     conn = normalize_conn(arg)
     config = conn.config
@@ -2650,7 +2650,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   end
 
   # init/1 accepts a built %Conn{} (normal path) or a bare config map (tests that
-  # start ConnectionManager directly). For the bare map, default :profile so a
+  # start Connection directly). For the bare map, default :profile so a
   # storage-agnostic test needn't supply one; real connects go through
   # Amarula.new/1, which still requires :profile.
   defp normalize_conn(%Amarula.Conn{} = conn), do: conn
@@ -2728,13 +2728,13 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   #   {:tracked, kind, timer} — the login bootstrap sequence, continued inline
   #                             via handle_tracked_iq/3.
   #
-  # ConnectionManager holds no send logic: a query_iq caller blocks until the
+  # Connection holds no send logic: a query_iq caller blocks until the
   # websocket answers, then gets the raw reply. The meaning of the reply lives
   # in the caller (the per-recipient ConversationSender).
 
   # Blocking IQ request used by the send path: returns {:ok, node} | {:error,
   # node | :timeout} only once the matching websocket reply arrives. The caller
-  # (a ConversationSender) blocks; ConnectionManager keeps owning the socket.
+  # (a ConversationSender) blocks; Connection keeps owning the socket.
   defp send_tracked_iq(state, %Node{} = node, kind) do
     {state, _id} = send_tracked_iq_with_id(state, node, kind)
     state

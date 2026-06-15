@@ -371,8 +371,8 @@ the Events GenServer.
 ### Incoming Message
 ```
 1. WhatsApp server sends message via WebSocket
-2. ConnectionManager receives and decodes binary node
-3. ConnectionManager routes to appropriate handler
+2. Connection receives and decodes binary node
+3. Connection routes to appropriate handler
 4. Receiver.process_message_node parses the node
 5. Receiver.extract_message_data extracts data
 6. Receiver.build_wa_message creates structure

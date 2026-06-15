@@ -5,7 +5,7 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
 
       ConnectionSupervisor (:one_for_one)
       ├── Registry            (per-instance; keys = {instance_id, role})
-      ├── ConnectionManager   (login + socket + IQ correlation)
+      ├── Connection   (login + socket + IQ correlation)
       ├── SenderSupervisor    (DynamicSupervisor) — ConversationSender…
       └── Socket              (public API; resolves siblings via the Registry)
 
@@ -20,7 +20,7 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
   use Supervisor
 
   alias Amarula.Protocol.Socket
-  alias Amarula.Protocol.Socket.ConnectionManager
+  alias Amarula.Connection
 
   @doc """
   Start a connection instance. `opts` may carry `:parent_pid`. Returns
@@ -63,9 +63,9 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
     children = [
       {Registry, keys: :unique, name: registry},
       # Owns the per-connection ETS caches; first child so the tables exist before
-      # ConnectionManager/Socket read them (no lazy create, no race).
+      # Connection/Socket read them (no lazy create, no race).
       {Amarula.Protocol.Socket.TableOwner, profile: conn.profile},
-      {ConnectionManager, {conn, name: name(instance_id, :connection_manager)}},
+      {Connection, {conn, name: name(instance_id, :connection_manager)}},
       {DynamicSupervisor, name: name(instance_id, :sender_supervisor), strategy: :one_for_one},
       {Socket,
        %{

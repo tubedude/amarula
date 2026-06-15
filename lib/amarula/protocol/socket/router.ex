@@ -1,9 +1,9 @@
 defmodule Amarula.Protocol.Socket.Router do
   @moduledoc """
   Pure routing decision for inbound server nodes — cluster 3 of the
-  `ConnectionManager` split (see `docs/plans/CM_SPLIT.plan.md`).
+  `Connection` split (see `docs/plans/CM_SPLIT.plan.md`).
 
-  `ConnectionManager.process_server_node/2` used to inline a ~20-arm `case` over
+  `Connection.process_server_node/2` used to inline a ~20-arm `case` over
   `{tag, type, first_child, xmlns}` that both *decided* which handler runs and
   *ran* it. This module isolates the decision: `route/1` maps a node to a handler
   tag (an atom) plus, where the routing key implies it, a sub-kind. CM keeps the

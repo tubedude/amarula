@@ -1,10 +1,10 @@
-defmodule Amarula.Protocol.Socket.ConnectionManagerTest do
+defmodule Amarula.ConnectionTest do
   use ExUnit.Case, async: true
 
   @moduletag :capture_log
 
   alias Amarula.Protocol.Binary.{Decoder, Encoder, Node, NodeUtils}
-  alias Amarula.Protocol.Socket.ConnectionManager
+  alias Amarula.Connection
 
   setup do
     # Create a test configuration
@@ -27,7 +27,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManagerTest do
       {:ok, encoded} = Encoder.encode(%Node{tag: "ack", attrs: %{"id" => "1"}, content: nil})
       framed = <<0>> <> encoded
 
-      decoded = framed |> ConnectionManager.decompress_frame() |> Decoder.decode()
+      decoded = framed |> Connection.decompress_frame() |> Decoder.decode()
       assert decoded.tag == "ack"
       assert NodeUtils.get_attr(decoded, "id") == "1"
     end
@@ -36,7 +36,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManagerTest do
       {:ok, encoded} = Encoder.encode(%Node{tag: "receipt", attrs: %{"id" => "9"}, content: nil})
       framed = <<2>> <> :zlib.compress(encoded)
 
-      decoded = framed |> ConnectionManager.decompress_frame() |> Decoder.decode()
+      decoded = framed |> Connection.decompress_frame() |> Decoder.decode()
       assert decoded.tag == "receipt"
       assert NodeUtils.get_attr(decoded, "id") == "9"
     end
@@ -52,10 +52,10 @@ defmodule Amarula.Protocol.Socket.ConnectionManagerTest do
       on_exit(fn -> File.rm_rf(root) end)
       conn = Amarula.new(%{profile: :init_test, storage: {Amarula.Storage.File, root: root}})
 
-      {:ok, pid} = ConnectionManager.start_link(conn)
+      {:ok, pid} = Connection.start_link(conn)
 
       # Test initial state
-      assert ConnectionManager.get_connection_state(pid) == :disconnected
+      assert Connection.get_connection_state(pid) == :disconnected
 
       # Clean up
       GenServer.stop(pid)
@@ -79,23 +79,23 @@ defmodule Amarula.Protocol.Socket.ConnectionManagerTest do
       creds = %{registration_id: 4242, me: %{id: "x@s.whatsapp.net"}}
       :ok = Storage.put(conn.storage, conn.profile, :creds, :self, creds)
 
-      {:ok, pid} = ConnectionManager.start_link(conn)
-      assert ConnectionManager.get_auth_creds(pid) == creds
+      {:ok, pid} = Connection.start_link(conn)
+      assert Connection.get_auth_creds(pid) == creds
       GenServer.stop(pid)
     end
 
     test "generates fresh creds when none are stored", %{conn: conn} do
-      {:ok, pid} = ConnectionManager.start_link(conn)
-      creds = ConnectionManager.get_auth_creds(pid)
+      {:ok, pid} = Connection.start_link(conn)
+      creds = Connection.get_auth_creds(pid)
       # init_auth_creds always sets a registration_id; nothing was stored.
       assert is_map(creds) and Map.has_key?(creds, :registration_id)
       GenServer.stop(pid)
     end
 
     test "persists creds to storage when they change", %{conn: conn} do
-      {:ok, pid} = ConnectionManager.start_link(conn)
+      {:ok, pid} = Connection.start_link(conn)
       new_creds = %{registration_id: 99, me: %{id: "y@s.whatsapp.net"}}
-      :ok = ConnectionManager.update_auth_creds(pid, new_creds)
+      :ok = Connection.update_auth_creds(pid, new_creds)
 
       # Written through to storage — a fresh read sees it (no consumer involved).
       assert {:ok, ^new_creds} = Storage.get(conn.storage, conn.profile, :creds, :self)
@@ -108,9 +108,9 @@ defmodule Amarula.Protocol.Socket.ConnectionManagerTest do
       override = %{registration_id: 2, source: :config}
 
       {:ok, pid} =
-        ConnectionManager.start_link(%{conn | config: Map.put(conn.config, :auth, override)})
+        Connection.start_link(%{conn | config: Map.put(conn.config, :auth, override)})
 
-      assert ConnectionManager.get_auth_creds(pid) == override
+      assert Connection.get_auth_creds(pid) == override
       GenServer.stop(pid)
     end
   end
@@ -118,23 +118,23 @@ defmodule Amarula.Protocol.Socket.ConnectionManagerTest do
   describe "lifecycle + subscription" do
     test "disconnect on a freshly-started (disconnected) manager is a :ok no-op",
          %{config: config} do
-      {:ok, pid} = ConnectionManager.start_link(config)
-      assert ConnectionManager.disconnect(pid) == :ok
-      assert ConnectionManager.get_connection_state(pid) == :disconnected
+      {:ok, pid} = Connection.start_link(config)
+      assert Connection.disconnect(pid) == :ok
+      assert Connection.get_connection_state(pid) == :disconnected
       GenServer.stop(pid)
     end
 
     test "subscribe/unsubscribe accept any event topic (incl. unknown) and dedupe",
          %{config: config} do
-      {:ok, pid} = ConnectionManager.start_link(config)
+      {:ok, pid} = Connection.start_link(config)
 
       # Known + unknown topics both accepted; double-subscribe is idempotent.
-      assert ConnectionManager.subscribe(pid, :connection_update, self()) == :ok
-      assert ConnectionManager.subscribe(pid, :connection_update, self()) == :ok
-      assert ConnectionManager.subscribe(pid, :totally_made_up, self()) == :ok
+      assert Connection.subscribe(pid, :connection_update, self()) == :ok
+      assert Connection.subscribe(pid, :connection_update, self()) == :ok
+      assert Connection.subscribe(pid, :totally_made_up, self()) == :ok
 
-      assert ConnectionManager.unsubscribe(pid, :connection_update, self()) == :ok
-      assert ConnectionManager.unsubscribe(pid, :never_subscribed, self()) == :ok
+      assert Connection.unsubscribe(pid, :connection_update, self()) == :ok
+      assert Connection.unsubscribe(pid, :never_subscribed, self()) == :ok
 
       GenServer.stop(pid)
     end

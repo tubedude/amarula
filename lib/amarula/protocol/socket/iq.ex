@@ -1,6 +1,6 @@
 defmodule Amarula.Protocol.Socket.IQ do
   @moduledoc """
-  IQ request/response correlation, extracted from `ConnectionManager` as a pure
+  IQ request/response correlation, extracted from `Connection` as a pure
   module over the pending-IQ map. CM stays the only process and owns the socket,
   timers, and the tracked-kind continuations; this module decides *what to do*
   with a reply/timeout and returns an **effect** for CM to perform.

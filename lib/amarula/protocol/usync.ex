@@ -8,7 +8,7 @@ defmodule Amarula.Protocol.USync do
 
   This module is pure: it builds the request `Node` and parses the response
   `Node`. The socket layer is responsible for sending the IQ and correlating
-  the reply (see `Amarula.Protocol.Socket.ConnectionManager`'s tracked-IQ
+  the reply (see `Amarula.Connection`'s tracked-IQ
   machinery).
 
   ## Usage

@@ -7,7 +7,7 @@ defmodule Amarula.Protocol.Groups.Ops do
   Every op is a `<iq xmlns="w:g2" type=get|set to=<group>>` with a single child
   naming the action. Builders return a `%Node{}`; parsers turn the reply into the
   affected participants / invite code / etc. The IQ round-trip lives in
-  `ConnectionManager` (via `send_waiter_iq`).
+  `Connection` (via `send_waiter_iq`).
   """
 
   alias Amarula.Protocol.Binary.{Node, NodeUtils}

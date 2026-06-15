@@ -36,7 +36,7 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
 
   ## Options
 
-    * `:parent_pid` - Required. PID of the ConnectionManager that will receive events.
+    * `:parent_pid` - Required. PID of the Connection that will receive events.
     * `:url` - WebSocket URL (defaults to WhatsApp WebSocket URL)
     * `:headers` - List or map of HTTP headers
     * Other options for timeouts and configuration
@@ -169,10 +169,10 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
     new_state = %{state | connection_state: :connected}
 
     # WebSocket-level ping is disabled - keep-alive is handled at application level
-    # via WA XML ping messages in ConnectionManager
+    # via WA XML ping messages in Connection
     # This matches Baileys behavior which only uses WA XML ping, not WebSocket ping
 
-    # Send connection event directly to parent (ConnectionManager)
+    # Send connection event directly to parent (Connection)
     send(state.parent_pid, {:ws_event, self(), {:open, %{url: state.url}}})
 
     {:ok, new_state}
@@ -235,7 +235,7 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
 
   @impl WebSockex
   def handle_info(:keep_alive, state) do
-    # WebSocket-level ping disabled - keep-alive handled by ConnectionManager via WA XML ping
+    # WebSocket-level ping disabled - keep-alive handled by Connection via WA XML ping
     {:ok, state}
   end
 

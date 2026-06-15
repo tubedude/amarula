@@ -1,7 +1,7 @@
 defmodule Amarula.Protocol.Socket do
   @moduledoc """
   Internal per-connection GenServer: drives one account's pairing/login, sends
-  through the ConversationSender pipe, and forwards ConnectionManager events to
+  through the ConversationSender pipe, and forwards Connection events to
   the instance's `parent_pid`.
 
   Not the public entry point — use the `Amarula` facade, which delegates here.
@@ -10,7 +10,8 @@ defmodule Amarula.Protocol.Socket do
   use GenServer
   require Logger
 
-  alias Amarula.Protocol.Socket.{Types, ConnectionManager, ConnectionSupervisor}
+  alias Amarula.Connection
+  alias Amarula.Protocol.Socket.{Types, ConnectionSupervisor}
   alias Amarula.Protocol.Messages.{ConversationSender, Media, MessageEncoder}
   alias Amarula.Protocol.Proto
 
@@ -225,11 +226,11 @@ defmodule Amarula.Protocol.Socket do
     config = conn.config
 
     # Siblings are already started (Socket is the last child of the
-    # ConnectionSupervisor); resolve the ConnectionManager by role from the
+    # ConnectionSupervisor); resolve the Connection by role from the
     # per-instance Registry.
     connection_manager = ConnectionSupervisor.whereis(instance_id, :connection_manager)
 
-    # Forward the high-level connection events ConnectionManager emits.
+    # Forward the high-level connection events Connection emits.
     for topic <- [
           :connection_update,
           :error,
@@ -243,7 +244,7 @@ defmodule Amarula.Protocol.Socket do
           :blocklist_update,
           :history_sync
         ] do
-      ConnectionManager.subscribe(connection_manager, topic, self())
+      Connection.subscribe(connection_manager, topic, self())
     end
 
     state = %__MODULE__{
@@ -266,7 +267,7 @@ defmodule Amarula.Protocol.Socket do
 
       _ ->
         # Start connection process
-        case ConnectionManager.connect(state.connection_manager) do
+        case Connection.connect(state.connection_manager) do
           :ok ->
             {:reply, :ok, state}
 
@@ -278,7 +279,7 @@ defmodule Amarula.Protocol.Socket do
 
   @impl GenServer
   def handle_call(:disconnect, _from, state) do
-    case ConnectionManager.disconnect(state.connection_manager) do
+    case Connection.disconnect(state.connection_manager) do
       :ok ->
         new_state = %{state | connection_state: :disconnected}
         {:reply, :ok, new_state}
@@ -300,19 +301,19 @@ defmodule Amarula.Protocol.Socket do
 
   @impl GenServer
   def handle_call({:set_presence, type}, _from, state) do
-    {:reply, ConnectionManager.set_presence(state.connection_manager, type), state}
+    {:reply, Connection.set_presence(state.connection_manager, type), state}
   end
 
   @impl GenServer
   def handle_call({:send_chatstate, jid, type}, _from, state) do
     jid = Amarula.Address.to_wire(jid)
-    {:reply, ConnectionManager.send_chatstate(state.connection_manager, jid, type), state}
+    {:reply, Connection.send_chatstate(state.connection_manager, jid, type), state}
   end
 
   @impl GenServer
   def handle_call({:presence_subscribe, jid}, _from, state) do
     jid = Amarula.Address.to_wire(jid)
-    {:reply, ConnectionManager.presence_subscribe(state.connection_manager, jid), state}
+    {:reply, Connection.presence_subscribe(state.connection_manager, jid), state}
   end
 
   @impl GenServer
@@ -320,28 +321,27 @@ defmodule Amarula.Protocol.Socket do
     jid = Amarula.Address.to_wire(jid)
     participant = participant && Amarula.Address.to_wire(participant)
 
-    {:reply, ConnectionManager.mark_read(state.connection_manager, message_ids, jid, participant),
-     state}
+    {:reply, Connection.mark_read(state.connection_manager, message_ids, jid, participant), state}
   end
 
   @impl GenServer
   def handle_call({:group_metadata, group}, _from, state) do
     jid = Amarula.Address.to_wire(group)
-    {:reply, ConnectionManager.group_metadata(state.connection_manager, jid), state}
+    {:reply, Connection.group_metadata(state.connection_manager, jid), state}
   end
 
   @impl GenServer
   def handle_call({:group_op, iq, transform}, _from, state) do
-    {:reply, ConnectionManager.group_op(state.connection_manager, iq, transform), state}
+    {:reply, Connection.group_op(state.connection_manager, iq, transform), state}
   end
 
   def handle_call(:list_groups, _from, state) do
-    {:reply, ConnectionManager.list_groups(state.connection_manager), state}
+    {:reply, Connection.list_groups(state.connection_manager), state}
   end
 
   @impl GenServer
   def handle_call(:logout, _from, state) do
-    reply = ConnectionManager.logout(state.connection_manager)
+    reply = Connection.logout(state.connection_manager)
     {:reply, reply, %{state | connection_state: :disconnected}}
   end
 
@@ -351,7 +351,7 @@ defmodule Amarula.Protocol.Socket do
   end
 
   def handle_call({:request_resend, message_key}, from, state) do
-    creds = ConnectionManager.get_auth_creds(state.connection_manager)
+    creds = Connection.get_auth_creds(state.connection_manager)
     me_id = get_in(creds, [:me, :id])
 
     if me_id do
@@ -429,7 +429,7 @@ defmodule Amarula.Protocol.Socket do
 
   @impl GenServer
   def handle_info({:connection_event, {:error, error}}, state) do
-    # Error already logged by ConnectionManager, just emit event
+    # Error already logged by Connection, just emit event
     emit_event(state, :error, error)
 
     {:noreply, state}
@@ -482,7 +482,7 @@ defmodule Amarula.Protocol.Socket do
 
     # Clean up services
     if state.connection_manager do
-      ConnectionManager.disconnect(state.connection_manager)
+      Connection.disconnect(state.connection_manager)
     end
   end
 
@@ -534,7 +534,7 @@ defmodule Amarula.Protocol.Socket do
       supervisor: ConnectionSupervisor.whereis(state.instance_id, :sender_supervisor),
       cm: state.connection_manager,
       conn: state.conn,
-      creds: ConnectionManager.get_auth_creds(state.connection_manager),
+      creds: Connection.get_auth_creds(state.connection_manager),
       recipient_jid: jid
     ]
 

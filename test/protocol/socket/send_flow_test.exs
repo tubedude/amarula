@@ -2,14 +2,14 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   @moduledoc """
   End-to-end test of the multi-device send pipeline. A per-recipient
   `ConversationSender` runs the blocking `ctx -> ctx` pipe, calling the (dumb)
-  `ConnectionManager` for IQ round-trips:
+  `Connection` for IQ round-trips:
 
       deliver({:send, msg})
         └─ resolve_devices  → query_iq(usync)   ──▶ (inject usync result)
              └─ ensure_sessions → query_iq(bundle) ──▶ (inject bundle result)
                   └─ encrypt + relay_stanza <participants>
 
-  Test seams on ConnectionManager (config-driven, inert in production):
+  Test seams on Connection (config-driven, inert in production):
     * `frame_sink` — captures decoded outbound nodes (IQs + the relayed stanza)
     * `connection_state: :connected` — start connected without a real handshake
     * `{:inject_node, node}` — feed a synthetic server reply; for a query_iq the
@@ -25,7 +25,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   alias Amarula.Protocol.Messages.ConversationSender
   alias Amarula.Protocol.Proto
   alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionStore}
-  alias Amarula.Protocol.Socket.ConnectionManager
+  alias Amarula.Connection
 
   # Obviously-fake placeholder JIDs — not real numbers.
   @jid "10000000001@s.whatsapp.net"
@@ -164,7 +164,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       auth: creds()
     }
 
-    {:ok, pid} = ConnectionManager.start_link(config)
+    {:ok, pid} = Connection.start_link(config)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     # Per-recipient sender infra (normally owned by ConnectionSupervisor).
@@ -238,7 +238,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
   defp attr(node, key), do: NodeUtils.get_attr(node, key)
 
-  # Inject a synthetic server reply into the (test) ConnectionManager.
+  # Inject a synthetic server reply into the (test) Connection.
   defp inject(ctx, node), do: send(ctx.pid, {:inject_node, node})
 
   # The sender emits encrypt/get IQs (bundle fetch + any LID force-refresh) then

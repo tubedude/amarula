@@ -10,7 +10,7 @@ defmodule Amarula.Protocol.Receipt do
       </receipt>
 
   The ids must belong to the same chat (`to`) / sender (`participant`). Pure
-  construction; the `ConnectionManager` writes the node.
+  construction; the `Connection` writes the node.
   """
 
   alias Amarula.Protocol.Binary.Node

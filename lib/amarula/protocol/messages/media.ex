@@ -21,7 +21,7 @@ defmodule Amarula.Protocol.Messages.Media do
 
   alias Amarula.Protocol.Binary.{Node, NodeUtils}
   alias Amarula.Protocol.Crypto.{Constants, Crypto}
-  alias Amarula.Protocol.Socket.ConnectionManager
+  alias Amarula.Connection
 
   @hkdf_info %{
     image: "WhatsApp Image Keys",
@@ -133,7 +133,7 @@ defmodule Amarula.Protocol.Messages.Media do
   end
 
   @doc """
-  Upload an encrypted blob to the media servers. `conn` is the ConnectionManager;
+  Upload an encrypted blob to the media servers. `conn` is the Connection;
   returns `{:ok, %{direct_path: .., url: ..}}`.
   """
   @spec upload(GenServer.server(), binary(), binary(), media_type()) ::
@@ -164,7 +164,7 @@ defmodule Amarula.Protocol.Messages.Media do
       content: [%Node{tag: "media_conn", attrs: %{}, content: nil}]
     }
 
-    with {:ok, reply} <- ConnectionManager.query_iq(conn, iq),
+    with {:ok, reply} <- Connection.query_iq(conn, iq),
          %Node{} = mc <- NodeUtils.get_binary_node_child(reply, "media_conn") do
       hosts =
         mc

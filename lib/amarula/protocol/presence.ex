@@ -3,7 +3,7 @@ defmodule Amarula.Protocol.Presence do
   Build presence / chat-state stanzas, ported from Baileys `sendPresenceUpdate`
   and `presenceSubscribe` (`src/Socket/chats.ts`).
 
-  Pure stanza construction; the `ConnectionManager` supplies `me` and writes the
+  Pure stanza construction; the `Connection` supplies `me` and writes the
   node. Two kinds:
 
     * **global presence** — `available` / `unavailable`: `<presence name= type=>`.

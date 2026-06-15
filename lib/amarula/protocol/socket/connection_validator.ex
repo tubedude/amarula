@@ -3,7 +3,7 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
   Static validation functions for WhatsApp WebSocket handshake.
 
   This module provides pure functions for validating handshake messages
-  and generating appropriate responses. The ConnectionManager orchestrates
+  and generating appropriate responses. The Connection orchestrates
   the actual sending and state management.
   """
 

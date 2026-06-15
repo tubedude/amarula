@@ -70,12 +70,10 @@ process named `Connection` instead of CM).
 
 ## Migration steps (incremental, test-green between each)
 
-1. **Rename first, merge second** — do them as separate commits so the diff is
-   reviewable.
-   - 1a. Rename `ConnectionManager` → `Amarula.Connection` (module + file +
-     all refs + the `:connection_manager` registry role). Pure rename, tests green.
-   - 1b. (optional) note: `Socket` becomes redundant after the merge; don't rename
-     it, delete it in step 3.
+1. **[DONE]** Rename `ConnectionManager` → `Amarula.Connection` (module + file
+   moved to lib/amarula/connection.ex + all refs). Pure rename, live-verified,
+   tests green. (The `:connection_manager` registry role + struct field name are
+   still cosmetically old — cleaned up in step 4.)
 2. **Make Connection the consumer endpoint.** Point `Amarula`/`make_socket` at the
    Connection pid. Move Socket's public client functions (send_text, group_*, …)
    onto Connection (most already have CM twins — dedupe to one). The facade
@@ -89,44 +87,22 @@ process named `Connection` instead of CM).
 5. **deliver_to/deliver_async** lives on Connection now — no cross-process hop for
    sends; Connection dispatches to ConversationSender and parks the caller `from`.
 
-## Process topology ≠ code organization (IMPORTANT)
+## Process topology ≠ code organization
 
-Merging the two *processes* must NOT recreate a monolith. One `Connection`
-GenServer at **runtime**; its logic stays split across many focused modules at
-**compile time**. The GenServer should be thin — it owns state + the
-receive-loop, and **delegates** to pure/stateless submodules.
+This merge is about the **process** topology, NOT a code reorganization. Two
+processes (Socket relay + Connection) become one; the **existing module layout
+stays as-is**. The good seams already in place — `Router`, `IQ`, `Login`,
+`ConnectionValidator`, `WebSocketClient`, the domain modules (`Groups.*`,
+`AppState.*`, `Messages.*`, `USync`) — are kept exactly where they are.
 
-Current good seams to keep + extend: `Router` (pure routing decision), `IQ` (pure
-correlation state), `Login` (pure handshake steps), `ConnectionValidator`,
-`WebSocketClient`, plus the domain modules (`Groups.*`, `AppState.*`,
-`Messages.{Receipt,MessageEncoder,…}`, `USync`).
+We are NOT forcing a new submodule split of `Amarula.Connection` as part of this
+work. If a cluster later earns its own submodule, fine — make it then, on its own
+merits. Do not extract for extraction's sake. The `lib/amarula/connection/`
+namespace exists for new submodules *when they make sense*, not a mandated set.
 
-The merge is the moment to also break up the ~3000-line `ConnectionManager` body.
-Target submodules (extract the inline `handle_*`/`dispatch_*`/`send_*` clusters):
-
-| New module | Owns (extracted from CM) |
-|------------|--------------------------|
-| `Connection` (the GenServer) | state struct, init, the GenServer callbacks, the supervision glue. Thin: each callback delegates. |
-| `Connection.Login` (or extend `Login`) | handshake bootstrap: client-hello/finish, pair-device, pair-success, auth-success, finish_login, prekey count/upload. |
-| `Connection.Notifications` | `handle_notification` + the per-type dispatch (w:gp2/server_sync/encrypt/account_sync/devices/picture) — pure `(state)->{state, effects}` where possible. |
-| `Connection.Receive` | message decrypt path: handle_message, build_msg, retry/nack, hist-sync receipt, offline batch. |
-| `Connection.Send` | deliver_async + the parked-`from` ack correlation (the new feature); relay dispatch to ConversationSender. |
-| `Connection.IQ` (extend `IQ`) | already pure; keep tracked-IQ continuations as a behaviour/callbacks the GenServer provides. |
-| `Connection.Creds` | resolve_auth_creds / update_creds / persistence. |
-| `Connection.Frames` | decode_and_emit_frame, decompress, control frames (decode boundary). |
-
-Rule of thumb: the GenServer module holds NO protocol logic — only state +
-`{state, effects}` plumbing; every cluster above is its own module, ideally pure
-(takes state/inputs, returns new state + a list of effects the GenServer performs:
-`{:send, node}` / `{:reply, from, term}` / `{:emit, parent, event}` /
-`{:schedule, msg, ms}`). This is the `{state, effects}` pattern already used for the
-IQ/Login/Router split — apply it to the rest as part of the merge, so "one process"
-comes with "many small modules", not a 3500-line file.
-
-Do the extractions as their own commits (one cluster at a time, tests green),
-SEPARATE from the rename + the process-merge commits. Order suggestion: rename →
-extract clusters into submodules (shrinking CM) → merge the now-thin Socket relay
-into the now-thin Connection → delete the event bridge.
+So the merge does only: collapse the thin `Socket` relay into `Amarula.Connection`
+(the consumer's direct endpoint) and delete the event-forwarding bridge. The body
+of `Connection` is not reshuffled here.
 
 ## Keep Connection's per-send work TINY (avoid the bottleneck/crash-loss risk)
 
@@ -285,9 +261,11 @@ Failure / edge paths (all replied by Connection, the one owner of `from`):
 - no ack within the timeout, Connection replies error ack_timeout.
 - a plain ack with `phash` is success, never resend, it loops, per Baileys handleBadAck.
 
-## Open decisions before coding
-1. Kept name: `Amarula.Connection` vs reuse `Socket`? (lean: `Connection`)
-2. Merge now, or ship ack-on-send in current CM first, merge later?
+## Decisions
+1. **[DECIDED]** Kept name: `Amarula.Connection`.
+2. **[DECIDED]** No mandated submodule split — keep the existing module layout;
+   add submodules only when one genuinely earns it.
 3. Same `:reference` instance-id / Registry scheme, or simplify once one process?
-4. `{state, effects}` extraction depth: full (every cluster pure) vs pragmatic
-   (extract the big clusters, leave thin glue in the GenServer)?
+   (resolve during step 4.)
+4. Order vs the ack-on-send feature: finish the process merge first, then build
+   ack-on-send on the single-process model.

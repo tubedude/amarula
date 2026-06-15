@@ -77,4 +77,63 @@ defmodule Amarula.MsgTest do
     assert msg.type == :protocol
     assert msg.content == %{type: :APP_STATE_SYNC_KEY_SHARE, message: pm}
   end
+
+  describe "quoted replies + mentions" do
+    alias Amarula.Protocol.Proto.ContextInfo
+
+    test "a reply surfaces the quoted reference + the inlined original" do
+      ctx = %ContextInfo{
+        stanzaId: "ORIGID",
+        participant: "5511888888888@s.whatsapp.net",
+        quotedMessage: %Proto.Message{conversation: "the original"}
+      }
+
+      reply =
+        build(%Proto.Message{
+          extendedTextMessage: %Proto.Message.ExtendedTextMessage{
+            text: "my reply",
+            contextInfo: ctx
+          }
+        })
+
+      assert reply.type == :text
+      assert reply.content == "my reply"
+
+      assert %{id: "ORIGID", participant: %Address{user: "5511888888888"}, message: q} =
+               reply.quoted
+
+      # the inlined quoted message is itself a %Msg{}
+      assert %Amarula.Msg{type: :text, content: "the original", id: "ORIGID"} = q
+    end
+
+    test "a non-reply has quoted: nil" do
+      msg = build(%Proto.Message{conversation: "hi"})
+      assert msg.quoted == nil
+    end
+
+    test "mentions are parsed to Addresses" do
+      ctx = %ContextInfo{
+        mentionedJid: ["5511888888888@s.whatsapp.net", "120363@g.us"]
+      }
+
+      msg =
+        build(%Proto.Message{
+          extendedTextMessage: %Proto.Message.ExtendedTextMessage{text: "@x", contextInfo: ctx}
+        })
+
+      assert [%Address{user: "5511888888888"}, %Address{kind: :group}] = msg.mentions
+    end
+
+    test "quoted on a media reply too (contextInfo lives on the media sub-message)" do
+      ctx = %ContextInfo{stanzaId: "QID", quotedMessage: %Proto.Message{conversation: "q"}}
+
+      msg =
+        build(%Proto.Message{
+          imageMessage: %Proto.Message.ImageMessage{directPath: "/x", contextInfo: ctx}
+        })
+
+      assert msg.type == :media
+      assert %{id: "QID", message: %Amarula.Msg{content: "q"}} = msg.quoted
+    end
+  end
 end

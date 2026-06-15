@@ -104,6 +104,36 @@ defmodule Amarula.Protocol.Messages.MessageContent do
 
   defp do_classify(message), do: {:other, message}
 
+  @doc """
+  Extract the `%Proto.ContextInfo{}` from a message, or `nil`. It lives on whichever
+  content sub-message is present (extendedText/image/video/…); we unwrap envelopes
+  first and return the first sub-message's `contextInfo`. Carries the reply
+  reference (`stanzaId`/`participant`/`quotedMessage`) and `mentionedJid`.
+  """
+  @spec context_info(Proto.Message.t()) :: Proto.ContextInfo.t() | nil
+  def context_info(%Proto.Message{} = message) do
+    message |> unwrap() |> sub_message() |> ctx_of()
+  end
+
+  # The content-bearing sub-struct (the one classify keys on), or nil.
+  defp sub_message(%Proto.Message{} = m) do
+    [
+      m.extendedTextMessage,
+      m.imageMessage,
+      m.videoMessage,
+      m.audioMessage,
+      m.documentMessage,
+      m.stickerMessage,
+      m.contactMessage,
+      m.contactsArrayMessage,
+      m.locationMessage
+    ]
+    |> Enum.find(&(&1 != nil))
+  end
+
+  defp ctx_of(%{contextInfo: %Proto.ContextInfo{} = ctx}), do: ctx
+  defp ctx_of(_), do: nil
+
   defp text_of(%Proto.Message{conversation: b}) when is_binary(b), do: b
   defp text_of(%Proto.Message{extendedTextMessage: %{text: b}}) when is_binary(b), do: b
   defp text_of(_), do: nil

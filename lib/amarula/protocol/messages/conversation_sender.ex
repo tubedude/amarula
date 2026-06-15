@@ -145,7 +145,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
       {:cont, %{message: message}} ->
         store_own_lid_mapping(state)
-        do_send(state, msg_id, jid, kind, message)
+        do_send(state, msg_id, jid, kind, message, Map.get(msg, :stanza_attrs, %{}))
     end
   end
 
@@ -164,7 +164,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     Amarula.Plugin.run(conn.send_steps, ctx)
   end
 
-  defp do_send(state, msg_id, jid, kind, message) do
+  defp do_send(state, msg_id, jid, kind, message, stanza_attrs) do
     ctx = %{
       cm: state.cm,
       conn: state.conn,
@@ -173,6 +173,9 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       msg_id: msg_id,
       target_jid: jid,
       message: message,
+      # Extra <message> stanza attrs (e.g. category/push_priority for a peer
+      # message). Empty for a normal send.
+      stanza_attrs: stanza_attrs,
       # The `edit` attr on the <message> stanza, required for delete/edit/pin
       # (Baileys messages-send.ts): "7" delete-for-everyone, "1" edit. nil = none.
       edit_attr: edit_attr(message),
@@ -505,7 +508,8 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         ctx.target_jid,
         ctx.participants,
         ctx.creds.account,
-        edit: ctx.edit_attr
+        edit: ctx.edit_attr,
+        extra_attrs: ctx.stanza_attrs
       )
 
     Logger.debug("Relaying #{ctx.msg_id} (#{length(ctx.participants)} device(s))")

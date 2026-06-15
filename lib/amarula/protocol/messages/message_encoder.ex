@@ -237,6 +237,28 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
     }
   end
 
+  @doc """
+  A PEER_DATA_OPERATION placeholder-resend request for `message_key` — sent to our
+  own devices to ask the phone to re-deliver that message (Baileys
+  requestPlaceholderResend).
+  """
+  @spec placeholder_resend_request(Proto.MessageKey.t()) :: Proto.Message.t()
+  def placeholder_resend_request(%Proto.MessageKey{} = message_key) do
+    %Proto.Message{
+      protocolMessage: %Proto.Message.ProtocolMessage{
+        type: :PEER_DATA_OPERATION_REQUEST_MESSAGE,
+        peerDataOperationRequestMessage: %Proto.Message.PeerDataOperationRequestMessage{
+          peerDataOperationRequestType: :PLACEHOLDER_MESSAGE_RESEND,
+          placeholderMessageResendRequest: [
+            %Proto.Message.PeerDataOperationRequestMessage.PlaceholderMessageResendRequest{
+              messageKey: message_key
+            }
+          ]
+        }
+      }
+    }
+  end
+
   # writeRandomPadMax16: padLength in 1..16, that many bytes each == padLength.
   @spec pad_random_max16(binary()) :: binary()
   defp pad_random_max16(bytes) do

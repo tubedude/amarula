@@ -2092,6 +2092,21 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     end)
   end
 
+  # Cache received messages by id so a quoted reply can be resolved without a
+  # server round-trip (Amarula.resolve_quoted / get_message). Best-effort.
+  defp cache_received_messages(state, msgs) do
+    Enum.each(msgs, fn %Amarula.Msg{} = m ->
+      if is_binary(m.id) do
+        Amarula.MessageCache.put(profile(state), m.id, %{
+          message: m.raw,
+          chat: m.chat,
+          sender: m.sender,
+          ts: System.system_time(:millisecond)
+        })
+      end
+    end)
+  end
+
   defp maybe_address(nil), do: nil
   defp maybe_address(jid), do: Amarula.Address.parse(jid)
 
@@ -2143,6 +2158,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         kinds = Enum.map(msgs, & &1.type)
         Logger.debug("Decrypted #{length(msgs)} message(s) from #{from} (#{inspect(kinds)})")
 
+        cache_received_messages(state, msgs)
         emit_message_telemetry(state, msgs, node, from)
 
         emit_to_subscribers(state, :messages_upsert, %{

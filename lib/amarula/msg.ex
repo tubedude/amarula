@@ -31,6 +31,19 @@ defmodule Amarula.Msg do
 
   @type media_kind :: :image | :video | :audio | :document | :sticker
 
+  @typedoc """
+  A quoted message a reply points at. `id`/`participant` identify the original;
+  `message` is the partial copy WhatsApp inlines (a nested `%Amarula.Msg{}`),
+  enough to show the quote without a lookup. Use `Amarula.resolve_quoted/2` to
+  fetch the FULL original (cache → server) when the inline copy isn't enough.
+  """
+  @type quoted :: %{
+          id: String.t(),
+          participant: Address.t() | nil,
+          chat: Address.t() | nil,
+          message: t() | nil
+        }
+
   @type t :: %__MODULE__{
           id: String.t() | nil,
           chat: Address.t(),
@@ -39,11 +52,24 @@ defmodule Amarula.Msg do
           timestamp: integer() | nil,
           type: atom(),
           content: term(),
+          quoted: quoted() | nil,
+          mentions: [Address.t()],
           raw: Proto.Message.t()
         }
 
   @enforce_keys [:chat, :type, :raw]
-  defstruct [:id, :chat, :sender, :from_me, :timestamp, :type, :content, :raw]
+  defstruct [
+    :id,
+    :chat,
+    :sender,
+    :from_me,
+    :timestamp,
+    :type,
+    :content,
+    :quoted,
+    :raw,
+    mentions: []
+  ]
 
   @doc """
   Build a `%Msg{}` from a decrypted proto and its envelope.
@@ -54,6 +80,7 @@ defmodule Amarula.Msg do
   @spec from_proto(Proto.Message.t(), map()) :: t()
   def from_proto(%Proto.Message{} = proto, meta) do
     {type, content} = classify(proto)
+    ctx = MessageContent.context_info(proto)
 
     %__MODULE__{
       id: meta[:id],
@@ -63,9 +90,44 @@ defmodule Amarula.Msg do
       timestamp: meta[:timestamp],
       type: type,
       content: content,
+      quoted: quoted(ctx, meta[:chat]),
+      mentions: mentions(ctx),
       raw: proto
     }
   end
+
+  # Build the `quoted` view from a message's contextInfo (nil if not a reply).
+  # The inlined quotedMessage is wrapped as a nested %Msg{} so consumers read it
+  # the same way as any message.
+  defp quoted(nil, _chat), do: nil
+
+  defp quoted(%Proto.ContextInfo{stanzaId: id} = ctx, chat) when is_binary(id) and id != "" do
+    participant = address(ctx.participant)
+
+    inner =
+      case ctx.quotedMessage do
+        %Proto.Message{} = qm ->
+          from_proto(qm, %{id: id, chat: chat, sender: participant})
+
+        _ ->
+          nil
+      end
+
+    %{id: id, participant: participant, chat: address(ctx.remoteJid) || chat, message: inner}
+  end
+
+  defp quoted(_ctx, _chat), do: nil
+
+  defp mentions(nil), do: []
+
+  defp mentions(%Proto.ContextInfo{mentionedJid: jids}) when is_list(jids),
+    do: Enum.map(jids, &Address.parse/1)
+
+  defp mentions(_), do: []
+
+  defp address(nil), do: nil
+  defp address(""), do: nil
+  defp address(jid) when is_binary(jid), do: Address.parse(jid)
 
   # Map the internal classify tuple to a {type, friendly-content} pair.
   defp classify(proto) do

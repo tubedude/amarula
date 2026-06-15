@@ -410,6 +410,61 @@ defmodule Amarula do
 
   defp iq_error(other), do: other
 
+  ## Replies / quoted messages -----------------------------------------------
+
+  @doc """
+  Look up a recently-received message by id in the in-memory cache. Returns an
+  `%Amarula.Msg{}` or `nil` (evicted / never seen). Best-effort — for a guaranteed
+  fetch use `resolve_quoted/2`, which falls back to asking the server.
+  """
+  @spec get_message(conn(), String.t()) :: Amarula.Msg.t() | nil
+  defdelegate get_message(conn, msg_id), to: Socket
+
+  @doc """
+  Ask the phone to re-deliver a message by key (a PEER_DATA_OPERATION
+  placeholder-resend). The message arrives **asynchronously** later via the normal
+  `:messages_upsert` event (and is cached). Returns `{:ok, request_msg_id}`.
+  """
+  @spec request_resend(conn(), message_key()) :: send_result()
+  defdelegate request_resend(conn, message_key), to: Socket
+
+  @doc """
+  Resolve the original message a reply quotes, in three tiers:
+
+    1. the inline copy WhatsApp ships in the reply (`msg.quoted.message`) — instant;
+    2. the received-message cache (`get_message/2`) — instant if still cached;
+    3. otherwise ask the server (`request_resend/2`) — the original re-arrives async
+       via `:messages_upsert`.
+
+  Returns `{:ok, %Amarula.Msg{}}` for tiers 1–2, `{:requested, request_msg_id}` for
+  tier 3 (watch for it on the event stream), or `{:error, :not_a_reply}`.
+  """
+  @spec resolve_quoted(conn(), Amarula.Msg.t()) ::
+          {:ok, Amarula.Msg.t()} | {:requested, String.t()} | {:error, term()}
+  def resolve_quoted(_conn, %Amarula.Msg{quoted: nil}), do: {:error, :not_a_reply}
+
+  def resolve_quoted(conn, %Amarula.Msg{quoted: %{id: id} = q} = msg) do
+    cond do
+      match?(%Amarula.Msg{}, q.message) -> {:ok, q.message}
+      cached = get_message(conn, id) -> {:ok, cached}
+      true -> {:requested, request_resend_for_quoted(conn, msg)}
+    end
+  end
+
+  # Build the MessageKey for the quoted original + ask the server to re-deliver it.
+  defp request_resend_for_quoted(conn, %Amarula.Msg{quoted: q} = msg) do
+    key = %Proto.MessageKey{
+      remoteJid: Amarula.Address.to_wire(q.chat || msg.chat),
+      id: q.id,
+      participant: q.participant && Amarula.Address.to_wire(q.participant)
+    }
+
+    case request_resend(conn, key) do
+      {:ok, request_id} -> request_id
+      _ -> nil
+    end
+  end
+
   @doc "React to a message with `emoji` (empty string removes the reaction)."
   @spec send_reaction(conn(), message_key(), String.t()) :: send_result()
   defdelegate send_reaction(conn, target_key, emoji), to: Socket

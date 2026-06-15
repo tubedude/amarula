@@ -81,7 +81,12 @@ defmodule Amarula.Protocol.Messages.Relay do
 
     # Attrs match a live Baileys 1:1 send (captured 2026-06-13): id, to (PN), type
     # ONLY — NO `t`. The `edit` attr is added only for delete/edit messages.
-    attrs = put_edit(%{"id" => msg_id, "to" => to, "type" => "text"}, opts)
+    # `:extra_attrs` (e.g. category/push_priority for a peer message) merge in.
+    attrs =
+      %{"id" => msg_id, "to" => to, "type" => "text"}
+      |> put_edit(opts)
+      |> Map.merge(Keyword.get(opts, :extra_attrs, %{}))
+
     stanza = Node.create("message", attrs, children)
 
     {:ok, stanza}

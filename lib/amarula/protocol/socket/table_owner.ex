@@ -1,19 +1,22 @@
 defmodule Amarula.Protocol.Socket.TableOwner do
   @moduledoc """
-  Owns the per-connection ETS tables (message cache + retry cache), created once
-  at `init` — BEFORE the ConnectionManager/Socket that read them start, since it's
-  the first child of the `ConnectionSupervisor`.
+  Owns the per-connection retry-cache ETS table, created once at `init` — BEFORE
+  the ConnectionManager that reads it starts, since it's an early child of the
+  `ConnectionSupervisor`.
 
-  This is why the cache modules never create tables lazily: the owner guarantees
-  the table exists before any reader runs, so there's no create race (and no
-  `try/rescue` race guard — not an idiomatic pattern). The table is `:public` so
-  cache reads/writes happen directly from any process; it dies (and is recreated
-  on restart) with this owner, matching the connection's lifetime.
+  This is why `RetryCache.ETS` never creates its table lazily: the owner
+  guarantees it exists before any reader runs, so there's no create race (and no
+  `try/rescue` race guard). The table is `:public` so reads/writes happen directly
+  from any process; it dies (and is recreated on restart) with this owner.
+
+  NOTE: this owns ETS *because the default RetryCache adapter is ETS*. A different
+  retry-cache adapter (DETS, Redis) owns its own resources — see the adapter; the
+  framework only provides this supervision slot for the local case.
   """
 
   use GenServer
 
-  alias Amarula.{MessageCache, RetryCache}
+  alias Amarula.RetryCache
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -23,9 +26,6 @@ defmodule Amarula.Protocol.Socket.TableOwner do
 
   @impl true
   def init(profile) do
-    # Create the tables we own. The cache modules look them up by name; we never
-    # rely on lazy first-use creation.
-    MessageCache.ensure_table(profile)
     RetryCache.ETS.ensure_table(profile)
     {:ok, profile}
   end

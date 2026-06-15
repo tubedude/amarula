@@ -141,11 +141,6 @@ defmodule Amarula.Protocol.Socket do
     GenServer.call(pid, {:request_resend, message_key})
   end
 
-  @doc "Look up a recently-received message by id in the cache (`%Msg{}` or nil)."
-  def get_message(pid \\ __MODULE__, msg_id) do
-    GenServer.call(pid, {:get_message, msg_id})
-  end
-
   @doc """
   Send a poll to `jid`. Returns `{:ok, msg_id, message_secret}` — keep the secret
   to tally incoming votes. `opts`: `:selectable`, `:announcement`, `:message_secret`.
@@ -350,10 +345,6 @@ defmodule Amarula.Protocol.Socket do
     {:reply, deliver_to(state, jid, %{message: message}), state}
   end
 
-  def handle_call({:get_message, msg_id}, _from, state) do
-    {:reply, lookup_cached_message(state, msg_id), state}
-  end
-
   def handle_call({:request_resend, message_key}, _from, state) do
     creds = ConnectionManager.get_auth_creds(state.connection_manager)
     me_id = get_in(creds, [:me, :id])
@@ -516,17 +507,6 @@ defmodule Amarula.Protocol.Socket do
 
   defp generate_message_id do
     "3EB0" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :upper))
-  end
-
-  # Rebuild an %Amarula.Msg{} from the received-message cache, or nil on a miss.
-  defp lookup_cached_message(state, msg_id) do
-    case Amarula.MessageCache.get(state.conn.profile, msg_id) do
-      {:ok, %{message: proto, chat: chat, sender: sender}} ->
-        Amarula.Msg.from_proto(proto, %{id: msg_id, chat: chat, sender: sender})
-
-      :error ->
-        nil
-    end
   end
 
   # Hand a message off to the per-recipient ConversationSender. `payload` carries

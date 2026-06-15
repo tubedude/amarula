@@ -413,47 +413,37 @@ defmodule Amarula do
   ## Replies / quoted messages -----------------------------------------------
 
   @doc """
-  Look up a recently-received message by id in the in-memory cache. Returns an
-  `%Amarula.Msg{}` or `nil` (evicted / never seen). Best-effort — for a guaranteed
-  fetch use `resolve_quoted/2`, which falls back to asking the server.
-  """
-  @spec get_message(conn(), String.t()) :: Amarula.Msg.t() | nil
-  defdelegate get_message(conn, msg_id), to: Socket
-
-  @doc """
   Ask the phone to re-deliver a message by key (a PEER_DATA_OPERATION
   placeholder-resend). The message arrives **asynchronously** later via the normal
-  `:messages_upsert` event (and is cached). Returns `{:ok, request_msg_id}`.
+  `:messages_upsert` event. Returns `{:ok, request_msg_id}`.
   """
   @spec request_resend(conn(), message_key()) :: send_result()
   defdelegate request_resend(conn, message_key), to: Socket
 
   @doc """
-  Resolve the original message a reply quotes, in three tiers:
+  Resolve the original message a reply quotes.
 
-    1. the inline copy WhatsApp ships in the reply (`msg.quoted.message`) — instant;
-    2. the received-message cache (`get_message/2`) — instant if still cached;
-    3. otherwise ask the server (`request_resend/2`) — the original re-arrives async
-       via `:messages_upsert`.
+    1. If the reply carries the inline copy WhatsApp ships (`msg.quoted.message`),
+       return it immediately — `{:ok, %Amarula.Msg{}}`.
+    2. Otherwise ask the server to re-deliver the original — `{:requested, id}`;
+       it re-arrives async via `:messages_upsert`.
 
-  Returns `{:ok, %Amarula.Msg{}}` for tiers 1–2, `{:requested, request_msg_id}` for
-  tier 3 (watch for it on the event stream), or `{:error, :not_a_reply}`.
+  `{:error, :not_a_reply}` if `msg` doesn't quote anything.
+
+  > Amarula does not keep an inbound-message store — delivery ends at
+  > `:messages_upsert` (the message, its mentions, and the inline quote are all
+  > there). If you want to resolve a quote from your own history, look it up in
+  > whatever store you keep and skip this; this function only handles the inline
+  > copy and the server round-trip.
   """
   @spec resolve_quoted(conn(), Amarula.Msg.t()) ::
           {:ok, Amarula.Msg.t()} | {:requested, String.t()} | {:error, term()}
   def resolve_quoted(_conn, %Amarula.Msg{quoted: nil}), do: {:error, :not_a_reply}
 
-  def resolve_quoted(conn, %Amarula.Msg{quoted: %{id: id} = q} = msg) do
-    cond do
-      match?(%Amarula.Msg{}, q.message) -> {:ok, q.message}
-      cached = get_message(conn, id) -> {:ok, cached}
-      true -> request_resend_for_quoted(conn, msg)
-    end
-  end
+  def resolve_quoted(_conn, %Amarula.Msg{quoted: %{message: %Amarula.Msg{} = inline}}),
+    do: {:ok, inline}
 
-  # Build the MessageKey for the quoted original + ask the server to re-deliver it.
-  # {:requested, request_id} on success; the resend's {:error, reason} otherwise.
-  defp request_resend_for_quoted(conn, %Amarula.Msg{quoted: q} = msg) do
+  def resolve_quoted(conn, %Amarula.Msg{quoted: q} = msg) do
     key = %Proto.MessageKey{
       remoteJid: Amarula.Address.to_wire(q.chat || msg.chat),
       id: q.id,

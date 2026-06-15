@@ -90,9 +90,9 @@ defmodule Amarula do
   bytes lazily with `download_media/1`.
   """
 
+  alias Amarula.Connection
   alias Amarula.Protocol.Messages.Media
   alias Amarula.Protocol.Proto
-  alias Amarula.Protocol.Socket
 
   @typedoc "A connection handle: the pid from `connect/2` (or a registered name)."
   @type conn :: GenServer.server()
@@ -169,15 +169,15 @@ defmodule Amarula do
   """
   @spec connect(Amarula.Conn.t(), keyword()) :: {:ok, conn()} | {:error, term()}
   def connect(%Amarula.Conn{} = conn, opts \\ []) do
-    with {:ok, pid} <- Socket.make_socket(conn, opts),
-         :ok <- Socket.connect(pid) do
+    with {:ok, pid} <- Connection.make_socket(conn, opts),
+         :ok <- Connection.connect(pid) do
       {:ok, pid}
     end
   end
 
   @doc "Disconnect the connection. Returns `:ok | {:error, reason}`."
   @spec disconnect(conn()) :: :ok | {:error, term()}
-  defdelegate disconnect(conn), to: Socket
+  defdelegate disconnect(conn), to: Connection
 
   @doc """
   Log out / forget this connection: unlink the companion on WhatsApp's side (the
@@ -185,27 +185,27 @@ defmodule Amarula do
   disconnect. After this the profile must be re-paired to use again.
   """
   @spec logout(conn()) :: :ok
-  defdelegate logout(conn), to: Socket
+  defdelegate logout(conn), to: Connection
 
   @doc "Current connection state (e.g. `:disconnected`, `:connecting`, `:connected`)."
   @spec connection_state(conn()) :: atom()
-  defdelegate connection_state(conn), to: Socket, as: :get_connection_state
+  defdelegate connection_state(conn), to: Connection, as: :get_connection_state
 
   @doc "Send a 1:1/group text message to `jid`."
   @spec send_text(conn(), jid(), String.t()) :: send_result()
-  defdelegate send_text(conn, jid, text), to: Socket
+  defdelegate send_text(conn, jid, text), to: Connection
 
   @doc "Set your global presence: `:available` (online) or `:unavailable`. Needs a profile name."
   @spec set_presence(conn(), :available | :unavailable) :: :ok | {:error, term()}
-  defdelegate set_presence(conn, type), to: Socket
+  defdelegate set_presence(conn, type), to: Connection
 
   @doc "Send a typing indicator to `jid`: `:composing`, `:recording`, or `:paused`."
   @spec send_chatstate(conn(), jid(), :composing | :recording | :paused) :: :ok
-  defdelegate send_chatstate(conn, jid, type), to: Socket
+  defdelegate send_chatstate(conn, jid, type), to: Connection
 
   @doc "Subscribe to a contact's presence updates."
   @spec presence_subscribe(conn(), jid()) :: :ok
-  defdelegate presence_subscribe(conn, jid), to: Socket
+  defdelegate presence_subscribe(conn, jid), to: Connection
 
   @doc """
   Send a read receipt for `message_ids` in chat `jid` (pass `participant` for a
@@ -213,11 +213,11 @@ defmodule Amarula do
   """
   @spec mark_read(conn(), [String.t(), ...], jid(), jid() | nil) :: :ok
   def mark_read(conn, message_ids, jid, participant \\ nil),
-    do: Socket.mark_read(conn, message_ids, jid, participant)
+    do: Connection.mark_read(conn, message_ids, jid, participant)
 
   @doc "Send a pre-built `%Proto.Message{}` to `jid`."
   @spec send_message(conn(), jid(), Proto.Message.t()) :: send_result()
-  defdelegate send_message(conn, jid, message), to: Socket
+  defdelegate send_message(conn, jid, message), to: Connection
 
   @doc """
   Send a poll to `jid`. Returns `{:ok, msg_id, message_secret}` — keep the
@@ -227,28 +227,28 @@ defmodule Amarula do
   @spec send_poll(conn(), jid(), String.t(), [String.t(), ...], keyword()) ::
           {:ok, String.t(), binary()} | {:error, term()}
   def send_poll(conn, jid, name, options, opts \\ []),
-    do: Socket.send_poll(conn, jid, name, options, opts)
+    do: Connection.send_poll(conn, jid, name, options, opts)
 
   @doc "Send a contact (`display_name` + vCard string) to `jid`."
   @spec send_contact(conn(), jid(), String.t(), String.t()) :: send_result()
-  defdelegate send_contact(conn, jid, display_name, vcard), to: Socket
+  defdelegate send_contact(conn, jid, display_name, vcard), to: Connection
 
   @doc "Send multiple contacts to `jid`: `pairs` is `[{display_name, vcard}, ...]`."
   @spec send_contacts(conn(), jid(), String.t(), [{String.t(), String.t()}, ...]) :: send_result()
-  defdelegate send_contacts(conn, jid, display_name, pairs), to: Socket
+  defdelegate send_contacts(conn, jid, display_name, pairs), to: Connection
 
   @doc "Send a location to `jid`. `opts`: `:name`, `:address`, `:url`, `:is_live`."
   @spec send_location(conn(), jid(), float(), float(), keyword()) :: send_result()
   def send_location(conn, jid, lat, lng, opts \\ []),
-    do: Socket.send_location(conn, jid, lat, lng, opts)
+    do: Connection.send_location(conn, jid, lat, lng, opts)
 
   @doc "Fetch a group's metadata (`%Amarula.Group{}`). `group` is an `Address` or jid."
   @spec group_metadata(conn(), jid()) :: {:ok, Amarula.Group.t()} | {:error, term()}
-  defdelegate group_metadata(conn, group), to: Socket
+  defdelegate group_metadata(conn, group), to: Connection
 
   @doc "List all groups we participate in (`[%Amarula.Group{}]`)."
   @spec list_groups(conn()) :: {:ok, [Amarula.Group.t()]} | {:error, term()}
-  defdelegate list_groups(conn), to: Socket
+  defdelegate list_groups(conn), to: Connection
 
   ## Group management ----------------------------------------------------------
   #
@@ -267,25 +267,25 @@ defmodule Amarula do
   @spec group_create(conn(), String.t(), [String.t()]) ::
           {:ok, Amarula.Group.t()} | {:error, term()}
   def group_create(conn, subject, participants) do
-    Socket.group_op(conn, GroupOps.create(subject, participants), &group_meta_result/1)
+    Connection.group_op(conn, GroupOps.create(subject, participants), &group_meta_result/1)
   end
 
   @doc "Leave a group."
   @spec group_leave(conn(), String.t()) :: :ok | {:error, term()}
   def group_leave(conn, group) do
-    Socket.group_op(conn, GroupOps.leave(group), &ok_result/1)
+    Connection.group_op(conn, GroupOps.leave(group), &ok_result/1)
   end
 
   @doc "Change a group's subject (title)."
   @spec group_update_subject(conn(), String.t(), String.t()) :: :ok | {:error, term()}
   def group_update_subject(conn, group, subject) do
-    Socket.group_op(conn, GroupOps.update_subject(group, subject), &ok_result/1)
+    Connection.group_op(conn, GroupOps.update_subject(group, subject), &ok_result/1)
   end
 
   @doc "Set (or clear, with `nil`/`\"\"`) a group's description."
   @spec group_update_description(conn(), String.t(), String.t() | nil) :: :ok | {:error, term()}
   def group_update_description(conn, group, description) do
-    Socket.group_op(conn, GroupOps.update_description(group, description), &ok_result/1)
+    Connection.group_op(conn, GroupOps.update_description(group, description), &ok_result/1)
   end
 
   @doc """
@@ -295,7 +295,7 @@ defmodule Amarula do
   @spec group_participants(conn(), String.t(), [String.t()], GroupOps.action()) ::
           {:ok, [affected()]} | {:error, term()}
   def group_participants(conn, group, participants, action) do
-    Socket.group_op(conn, GroupOps.participants_update(group, participants, action), fn r ->
+    Connection.group_op(conn, GroupOps.participants_update(group, participants, action), fn r ->
       r |> reply_node() |> GroupOps.parse_participants(action) |> reply_or_error(r)
     end)
   end
@@ -306,32 +306,32 @@ defmodule Amarula do
   """
   @spec group_setting(conn(), String.t(), GroupOps.setting()) :: :ok | {:error, term()}
   def group_setting(conn, group, setting) do
-    Socket.group_op(conn, GroupOps.setting_update(group, setting), &ok_result/1)
+    Connection.group_op(conn, GroupOps.setting_update(group, setting), &ok_result/1)
   end
 
   @doc "Who may add members: `:admin_add` (admins only) or `:all_member_add`."
   @spec group_member_add_mode(conn(), String.t(), :admin_add | :all_member_add) ::
           :ok | {:error, term()}
   def group_member_add_mode(conn, group, mode) do
-    Socket.group_op(conn, GroupOps.member_add_mode(group, mode), &ok_result/1)
+    Connection.group_op(conn, GroupOps.member_add_mode(group, mode), &ok_result/1)
   end
 
   @doc "Turn join-approval (admin approves joiners) `:on`/`:off`."
   @spec group_join_approval_mode(conn(), String.t(), :on | :off) :: :ok | {:error, term()}
   def group_join_approval_mode(conn, group, mode) do
-    Socket.group_op(conn, GroupOps.join_approval_mode(group, mode), &ok_result/1)
+    Connection.group_op(conn, GroupOps.join_approval_mode(group, mode), &ok_result/1)
   end
 
   @doc "Toggle disappearing messages. `0` = off; otherwise seconds of expiration."
   @spec group_ephemeral(conn(), String.t(), non_neg_integer()) :: :ok | {:error, term()}
   def group_ephemeral(conn, group, expiration) do
-    Socket.group_op(conn, GroupOps.toggle_ephemeral(group, expiration), &ok_result/1)
+    Connection.group_op(conn, GroupOps.toggle_ephemeral(group, expiration), &ok_result/1)
   end
 
   @doc "Fetch the group's invite code."
   @spec group_invite_code(conn(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def group_invite_code(conn, group) do
-    Socket.group_op(conn, GroupOps.invite_code(group), fn r ->
+    Connection.group_op(conn, GroupOps.invite_code(group), fn r ->
       r |> reply_node() |> GroupOps.parse_invite_code() |> reply_or_error(r)
     end)
   end
@@ -339,7 +339,7 @@ defmodule Amarula do
   @doc "Revoke + regenerate the group's invite code. Returns the new code."
   @spec group_revoke_invite(conn(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def group_revoke_invite(conn, group) do
-    Socket.group_op(conn, GroupOps.revoke_invite(group), fn r ->
+    Connection.group_op(conn, GroupOps.revoke_invite(group), fn r ->
       r |> reply_node() |> GroupOps.parse_invite_code() |> reply_or_error(r)
     end)
   end
@@ -347,7 +347,7 @@ defmodule Amarula do
   @doc "Join a group by invite `code`. Returns the joined group's jid."
   @spec group_accept_invite(conn(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def group_accept_invite(conn, code) do
-    Socket.group_op(conn, GroupOps.accept_invite(code), fn r ->
+    Connection.group_op(conn, GroupOps.accept_invite(code), fn r ->
       r |> reply_node() |> GroupOps.parse_accepted_jid() |> reply_or_error(r)
     end)
   end
@@ -355,13 +355,13 @@ defmodule Amarula do
   @doc "Look up group metadata from an invite `code` without joining."
   @spec group_invite_info(conn(), String.t()) :: {:ok, Amarula.Group.t()} | {:error, term()}
   def group_invite_info(conn, code) do
-    Socket.group_op(conn, GroupOps.invite_info(code), &group_meta_result/1)
+    Connection.group_op(conn, GroupOps.invite_info(code), &group_meta_result/1)
   end
 
   @doc "List pending join-approval requests (a list of attr maps)."
   @spec group_requests(conn(), String.t()) :: {:ok, [map()]} | {:error, term()}
   def group_requests(conn, group) do
-    Socket.group_op(conn, GroupOps.request_list(group), fn r ->
+    Connection.group_op(conn, GroupOps.request_list(group), fn r ->
       r |> reply_node() |> GroupOps.parse_request_list() |> reply_or_error(r)
     end)
   end
@@ -370,7 +370,7 @@ defmodule Amarula do
   @spec group_request_update(conn(), String.t(), [String.t()], :approve | :reject) ::
           {:ok, [affected()]} | {:error, term()}
   def group_request_update(conn, group, participants, action) do
-    Socket.group_op(conn, GroupOps.request_update(group, participants, action), fn r ->
+    Connection.group_op(conn, GroupOps.request_update(group, participants, action), fn r ->
       r |> reply_node() |> GroupOps.parse_request_update(action) |> reply_or_error(r)
     end)
   end
@@ -418,7 +418,7 @@ defmodule Amarula do
   `:messages_upsert` event. Returns `{:ok, request_msg_id}`.
   """
   @spec request_resend(conn(), message_key()) :: send_result()
-  defdelegate request_resend(conn, message_key), to: Socket
+  defdelegate request_resend(conn, message_key), to: Connection
 
   @doc """
   Resolve the original message a reply quotes.
@@ -458,15 +458,15 @@ defmodule Amarula do
 
   @doc "React to a message with `emoji` (empty string removes the reaction)."
   @spec send_reaction(conn(), message_key(), String.t()) :: send_result()
-  defdelegate send_reaction(conn, target_key, emoji), to: Socket
+  defdelegate send_reaction(conn, target_key, emoji), to: Connection
 
   @doc "Edit a message we sent, replacing its text."
   @spec send_edit(conn(), message_key(), String.t()) :: send_result()
-  defdelegate send_edit(conn, target_key, new_text), to: Socket
+  defdelegate send_edit(conn, target_key, new_text), to: Connection
 
   @doc "Delete a message for everyone (revoke)."
   @spec send_revoke(conn(), message_key()) :: send_result()
-  defdelegate send_revoke(conn, target_key), to: Socket
+  defdelegate send_revoke(conn, target_key), to: Connection
 
   @doc """
   Send media of `type` (`:image`/`:video`/`:audio`/`:document`/`:sticker`).
@@ -474,7 +474,7 @@ defmodule Amarula do
   `:ptt`, `:file_name`, `:title`.
   """
   @spec send_media(conn(), media_type(), jid(), binary(), keyword()) :: send_result()
-  defdelegate send_media(conn, type, jid, data, opts \\ []), to: Socket
+  defdelegate send_media(conn, type, jid, data, opts \\ []), to: Connection
 
   ## Receiving -----------------------------------------------------------------
   #

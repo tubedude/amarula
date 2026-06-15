@@ -57,7 +57,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   @doc """
   Hand a message to the recipient's sender (start-or-lookup), asynchronously. The
   send runs on the per-recipient process — serialized per recipient, parallel
-  across recipients — so the CALLING process (Socket) is not blocked.
+  across recipients — so the CALLING process (Connection) is not blocked.
 
   `msg` may carry `:reply_to` (a `GenServer.from` to answer when the send
   finishes) and `:reply_shape` (a `fun result -> reply`, default identity). When
@@ -111,9 +111,9 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   def handle_cast({:send, msg}, state) do
     result = run_send(msg, state)
 
-    # Reply to the original caller (Socket forwarded its `from`), if any. The send
-    # ran here, on the per-recipient process, so Socket stayed free for other
-    # recipients while this one was in flight.
+    # Reply to the original caller (Connection forwarded its `from`), if any. The
+    # send ran here, on the per-recipient process, so Connection stayed free for
+    # other recipients while this one was in flight.
     case Map.get(msg, :reply_to) do
       nil -> :ok
       from -> GenServer.reply(from, Map.get(msg, :reply_shape, & &1).(result))

@@ -59,10 +59,17 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   send runs on the per-recipient process — serialized per recipient, parallel
   across recipients — so the CALLING process (Connection) is not blocked.
 
-  `msg` may carry `:reply_to` (a `GenServer.from` to answer when the send
-  finishes) and `:reply_shape` (a `fun result -> reply`, default identity). When
-  `:reply_to` is set the sender `GenServer.reply`s the (shaped) result to that
-  caller; when nil it's fire-and-forget (e.g. a retry resend). Returns `:ok`.
+  `msg` carries `:msg_id`. The sender does NOT reply the consumer (ack-on-send,
+  Design 2): it runs the pipe and reports the PIPE result back to `Connection`
+  (`state.cm`), which owns the parked consumer `from` and replies it at ack time:
+
+    * relay succeeded (frame written) → `{:send_relayed, msg_id}` — Connection
+      keeps the parked entry and awaits the server's `<ack>`.
+    * pipe failed (not_on_whatsapp / IQ timeout / encrypt error / plugin halt)
+      → `{:send_failed, msg_id, reason}` — no frame went out, so Connection
+      replies the parked caller the failure immediately.
+
+  Returns `:ok`.
   """
   @spec deliver(keyword(), map()) :: :ok
   def deliver(opts, msg) do
@@ -108,19 +115,19 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   end
 
   @impl true
-  def handle_cast({:send, msg}, state) do
-    result = run_send(msg, state)
-
-    # Reply to the original caller (Connection forwarded its `from`), if any. The
-    # send ran here, on the per-recipient process, so Connection stayed free for
-    # other recipients while this one was in flight.
-    case Map.get(msg, :reply_to) do
-      nil -> :ok
-      from -> GenServer.reply(from, Map.get(msg, :reply_shape, & &1).(result))
-    end
-
+  def handle_cast({:send, %{msg_id: msg_id} = msg}, state) do
+    # Report the pipe result back to Connection — NOT the consumer. Connection
+    # holds the parked `from` (under msg_id) and replies it at ack time (relay
+    # ok) or immediately (pipe failure). A relayed frame awaits the server <ack>;
+    # a failure means no frame went out, so no ack will ever come.
+    send(state.cm, report(run_send(msg, state), msg_id))
     {:noreply, state, @idle_timeout_ms}
   end
+
+  # Map the pipe result to the message Connection expects.
+  defp report(:ok, msg_id), do: {:send_relayed, msg_id}
+  defp report({:error, reason}, msg_id), do: {:send_failed, msg_id, reason}
+  defp report({:halted, reason}, msg_id), do: {:send_failed, msg_id, {:halted, reason}}
 
   @impl true
   def handle_info(:timeout, state) do

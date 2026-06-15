@@ -128,6 +128,9 @@ defmodule Amarula do
       subject, announce, lock — see `Amarula.Protocol.Groups.Notification`)
     * `:receipt_update`    — `%{message_ids, from, participant, status, timestamp}`
       a message we sent was delivered/read/played (`Amarula.Protocol.Messages.Receipt`)
+    * `:presence_update`   — `%{jid: Address, participant: Address, presence, last_seen}`
+      a contact/group member's presence (`:available`/`:unavailable`) or typing
+      state (`:composing`/`:recording`) — `Amarula.Protocol.Presence`
     * `:blocklist_update`  — `[%{jid, action}]` block/unblock changes
     * `:pairing_code`      — `%{code: code}` the 8-char link-code (phone-number)
       pairing code to display (from `request_pairing_code/3`)
@@ -146,6 +149,7 @@ defmodule Amarula do
           | :contacts_update
           | :group_update
           | :receipt_update
+          | :presence_update
           | :blocklist_update
           | :pairing_code
           | :pairing_success

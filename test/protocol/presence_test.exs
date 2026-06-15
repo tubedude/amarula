@@ -56,6 +56,77 @@ defmodule Amarula.Protocol.PresenceTest do
     end
   end
 
+  describe "parse_update/1" do
+    test "available presence" do
+      node = %Node{tag: "presence", attrs: %{"from" => "999@s.whatsapp.net"}, content: nil}
+
+      assert {:ok,
+              %{
+                jid: "999@s.whatsapp.net",
+                participant: "999@s.whatsapp.net",
+                presence: :available,
+                last_seen: nil
+              }} = Presence.parse_update(node)
+    end
+
+    test "unavailable presence with last seen" do
+      node = %Node{
+        tag: "presence",
+        attrs: %{"from" => "999@s.whatsapp.net", "type" => "unavailable", "last" => "1700000000"},
+        content: nil
+      }
+
+      assert {:ok, %{presence: :unavailable, last_seen: 1_700_000_000}} =
+               Presence.parse_update(node)
+    end
+
+    test "last=deny is dropped" do
+      node = %Node{
+        tag: "presence",
+        attrs: %{"from" => "999@s.whatsapp.net", "last" => "deny"},
+        content: nil
+      }
+
+      assert {:ok, %{last_seen: nil}} = Presence.parse_update(node)
+    end
+
+    test "chatstate composing uses participant when present" do
+      node = %Node{
+        tag: "chatstate",
+        attrs: %{"from" => "g@g.us", "participant" => "999@lid"},
+        content: [%Node{tag: "composing", attrs: %{}, content: nil}]
+      }
+
+      assert {:ok, %{jid: "g@g.us", participant: "999@lid", presence: :composing}} =
+               Presence.parse_update(node)
+    end
+
+    test "chatstate composing+media:audio is recording" do
+      node = %Node{
+        tag: "chatstate",
+        attrs: %{"from" => "999@lid"},
+        content: [%Node{tag: "composing", attrs: %{"media" => "audio"}, content: nil}]
+      }
+
+      assert {:ok, %{presence: :recording}} = Presence.parse_update(node)
+    end
+
+    test "chatstate paused maps to available" do
+      node = %Node{
+        tag: "chatstate",
+        attrs: %{"from" => "999@lid"},
+        content: [%Node{tag: "paused", attrs: %{}, content: nil}]
+      }
+
+      assert {:ok, %{presence: :available}} = Presence.parse_update(node)
+    end
+
+    test "malformed chatstate is rejected" do
+      assert {:error, :invalid} =
+               Presence.parse_update(%Node{tag: "chatstate", attrs: %{}, content: nil})
+    end
+  end
+
   test "subscribe/2" do
     assert %Node{
              tag: "presence",

@@ -1,17 +1,63 @@
 defmodule Amarula.Config do
-  @moduledoc """
-  Connection config defaults.
+  @wa_version [2, 3000, 1_035_194_821]
 
-  A consumer supplies only what differs (at minimum `:profile`); `merge/1` fills
-  the rest. This is the single source of truth for protocol/connection tunables,
-  so examples and callers don't repeat them. The WhatsApp Web `:version` MUST
-  track the pinned Baileys version (`src/Defaults/index.ts`) or the server
-  rejects the handshake.
+  @moduledoc """
+  Connection config + the single source of truth for protocol/connection defaults.
+
+  There are two kinds of configuration:
+
+  ## 1. Per-connection config — passed to `Amarula.new/1`
+
+  A map; you supply only what differs (at minimum `:profile`), `merge/1` fills the
+  rest from the defaults below.
+
+  | Key | Default | Meaning |
+  |-----|---------|---------|
+  | `:profile` | — (**required**) | names + scopes this account's stored state |
+  | `:storage` | `{Amarula.Storage.File, root: AMARULA_DATA_DIR || "./amarula_data"}` | storage backend `{module, opts}` |
+  | `:retry_cache` | ETS (see `Amarula.RetryCache`) | sent-message cache backend |
+  | `:auth` | loaded from storage | explicit creds (advanced; normally Amarula loads/persists these itself) |
+  | `:version` | `#{inspect(@wa_version)}` | WhatsApp Web version — MUST track the pinned Baileys version (`src/Defaults/index.ts`) or the handshake is rejected |
+  | `:browser` | `["Mac OS", "Chrome", "14.4.1"]` | browser triple shown as the linked device |
+  | `:max_retries` | `5` | reconnect attempts |
+  | `:retry_delay` | `1000` | base reconnect backoff (ms) |
+  | `:connect_timeout_ms` | `30_000` | WebSocket connect timeout |
+  | `:keep_alive_interval_ms` | `30_000` | WA-level keep-alive ping interval |
+  | `:sync_full_history` | `true` | request full history on link |
+  | `:mark_online_on_connect` | `true` | send presence available on connect |
+  | `:fire_init_queries` | `true` | run the post-login init IQ queries |
+  | `:country_code` | `"US"` | |
+  | `:headers` / `:origin` / `:agent` | see defaults | HTTP/WS handshake |
+
+      Amarula.new(%{profile: :me, sync_full_history: false}) |> Amarula.connect()
+
+  ## 2. App-global config — `config :amarula, ...`
+
+  Only the pluggable seams (apply to every connection that doesn't override them):
+
+      config :amarula, :default_storage_adapter, Amarula.Storage.File
+      config :amarula, :retry_cache_adapter, Amarula.RetryCache.ETS
+
+  ## Logging
+
+  Amarula logs through Elixir's `Logger`. Almost everything is `:debug`; only
+  connection lifecycle, pairing, and errors are `:info`/`:warning`/`:error`. To
+  keep your dev console clean, set the global level — or silence Amarula
+  specifically without affecting your own logs:
+
+      # your app's config
+      config :logger, level: :info
+
+      # or, mute just Amarula (Elixir 1.13+):
+      Logger.put_module_level(Amarula.Protocol.Socket.ConnectionManager, :warning)
+
+  Telemetry (`Amarula.Telemetry`) is the structured, log-independent way to observe
+  Amarula in production.
   """
 
   @defaults %{
     wa_websocket_url: "wss://web.whatsapp.com/ws/chat",
-    version: [2, 3000, 1_035_194_821],
+    version: @wa_version,
     browser: ["Mac OS", "Chrome", "14.4.1"],
     # connection tunables
     max_retries: 5,

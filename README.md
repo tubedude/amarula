@@ -183,6 +183,42 @@ mix run examples/send_message.exs 5511999999999 "hello from amarula"
 [`examples/connection.ex`](examples/connection.ex) is a small supervised
 GenServer wrapper you can copy into a real app.
 
+## Configuration
+
+Most settings are **per-connection**, passed to `Amarula.new/1` (you usually only
+set `:profile`):
+
+```elixir
+Amarula.new(%{
+  profile: :me,                                   # required — names + scopes stored state
+  storage: {Amarula.Storage.File, root: "./data"},# storage backend (defaults to File)
+  sync_full_history: false,                        # skip the full history download
+  max_retries: 5,
+  connect_timeout_ms: 30_000
+})
+```
+
+The full key list (with defaults) is in [`Amarula.Config`](lib/amarula/config.ex).
+Only the pluggable backends are app-global:
+
+```elixir
+config :amarula, :default_storage_adapter, Amarula.Storage.File
+config :amarula, :retry_cache_adapter, Amarula.RetryCache.ETS
+```
+
+### Logging
+
+Amarula logs through `Logger`. Almost everything is `:debug`; only connection
+lifecycle, pairing, and errors are `:info`+. So at `config :logger, level: :info`
+your console won't be flooded. To silence Amarula specifically:
+
+```elixir
+Logger.put_module_level(Amarula.Protocol.Socket.ConnectionManager, :warning)
+```
+
+For production observability prefer [`Amarula.Telemetry`](lib/amarula/telemetry.ex)
+(structured `:telemetry` events) over log scraping.
+
 ## Documentation
 
 - [`Amarula`](lib/amarula.ex) — the public API and entry point

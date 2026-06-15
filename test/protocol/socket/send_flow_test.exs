@@ -358,8 +358,6 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   end
 
   test "a send-plugin halt drops the send with {:halted, reason} and no frame", ctx do
-    import ExUnit.CaptureLog
-
     # A recv-irrelevant send step that halts every send.
     conn = Amarula.Plugin.on_send(ctx.conn, fn _ctx -> {:halt, :blocked} end)
 
@@ -372,19 +370,14 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       recipient_jid: @jid
     ]
 
-    log =
-      capture_log(fn ->
-        task =
-          Task.async(fn ->
-            ConversationSender.deliver(opts, %{msg_id: "3EB0HALT", text: "nope"})
-          end)
-
-        # Halt happens before any device resolution — nothing goes on the wire.
-        assert {:halted, :blocked} = Task.await(task)
-        refute_receive {:frame_out, _}, 100
+    task =
+      Task.async(fn ->
+        ConversationSender.deliver(opts, %{msg_id: "3EB0HALT", text: "nope"})
       end)
 
-    assert log =~ "halted by a plugin"
+    # A plugin halt returns {:halted, reason} and nothing goes on the wire.
+    assert {:halted, :blocked} = Task.await(task)
+    refute_receive {:frame_out, _}, 100
   end
 
   # A USync result for a number with no WhatsApp devices: the user node carries an

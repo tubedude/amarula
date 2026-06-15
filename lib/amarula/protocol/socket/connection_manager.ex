@@ -467,7 +467,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
 
   @impl GenServer
   def handle_info({:history_sync_result, result}, state) do
-    Logger.info(
+    Logger.debug(
       "history sync (#{inspect(result.sync_type)}): #{length(result.chats)} chats, " <>
         "#{length(result.contacts)} contacts"
     )
@@ -479,14 +479,14 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   end
 
   def handle_info({:ws_event, _ws_pid, {:open, _data}}, state) do
-    Logger.info("WebSocket connected - initiating handshake")
+    Logger.debug("WebSocket connected - initiating handshake")
 
     # Build the ClientHello (pure) then send it + transition (CM owns the socket).
     case Login.client_hello(state.auth_creds, state.config) do
       {:ok, frame, handshake_state} ->
         case WebSocketClient.send_data(state.websocket_client, frame) do
           :ok ->
-            Logger.info("ClientHello sent (#{byte_size(frame)} bytes)")
+            Logger.debug("ClientHello sent (#{byte_size(frame)} bytes)")
             emit_connection_update(state, :connecting)
             {:noreply, %{state | handshake_state: handshake_state}}
 
@@ -503,7 +503,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
 
   @impl GenServer
   def handle_info({:ws_event, _ws_pid, {:close, data}}, state) do
-    Logger.info("WebSocket connection closed: #{inspect(data)}")
+    Logger.debug("WebSocket connection closed: #{inspect(data)}")
 
     # Drop the pid so further events from this socket are ignored as stale
     new_state = %{state | connection_state: :disconnected, websocket_client: nil}
@@ -569,7 +569,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
       ) do
     with {:ok, finish_frame, final_noise} <- Login.server_hello(handshake_state, data),
          :ok <- WebSocketClient.send_data(state.websocket_client, finish_frame) do
-      Logger.info("ClientFinish sent (#{byte_size(finish_frame)} bytes)")
+      Logger.debug("ClientFinish sent (#{byte_size(finish_frame)} bytes)")
       complete_handshake(state, final_noise)
     else
       {:error, reason} ->
@@ -728,7 +728,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   # Private functions
 
   defp attempt_connection(state) do
-    Logger.info("Attempting WebSocket connection (attempt #{state.retry_count + 1})")
+    Logger.debug("Attempting WebSocket connection (attempt #{state.retry_count + 1})")
 
     new_state = %{state | connection_state: :connecting}
 
@@ -826,7 +826,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
 
   defp schedule_reconnect(state) do
     delay = calculate_retry_delay(state.retry_count, state.retry_delay)
-    Logger.info("Scheduling reconnection in #{delay}ms")
+    Logger.debug("Scheduling reconnection in #{delay}ms")
 
     Amarula.Telemetry.emit([:amarula, :reconnect, :scheduled], profile(state), %{
       count: 1,
@@ -879,7 +879,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   # the socket sends + state transitions from the ws_event handlers above.
 
   defp complete_handshake(state, final_noise_state_from_frame) do
-    Logger.info("Handshake completed successfully!")
+    Logger.debug("Handshake completed successfully!")
 
     # Cancel connection timeout timer since handshake is complete
     if state.connection_timeout_timer do
@@ -909,7 +909,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         qr: nil
       })
 
-    Logger.info("Handshake completed, waiting for server response...")
+    Logger.debug("Handshake completed, waiting for server response...")
     {:noreply, new_state}
   end
 
@@ -996,7 +996,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     frame_tap("IN", node)
 
     Logger.debug(
-      "📨 Received node: tag=#{node.tag}, type=#{NodeUtils.get_attr(node, "type")}, " <>
+      "Received node: tag=#{node.tag}, type=#{NodeUtils.get_attr(node, "type")}, " <>
         "first_child=#{NodeUtils.get_first_child_tag(node)}, attrs=#{inspect(node.attrs)}"
     )
 
@@ -1133,7 +1133,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     # (a store plugin) for messages older than the cache.
     case lookup_for_resend(state, msg_id) do
       {recipient, message} ->
-        Logger.info("Resending #{msg_id} to #{participant} (retry)")
+        Logger.debug("Resending #{msg_id} to #{participant} (retry)")
 
         emit_to_subscribers(state, :retry_send, %{
           recipient_jid: recipient,
@@ -1143,7 +1143,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         })
 
       nil ->
-        Logger.info("Retry for #{msg_id} but no cached/stored copy — cannot resend")
+        Logger.debug("Retry for #{msg_id} but no cached/stored copy — cannot resend")
     end
   end
 
@@ -1189,7 +1189,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   defp dispatch_notification(state, "w:gp2", node) do
     case GroupNotification.parse(node) do
       {:ok, update} ->
-        Logger.info("Group update (#{inspect(elem(update.action, 0))}) in #{update.group.user}")
+        Logger.debug("Group update (#{inspect(elem(update.action, 0))}) in #{update.group.user}")
         emit_to_subscribers(state, :group_update, update)
         state
 
@@ -1207,7 +1207,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     case NodeUtils.get_binary_node_child(node, "collection") do
       %Node{} = collection ->
         name = NodeUtils.get_attr(collection, "name")
-        Logger.info("server_sync: resyncing app-state collection #{name}")
+        Logger.debug("server_sync: resyncing app-state collection #{name}")
         resync_app_state(state, [name])
 
       _ ->
@@ -1227,7 +1227,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     cond do
       child = NodeUtils.get_binary_node_child(node, "disappearing_mode") ->
         duration = NodeUtils.get_attr(child, "duration")
-        Logger.info("account_sync: disappearing mode duration=#{duration}")
+        Logger.debug("account_sync: disappearing mode duration=#{duration}")
 
         settings = Map.get(state.auth_creds, :account_settings, %{})
 
@@ -1248,7 +1248,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
             %{jid: NodeUtils.get_attr(item, "jid"), action: NodeUtils.get_attr(item, "action")}
           end)
 
-        Logger.info("account_sync: blocklist update (#{length(items)} item(s))")
+        Logger.debug("account_sync: blocklist update (#{length(items)} item(s))")
         emit_to_subscribers(state, :blocklist_update, items)
         state
 
@@ -1272,7 +1272,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
           |> Enum.map(&JID.jid_normalized_user/1)
           |> Enum.uniq()
 
-        Logger.info("devices #{tag}: dropping cached device list for #{length(users)} user(s)")
+        Logger.debug("devices #{tag}: dropping cached device list for #{length(users)} user(s)")
         Enum.each(users, &DeviceListCache.delete(conn(state), &1))
         state
 
@@ -1286,7 +1286,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   defp dispatch_notification(state, "picture", node) do
     from = NodeUtils.get_attr(node, "from")
     img_url = if NodeUtils.get_binary_node_child(node, "set"), do: "changed", else: "removed"
-    Logger.info("picture #{img_url} for #{from}")
+    Logger.debug("picture #{img_url} for #{from}")
     emit_to_subscribers(state, :contacts_update, [%{id: from, img_url: img_url}])
     state
   end
@@ -1319,7 +1319,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     min = PreKeys.min_pre_key_count()
 
     if count < min do
-      Logger.info("encrypt: #{count} pre-keys left (< #{min}) — uploading more")
+      Logger.debug("encrypt: #{count} pre-keys left (< #{min}) — uploading more")
       upload_pre_keys(state, min, :prekey_reupload)
     else
       Logger.debug("encrypt: #{count} pre-keys left — no upload needed")
@@ -1345,7 +1345,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         state
 
       true ->
-        Logger.info("encrypt(identity) from #{from}: refreshing session")
+        Logger.debug("encrypt(identity) from #{from}: refreshing session")
         force_refresh_sessions(state, [from])
     end
   end
@@ -1393,7 +1393,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
           content: [%Node{tag: "clean", attrs: clean_attrs, content: nil}]
         }
 
-        Logger.info("Clearing dirty bits (type=#{type})")
+        Logger.debug("Clearing dirty bits (type=#{type})")
         state = send_tracked_iq(state, iq, :clean_dirty)
         # An account_sync dirty flag means app state changed — resync it.
         if type == "account_sync", do: resync_app_state(state), else: state
@@ -1409,7 +1409,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         child -> NodeUtils.get_attr(child, "count") || "?"
       end
 
-    Logger.info("Offline preview received (count=#{count}) — requesting batch")
+    Logger.debug("Offline preview received (count=#{count}) — requesting batch")
 
     batch = %Node{
       tag: "ib",
@@ -1427,7 +1427,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         child -> String.to_integer(NodeUtils.get_attr(child, "count") || "0")
       end
 
-    Logger.info("Handled #{count} offline messages/notifications")
+    Logger.debug("Handled #{count} offline messages/notifications")
 
     emit_to_subscribers(state, :connection_update, %{received_pending_notifications: true})
     state
@@ -1453,7 +1453,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     {code, reason} = stream_error_details(node)
 
     if code == @stream_error_restart_required do
-      Logger.info(
+      Logger.debug(
         "Stream error 515 (restart required) — reconnecting to log in with paired credentials"
       )
 
@@ -1508,7 +1508,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   end
 
   defp handle_pair_device(state, node) do
-    Logger.info("Received pair-device IQ, generating QR codes...")
+    Logger.debug("Received pair-device IQ, generating QR codes...")
 
     # Cancel the server response timeout timer - we're now waiting for user action (QR scan),
     # not server action. The user can take as long as they need.
@@ -1592,7 +1592,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   end
 
   defp handle_pair_success(state, node) do
-    Logger.info("Received pair-success message, processing device pairing...")
+    Logger.debug("Received pair-success message, processing device pairing...")
 
     # Clear waiting state - pairing is complete
     state = clear_server_response_waiting(state)
@@ -1617,7 +1617,8 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
       platform = if platform_node, do: NodeUtils.get_attr(platform_node, "name"), else: nil
       biz_name = if business_node, do: NodeUtils.get_attr(business_node, "name"), else: nil
 
-      Logger.info("Pairing device: jid=#{jid}, lid=#{lid}, platform=#{platform}")
+      Logger.info("Pairing device (platform=#{platform})")
+      Logger.debug("Pairing jid=#{jid} lid=#{lid}")
 
       # Create signal identity
       signal_identity = DeviceIdentity.signal_identity(lid, verified_account.accountSignatureKey)
@@ -1629,7 +1630,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
       reply_node = build_pair_device_sign_reply(msg_id, device_identity.keyIndex, account_enc)
 
       Logger.debug(
-        "📤 Sending pair-device-sign reply: msg_id=#{msg_id}, key_index=#{device_identity.keyIndex}"
+        "Sending pair-device-sign reply: msg_id=#{msg_id}, key_index=#{device_identity.keyIndex}"
       )
 
       state = send_binary_node(state, reply_node)
@@ -1650,7 +1651,8 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
       # restart, so the reconnect logs in with them.
       state = update_creds(state, updated_creds)
 
-      Logger.info("✅ Pairing successful! Device: #{jid}")
+      Logger.info("Pairing successful")
+      Logger.debug("Paired device: #{jid}")
 
       emit_to_subscribers(state, :pairing_success, %{jid: jid, lid: lid, platform: platform})
 
@@ -2139,7 +2141,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
       messages != [] ->
         msgs = Enum.map(messages, &build_msg(state, &1, node, from, msg_id))
         kinds = Enum.map(msgs, & &1.type)
-        Logger.info("📩 Decrypted #{length(msgs)} message(s) from #{from} (#{inspect(kinds)})")
+        Logger.debug("Decrypted #{length(msgs)} message(s) from #{from} (#{inspect(kinds)})")
 
         emit_message_telemetry(state, msgs, node, from)
 
@@ -2204,7 +2206,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   defp remove_used_pre_keys(state, []), do: state
 
   defp remove_used_pre_keys(state, ids) do
-    Logger.info("Removing used one-time prekey(s): #{inspect(ids)}")
+    Logger.debug("Removing used one-time prekey(s): #{inspect(ids)}")
     pre_keys = Map.drop(Map.get(state.auth_creds, :pre_keys, %{}), ids)
     updated_creds = Map.put(state.auth_creds, :pre_keys, pre_keys)
 
@@ -2299,7 +2301,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
       content: nil
     }
 
-    Logger.info("Sending hist_sync receipt (initial-sync ack)")
+    Logger.debug("Sending hist_sync receipt (initial-sync ack)")
     send_binary_node(state, receipt)
   end
 
@@ -2398,7 +2400,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         content: [retry_child, registration_child] ++ extra_children
       }
 
-      Logger.info("Sending retry receipt for message #{msg_id} (count=#{retry_count})")
+      Logger.debug("Sending retry receipt for message #{msg_id} (count=#{retry_count})")
 
       # `attempt` is the escalating per-peer retry count: a one-off is normal, a
       # climbing attempt means a peer we can't re-establish a session with (poison
@@ -2491,7 +2493,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
           )
         end)
 
-        Logger.info("Stored #{length(keys)} app-state-sync key(s); syncing app state")
+        Logger.debug("Stored #{length(keys)} app-state-sync key(s); syncing app state")
         resync_app_state(state)
     end
   end
@@ -2847,7 +2849,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         do: PreKeys.initial_pre_key_count(),
         else: PreKeys.min_pre_key_count()
 
-    Logger.info("#{server_count} pre-keys found on server")
+    Logger.debug("#{server_count} pre-keys found on server")
 
     # Baileys also re-uploads when the most recently generated prekey is gone
     # from local storage (verifyCurrentPreKeyExists).
@@ -2864,7 +2866,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   end
 
   defp handle_tracked_iq(:prekey_upload, {:ok, _node}, state) do
-    Logger.info("Uploaded pre-keys successfully")
+    Logger.debug("Uploaded pre-keys successfully")
     finish_login(state)
   end
 
@@ -2883,7 +2885,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         upload_pre_keys(state, PreKeys.min_pre_key_count(), :prekey_reupload)
 
       _ ->
-        Logger.info("Key bundle digest verified")
+        Logger.debug("Key bundle digest verified")
         state
     end
   end
@@ -2894,7 +2896,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   end
 
   defp handle_tracked_iq(:prekey_reupload, {:ok, _node}, state) do
-    Logger.info("Re-uploaded pre-keys after digest failure")
+    Logger.debug("Re-uploaded pre-keys after digest failure")
     state
   end
 
@@ -2918,7 +2920,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   end
 
   defp handle_tracked_iq(:clean_dirty, {:ok, _node}, state) do
-    Logger.info("Dirty bits cleared")
+    Logger.debug("Dirty bits cleared")
     state
   end
 
@@ -2960,7 +2962,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
       content: nil
     }
 
-    Logger.info("Sending presence available (name: #{name})")
+    Logger.debug("Sending presence available (name: #{name})")
     send_binary_node(state, node)
   end
 
@@ -2970,7 +2972,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
   end
 
   defp upload_pre_keys(state, count, kind \\ :prekey_upload) do
-    Logger.info("Uploading #{count} pre-keys")
+    Logger.debug("Uploading #{count} pre-keys")
     Amarula.Telemetry.emit([:amarula, :prekey, :upload], profile(state), %{count: count})
     {updated_creds, node} = PreKeys.get_next_pre_keys_node(state.auth_creds, count)
 

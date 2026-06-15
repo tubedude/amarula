@@ -134,13 +134,13 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   defp run_send(%{msg_id: msg_id} = msg, state) do
     jid = state.recipient_jid
     kind = if JID.is_jid_group?(jid), do: :group, else: :dm
-    Logger.info("Sending #{msg_id} to #{jid} (#{kind})")
+    Logger.debug("Sending #{msg_id} to #{jid} (#{kind})")
 
     # Run the send plugin pipeline (before encrypt): steps may transform the
     # message or halt the send. The built-in retry-cache step records it here.
     case run_send_steps(state.conn, msg_id, jid, message_content(msg)) do
       {:halt, reason} ->
-        Logger.info("Send #{msg_id} to #{jid} halted by a plugin: #{inspect(reason)}")
+        Logger.debug("Send #{msg_id} to #{jid} halted by a plugin: #{inspect(reason)}")
         {:halted, reason}
 
       {:cont, %{message: message}} ->
@@ -396,7 +396,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     if missing == [] do
       {:ok, ctx}
     else
-      Logger.info("Fetching bundles for #{length(missing)} device(s)")
+      Logger.debug("Fetching bundles for #{length(missing)} device(s)")
 
       with {:ok, reply} <- fetch_bundles(ctx, Enum.map(missing, & &1.jid)) do
         SessionInjector.inject(reply, ctx.creds, ctx.conn)
@@ -491,9 +491,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         edit: ctx.edit_attr
       )
 
-    Logger.info(
-      "📤 Sending group #{ctx.msg_id} to #{ctx.target_jid} (#{length(ctx.participants)} devices)"
-    )
+    Logger.debug("Relaying group #{ctx.msg_id} (#{length(ctx.participants)} devices)")
 
     # relay_stanza enqueues the frame on the socket and replies :ok (it can't know
     # delivery — that's what later receipts report). Its :ok is this stage's result.
@@ -510,9 +508,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         edit: ctx.edit_attr
       )
 
-    Logger.info(
-      "📤 Sending #{ctx.msg_id} to #{length(ctx.participants)} device(s) of #{ctx.target_jid}"
-    )
+    Logger.debug("Relaying #{ctx.msg_id} (#{length(ctx.participants)} device(s))")
 
     ConnectionManager.relay_stanza(ctx.cm, stanza)
   end
@@ -550,7 +546,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         {device_jid, enc_type, ciphertext}
 
       other ->
-        Logger.error("Encryption for #{device_jid} failed: #{inspect(other)} — skipping device")
+        Logger.warning("Encryption for a device failed: #{inspect(other)} — skipping device")
         nil
     end
   end

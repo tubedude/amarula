@@ -31,7 +31,7 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
           message_result()
   def generate_client_hello(auth_creds, socket_config) do
     try do
-      Logger.info("Generating ClientHello message...")
+      Logger.debug("Generating ClientHello message...")
 
       # Generate ephemeral key pair for this connection
       ephemeral_key_pair = Crypto.generate_key_pair()
@@ -64,7 +64,7 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
         handshake_step: :waiting_server_hello
       }
 
-      Logger.info("ClientHello generated successfully")
+      Logger.debug("ClientHello generated successfully")
       {:ok, encoded_message, handshake_state}
     rescue
       error ->
@@ -82,7 +82,7 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
   @spec process_server_hello(handshake_state(), binary()) :: message_result()
   def process_server_hello(state, message_data) do
     try do
-      Logger.info("Processing ServerHello message...")
+      Logger.debug("Processing ServerHello message...")
 
       # Decode HandshakeMessage
       handshake_message = Proto.HandshakeMessage.decode(message_data)
@@ -93,7 +93,7 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
           {:error, :missing_server_hello}
 
         _server_hello ->
-          Logger.info("Received ServerHello, processing handshake...")
+          Logger.debug("Received ServerHello, processing handshake...")
 
           # Process handshake through noise handler
           # CRITICAL: Preserve sent_intro from incoming state (should be true from ClientHello encoding)
@@ -175,7 +175,7 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
   @spec process_handshake_complete(handshake_state(), binary()) ::
           {:ok, handshake_state()} | {:error, term()}
   def process_handshake_complete(state, _message_data) do
-    Logger.info("Handshake completion message received")
+    Logger.debug("Handshake completion message received")
     {:ok, state}
   end
 

@@ -80,7 +80,7 @@ defmodule Amarula.Protocol.Auth.BaileysCredentialLoader do
       account_settings: Map.get(baileys_creds, "accountSettings", %{"unarchiveChats" => false})
     }
 
-    Logger.info("✅ Loaded Baileys credentials from file")
+    Logger.debug("Loaded Baileys credentials from file")
 
     Logger.debug(
       "Noise key public (hex): #{Base.encode16(amarula_creds.noise_key.public, case: :lower)}"

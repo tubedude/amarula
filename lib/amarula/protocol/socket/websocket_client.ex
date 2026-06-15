@@ -43,7 +43,7 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
 
   """
   def start_link(opts \\ []) do
-    Logger.info("Starting WebSocket client connection to WhatsApp server")
+    Logger.debug("Starting WebSocket client connection to WhatsApp server")
 
     # Parent PID is required
     parent_pid = Keyword.fetch!(opts, :parent_pid)
@@ -88,7 +88,7 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
       async: true
     ]
 
-    Logger.info("Attempting to connect to WhatsApp WebSocket at: #{url}")
+    Logger.debug("Attempting to connect to WhatsApp WebSocket at: #{url}")
     Logger.debug("Connection timeout: #{connect_timeout_ms}ms")
     Logger.debug("Keep alive interval: #{keep_alive_interval_ms}ms")
     Logger.debug("Origin: #{origin}")
@@ -156,16 +156,15 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   # WebSockex callbacks
 
   def init(state) do
-    Logger.info("WebSocket client initialized, ready to connect to: #{state.url}")
+    Logger.debug("WebSocket client initialized, ready to connect to: #{state.url}")
     {:ok, state}
   end
 
   @impl WebSockex
   def handle_connect(conn, state) do
-    Logger.info("✅ WebSocket successfully connected to WhatsApp server!")
-    Logger.info("Connection URL: #{state.url}")
-    Logger.debug("Connection details: #{inspect(conn, limit: :infinity)}")
-    Logger.info("WebSocket ready for handshake validation...")
+    Logger.info("WebSocket connected to WhatsApp server")
+    Logger.debug("Connection URL: #{state.url}")
+    Logger.debug("Connection details: #{inspect(conn)}")
 
     new_state = %{state | connection_state: :connected}
 
@@ -175,15 +174,13 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
 
     # Send connection event directly to parent (ConnectionManager)
     send(state.parent_pid, {:ws_event, self(), {:open, %{url: state.url}}})
-    Logger.info("Connection event sent to ConnectionManager")
 
     {:ok, new_state}
   end
 
   @impl WebSockex
   def handle_disconnect(conn, state) do
-    Logger.warning("❌ WebSocket disconnected from WhatsApp server!")
-    Logger.warning("Disconnection reason: #{inspect(conn.reason, limit: :infinity)}")
+    Logger.warning("WebSocket disconnected from WhatsApp server: #{inspect(conn.reason)}")
     Logger.debug("Connection state before disconnect: #{state.connection_state}")
 
     new_state = %{state | connection_state: :disconnected}
@@ -202,7 +199,7 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
 
   @impl WebSockex
   def handle_frame({:text, data}, state) do
-    Logger.debug("📨 Received text frame from WhatsApp server")
+    Logger.debug("Received text frame from WhatsApp server")
     Logger.debug("Text frame data length: #{byte_size(data)} bytes")
     Logger.debug("Text frame preview: #{String.slice(data, 0, 100)}...")
 
@@ -212,7 +209,7 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   end
 
   def handle_frame({:binary, data}, state) do
-    Logger.debug("📦 Received binary frame from WhatsApp server")
+    Logger.debug("Received binary frame from WhatsApp server")
     Logger.debug("Binary frame data length: #{byte_size(data)} bytes")
 
     Logger.debug(
@@ -225,13 +222,13 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   end
 
   def handle_frame({:ping, data}, state) do
-    Logger.debug("🏓 Received ping from WhatsApp server: #{inspect(data)}")
+    Logger.debug("Received ping from WhatsApp server: #{inspect(data)}")
     send(state.parent_pid, {:ws_event, self(), {:ping, data}})
     {:ok, state}
   end
 
   def handle_frame({:pong, data}, state) do
-    Logger.debug("🏓 Received pong from WhatsApp server: #{inspect(data)}")
+    Logger.debug("Received pong from WhatsApp server: #{inspect(data)}")
     send(state.parent_pid, {:ws_event, self(), {:pong, data}})
     {:ok, state}
   end

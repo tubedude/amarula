@@ -21,10 +21,18 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
           },
           registration_id: non_neg_integer(),
           adv_secret_key: binary(),
+          next_pre_key_id: non_neg_integer(),
+          first_unuploaded_pre_key_id: non_neg_integer(),
+          pre_keys: map(),
           me: %{id: String.t(), name: String.t(), lid: String.t()} | nil,
           account: map() | nil,
           signal_identities: list(map()),
-          platform: String.t() | nil
+          platform: String.t() | nil,
+          # Link-code (phone-number) pairing — ephemeral key the server wraps,
+          # the minted 8-char code, and whether this device has registered.
+          pairing_ephemeral_key_pair: Crypto.key_pair(),
+          pairing_code: String.t() | nil,
+          registered: boolean()
         }
 
   @type socket_config :: %{
@@ -70,7 +78,11 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
       me: nil,
       account: nil,
       signal_identities: [],
-      platform: nil
+      platform: nil,
+      # Link-code (phone-number) pairing state (Baileys initAuthCreds).
+      pairing_ephemeral_key_pair: Crypto.generate_key_pair(),
+      pairing_code: nil,
+      registered: false
     }
   end
 

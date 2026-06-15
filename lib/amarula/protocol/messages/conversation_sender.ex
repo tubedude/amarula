@@ -54,15 +54,28 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   # --- API ---
 
-  @doc """
-  Start-or-lookup the sender for `recipient_jid` under `supervisor`, registered
-  in `registry`, then cast it the message. Idempotent: an already-running sender
-  for that recipient is reused (the message queues behind in-flight ones).
+  # The outer (caller-facing) send timeout. A send blocks on up to THREE sequential
+  # IQ round-trips — group metadata, USync devices, prekey-bundle fetch — each
+  # bounded by the CM's ~20s IQ timeout. This must exceed the worst case (3 × ~20s)
+  # so a stalled round-trip surfaces as a tagged {:error, {stage, :timeout}} from
+  # an inner IQ, never as an :exit from this call blowing first.
+  @send_timeout_ms 90_000
 
-  `opts` must carry `:registry`, `:supervisor`, `:cm`, `:conn`,
-  `:creds`, `:recipient_jid`.
+  @doc """
+  Start-or-lookup the sender for `recipient_jid` under `supervisor` (registered in
+  `registry`), then send `msg` through it, synchronously. Idempotent: an
+  already-running sender for that recipient is reused, and sends to one recipient
+  are serialized (each blocks behind the prior).
+
+  `opts` must carry `:registry`, `:supervisor`, `:cm`, `:conn`, `:creds`,
+  `:recipient_jid`.
+
+  Returns `:ok` on a successful relay, `{:error, reason}` if the send couldn't be
+  delivered (e.g. `:not_on_whatsapp`, a timed-out IQ), or `{:halted, reason}` if a
+  send-plugin dropped it. A consumer that wants fire-and-forget can wrap the call
+  in its own `Task`.
   """
-  @spec deliver(keyword(), map()) :: :ok
+  @spec deliver(keyword(), map()) :: :ok | {:error, term()} | {:halted, term()}
   def deliver(opts, msg) do
     registry = Keyword.fetch!(opts, :registry)
     recipient = Keyword.fetch!(opts, :recipient_jid)
@@ -73,7 +86,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         [] -> start_child(opts)
       end
 
-    GenServer.cast(pid, {:send, msg})
+    GenServer.call(pid, {:send, msg}, @send_timeout_ms)
   end
 
   defp start_child(opts) do
@@ -106,9 +119,8 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   end
 
   @impl true
-  def handle_cast({:send, msg}, state) do
-    run_send(msg, state)
-    {:noreply, state, @idle_timeout_ms}
+  def handle_call({:send, msg}, _from, state) do
+    {:reply, run_send(msg, state), state, @idle_timeout_ms}
   end
 
   @impl true
@@ -129,6 +141,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     case run_send_steps(state.conn, msg_id, jid, message_content(msg)) do
       {:halt, reason} ->
         Logger.info("Send #{msg_id} to #{jid} halted by a plugin: #{inspect(reason)}")
+        {:halted, reason}
 
       {:cont, %{message: message}} ->
         store_own_lid_mapping(state)
@@ -169,13 +182,19 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       skmsg: nil
     }
 
-    # A recoverable send failure (e.g. a timed-out IQ) is thrown and dropped with
-    # a log; unexpected errors still crash the (disposable) process.
-    try do
-      ctx |> resolve_devices() |> ensure_sessions() |> encrypt() |> relay()
-    catch
-      {:send_failed, stage, reason} ->
+    # Each stage returns {:ok, ctx} or {:error, {stage, reason}}; `with` threads the
+    # happy path and stops at the first failure. A recoverable failure (e.g. a
+    # timed-out IQ, an unreachable recipient) is logged and returned; unexpected
+    # errors still crash the (disposable) process.
+    with {:ok, ctx} <- resolve_devices(ctx),
+         {:ok, ctx} <- ensure_sessions(ctx),
+         {:ok, ctx} <- encrypt(ctx),
+         :ok <- relay(ctx) do
+      :ok
+    else
+      {:error, {stage, reason}} ->
         Logger.error("Send #{msg_id} to #{jid} dropped at #{stage}: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 
@@ -202,35 +221,52 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   # own) devices. Group = every participant's (and our own) devices, after a
   # group-metadata fetch. Either way the result is a flat list of device maps.
   defp resolve_devices(%{kind: :group} = ctx) do
-    {devices, addressing_mode} = group_devices(ctx)
-    %{ctx | devices: devices, addressing_mode: addressing_mode}
+    with {:ok, devices, addressing_mode} <- group_devices(ctx) do
+      {:ok, %{ctx | devices: devices, addressing_mode: addressing_mode}}
+    end
   end
 
   defp resolve_devices(%{kind: :dm} = ctx) do
-    %{ctx | devices: user_devices(ctx, [ctx.target_jid | own_id_list(ctx)])}
+    with {:ok, devices} <- user_devices(ctx, [ctx.target_jid | own_id_list(ctx)]) do
+      # If the recipient resolved to no real devices, the number isn't reachable on
+      # WhatsApp (unregistered / wrong number). Fail instead of fabricating a device
+      # and producing a "sent" message the server silently drops — Baileys#2635. The
+      # recipient must contribute at least one device (our own devices don't count).
+      if recipient_devices?(ctx, devices) do
+        {:ok, %{ctx | devices: devices}}
+      else
+        {:error, {:resolve_devices, :not_on_whatsapp}}
+      end
+    end
   end
 
   # The device set for a list of user jids: cache-hit users skip USync; misses
-  # are fetched in one query. Returns the flat device list.
+  # are fetched in one query. {:ok, flat device list} | {:error, {stage, reason}}.
   defp user_devices(ctx, users) do
     case DeviceListCache.get_many(ctx.conn, users) do
-      {hits, []} -> hits |> Map.values() |> List.flatten()
+      {hits, []} -> {:ok, hits |> Map.values() |> List.flatten()}
       {_hits, _misses} -> usync_devices(ctx, users)
     end
   end
 
   # Group: fetch metadata → participant jids (+ our own) → their devices.
-  # Returns {devices, addressing_mode}; the mode picks our sender-key identity.
+  # {:ok, devices, addressing_mode} | {:error, {stage, reason}}; the mode picks
+  # our sender-key identity.
   defp group_devices(ctx) do
     iq = GroupMetadata.query_iq(ctx.target_jid)
 
     with {:ok, reply} <- ConnectionManager.query_iq(ctx.cm, iq),
          {:ok, meta} <- GroupMetadata.parse(reply) do
       store_participant_lid_mappings(ctx, meta)
-      users = participant_user_jids(meta) ++ own_id_list(ctx)
-      {user_devices(ctx, Enum.uniq(users)), meta.addressing_mode}
+      users = Enum.uniq(participant_user_jids(meta) ++ own_id_list(ctx))
+
+      # user_devices already returns {:error, {stage, reason}} on failure.
+      with {:ok, devices} <- user_devices(ctx, users) do
+        {:ok, devices, meta.addressing_mode}
+      end
     else
-      error -> throw({:send_failed, :group_metadata, error})
+      {:error, {_stage, _reason}} = err -> err
+      error -> {:error, {:group_metadata, error}}
     end
   end
 
@@ -286,8 +322,8 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     {:ok, iq} = USync.build_iq(query)
 
     case ConnectionManager.query_iq(ctx.cm, iq) do
-      {:ok, reply} -> parse_devices(ctx, reply)
-      error -> throw({:send_failed, :usync, error})
+      {:ok, reply} -> {:ok, parse_devices(ctx, reply)}
+      {:error, reason} -> {:error, {:usync, reason}}
     end
   end
 
@@ -304,21 +340,37 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         devices
 
       nil ->
-        [%{jid: ctx.target_jid}]
+        # No <list> in the reply — nothing resolved. Don't fabricate a device;
+        # resolve_devices turns an empty set into a :not_on_whatsapp error.
+        []
     end
+  end
+
+  # Does the resolved device set include at least one device that is NOT us? A
+  # number that isn't on WhatsApp resolves to only our own devices (or none).
+  defp recipient_devices?(ctx, devices) do
+    me = ctx.creds.me
+    mine = [me[:id], me[:lid]] |> Enum.reject(&is_nil/1) |> Enum.map(&JID.jid_normalized_user/1)
+
+    Enum.any?(devices, fn %{jid: jid} ->
+      JID.jid_normalized_user(jid) not in mine
+    end)
   end
 
   # Step 2: ensure a Signal session per device, fetching bundles for any missing.
   defp ensure_sessions(%{devices: devices} = ctx) do
     missing = Enum.filter(devices, fn %{jid: jid} -> is_nil(load_session(ctx, jid)) end)
 
-    unless missing == [] do
+    if missing == [] do
+      {:ok, ctx}
+    else
       Logger.info("Fetching bundles for #{length(missing)} device(s)")
-      reply = fetch_bundles(ctx, Enum.map(missing, & &1.jid))
-      SessionInjector.inject(reply, ctx.creds, ctx.conn)
-    end
 
-    ctx
+      with {:ok, reply} <- fetch_bundles(ctx, Enum.map(missing, & &1.jid)) do
+        SessionInjector.inject(reply, ctx.creds, ctx.conn)
+        {:ok, ctx}
+      end
+    end
   end
 
   defp fetch_bundles(ctx, jids) do
@@ -334,8 +386,8 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     }
 
     case ConnectionManager.query_iq(ctx.cm, iq) do
-      {:ok, reply} -> reply
-      error -> throw({:send_failed, :fetch_bundles, error})
+      {:ok, reply} -> {:ok, reply}
+      {:error, reason} -> {:error, {:fetch_bundles, reason}}
     end
   end
 
@@ -354,7 +406,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       end)
       |> Enum.reject(&is_nil/1)
 
-    %{ctx | participants: participants}
+    {:ok, %{ctx | participants: participants}}
   end
 
   # Step 3 (group): encrypt the message ONCE with our sender key (skmsg), and
@@ -387,17 +439,13 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       |> Enum.map(&encrypt_for_device(ctx, &1, skdm_plaintext))
       |> Enum.reject(&is_nil/1)
 
-    %{ctx | participants: participants, skmsg: skmsg}
+    {:ok, %{ctx | participants: participants, skmsg: skmsg}}
   end
 
   # Step 4: build + relay the stanza. DM = a <participants> of per-device <enc>.
   # Group = the skmsg <enc> plus the SKDM <participants>.
   defp relay(%{participants: []} = ctx) do
-    Logger.error(
-      "All device encryptions failed for #{ctx.target_jid} — send #{ctx.msg_id} dropped"
-    )
-
-    ctx
+    {:error, {:relay, {:no_encrypted_devices, ctx.target_jid}}}
   end
 
   defp relay(%{kind: :group} = ctx) do
@@ -415,8 +463,9 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       "📤 Sending group #{ctx.msg_id} to #{ctx.target_jid} (#{length(ctx.participants)} devices)"
     )
 
-    :ok = ConnectionManager.relay_stanza(ctx.cm, stanza)
-    ctx
+    # relay_stanza enqueues the frame on the socket and replies :ok (it can't know
+    # delivery — that's what later receipts report). Its :ok is this stage's result.
+    ConnectionManager.relay_stanza(ctx.cm, stanza)
   end
 
   defp relay(ctx) do
@@ -433,8 +482,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       "📤 Sending #{ctx.msg_id} to #{length(ctx.participants)} device(s) of #{ctx.target_jid}"
     )
 
-    :ok = ConnectionManager.relay_stanza(ctx.cm, stanza)
-    ctx
+    ConnectionManager.relay_stanza(ctx.cm, stanza)
   end
 
   # --- helpers (ported from the former ConnectionManager send path) ---

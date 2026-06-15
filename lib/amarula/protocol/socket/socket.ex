@@ -502,8 +502,13 @@ defmodule Amarula.Protocol.Socket do
       recipient_jid: jid
     ]
 
-    :ok = ConversationSender.deliver(opts, Map.put(payload, :msg_id, msg_id))
-    {:ok, msg_id}
+    # Synchronous: the result reflects the actual send. A consumer that wants
+    # fire-and-forget can wrap the call in its own Task.
+    case ConversationSender.deliver(opts, Map.put(payload, :msg_id, msg_id)) do
+      :ok -> {:ok, msg_id}
+      {:error, reason} -> {:error, reason}
+      {:halted, reason} -> {:error, {:halted, reason}}
+    end
   end
 
   defp emit_event(state, event_type, data) do

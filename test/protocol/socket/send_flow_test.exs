@@ -181,7 +181,17 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   # Trigger a send the way Socket.send_text does: deliver to the recipient's
   # ConversationSender. Returns the msg_id. The sender runs the blocking pipe in
   # its own process; the test answers its query_iq calls via inject_node.
+  # Sends are synchronous now (deliver is a GenServer.call that blocks through the
+  # USync + bundle round-trips). The test process must stay free to inject the
+  # server replies the send is waiting on, so we drive deliver from a Task and
+  # return the msg_id immediately. Tests that care about the send's result use
+  # send_text_task/3 + Task.await.
   defp send_text(ctx, jid, text) do
+    {msg_id, _task} = send_text_task(ctx, jid, text)
+    msg_id
+  end
+
+  defp send_text_task(ctx, jid, text) do
     msg_id = "3EB0" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :upper))
 
     opts = [
@@ -193,8 +203,8 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       recipient_jid: jid
     ]
 
-    :ok = ConversationSender.deliver(opts, %{msg_id: msg_id, text: text})
-    msg_id
+    task = Task.async(fn -> ConversationSender.deliver(opts, %{msg_id: msg_id, text: text}) end)
+    {msg_id, task}
   end
 
   defp recv_frame do
@@ -294,6 +304,40 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # pkmsg ⇒ device-identity must be attached so the peer can verify us.
     assert %Node{content: identity} = NodeUtils.get_binary_node_child(message, "device-identity")
     assert is_binary(identity) and byte_size(identity) > 0
+  end
+
+  test "drops the send (no relay) when the recipient resolves to no devices", ctx do
+    # A number that isn't on WhatsApp returns a USync list with no devices. The
+    # send must NOT fabricate a device and relay a phantom message (Baileys#2635);
+    # it drops at resolve_devices, so no bundle fetch and no <message> go out.
+    import ExUnit.CaptureLog
+
+    log =
+      capture_log(fn ->
+        {_msg_id, task} = send_text_task(ctx, @jid, "to an unknown number")
+        usync_iq = recv_frame()
+        assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
+        inject(ctx, usync_empty_reply(attr(usync_iq, "id")))
+
+        # The send resolves to no recipient devices → errors, never relays.
+        assert {:error, :not_on_whatsapp} = Task.await(task)
+        refute_receive {:frame_out, _}, 100
+      end)
+
+    assert log =~ "not_on_whatsapp"
+  end
+
+  # A USync result for a number with no WhatsApp devices: the user node carries an
+  # empty device-list.
+  defp usync_empty_reply(id) do
+    user =
+      Node.create("user", %{"jid" => @jid}, [
+        Node.create("devices", %{}, [Node.create("device-list", %{}, [])])
+      ])
+
+    list = Node.create("list", %{}, [user])
+    usync = Node.create("usync", %{}, [list])
+    with_id(Node.create("iq", %{"type" => "result"}, [usync]), id)
   end
 
   test "skips the bundle fetch when a session already exists", ctx do

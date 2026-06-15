@@ -62,6 +62,9 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
 
     children = [
       {Registry, keys: :unique, name: registry},
+      # Owns the per-connection ETS caches; first child so the tables exist before
+      # ConnectionManager/Socket read them (no lazy create, no race).
+      {Amarula.Protocol.Socket.TableOwner, profile: conn.profile},
       {ConnectionManager, {conn, name: name(instance_id, :connection_manager)}},
       {DynamicSupervisor, name: name(instance_id, :sender_supervisor), strategy: :one_for_one},
       {Socket,

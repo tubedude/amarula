@@ -19,7 +19,8 @@ defmodule Amarula.MessageCache do
   @doc "Cache a received message by id (best-effort; evicts oldest past the cap)."
   @spec put(atom() | String.t(), String.t(), entry(), non_neg_integer()) :: :ok
   def put(profile, msg_id, entry, max \\ @default_max) when is_binary(msg_id) do
-    table = table(profile)
+    # ensure_table is idempotent; in production the TableOwner already made it.
+    table = ensure_table(profile)
     :ets.insert(table, {msg_id, entry})
     evict(table, max)
     :ok
@@ -28,39 +29,43 @@ defmodule Amarula.MessageCache do
   @doc "Look up a cached received message by id. `{:ok, entry}` or `:error`."
   @spec get(atom() | String.t(), String.t()) :: {:ok, entry()} | :error
   def get(profile, msg_id) when is_binary(msg_id) do
-    case :ets.lookup(table(profile), msg_id) do
-      [{^msg_id, entry}] -> {:ok, entry}
+    with name when name != :undefined <- :ets.whereis(table(profile)),
+         [{^msg_id, entry}] <- :ets.lookup(name, msg_id) do
+      {:ok, entry}
+    else
       _ -> :error
     end
   end
 
   def get(_profile, _), do: :error
 
-  @doc "Number of cached messages for `profile`."
+  @doc "Number of cached messages for `profile` (0 if no table yet)."
   @spec count(atom() | String.t()) :: non_neg_integer()
-  def count(profile), do: :ets.info(table(profile), :size)
+  def count(profile) do
+    case :ets.whereis(table(profile)) do
+      :undefined -> 0
+      name -> :ets.info(name, :size)
+    end
+  end
+
+  @doc """
+  Create the profile's table. Called once by the supervised `TableOwner` at
+  connection start, before any reader runs — so the cache never creates tables
+  lazily (no first-use race, no rescue). Idempotent.
+  """
+  @spec ensure_table(atom() | String.t()) :: atom()
+  def ensure_table(profile) do
+    name = table(profile)
+
+    case :ets.whereis(name) do
+      :undefined -> :ets.new(name, [:set, :public, :named_table, read_concurrency: true])
+      _ -> name
+    end
+  end
 
   # --- internals ---
 
-  defp table(profile) do
-    name = :"amarula_message_cache_#{profile}"
-
-    case :ets.whereis(name) do
-      :undefined ->
-        # Lazy, first-use creation. Two processes can race here; the loser's
-        # :ets.new raises ArgumentError (table already exists) and we just reuse
-        # the name. This is the same idiom as Amarula.RetryCache.ETS — the rescue
-        # is a create-race guard, not error-swallowing.
-        try do
-          :ets.new(name, [:set, :public, :named_table, read_concurrency: true])
-        rescue
-          ArgumentError -> name
-        end
-
-      _ ->
-        name
-    end
-  end
+  defp table(profile), do: :"amarula_message_cache_#{profile}"
 
   defp evict(table, max) do
     if :ets.info(table, :size) > max do

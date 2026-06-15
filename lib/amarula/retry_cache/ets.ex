@@ -25,7 +25,7 @@ defmodule Amarula.RetryCache.ETS do
 
   @impl true
   def put(%{max_entries: max}, profile, msg_id, entry) do
-    table = table(profile)
+    table = ensure_table(profile)
     :ets.insert(table, {msg_id, entry})
     evict(table, max)
     :ok
@@ -33,35 +33,40 @@ defmodule Amarula.RetryCache.ETS do
 
   @impl true
   def get(_state, profile, msg_id) do
-    case :ets.lookup(table(profile), msg_id) do
-      [{^msg_id, entry}] -> {:ok, entry}
+    with name when name != :undefined <- :ets.whereis(table(profile)),
+         [{^msg_id, entry}] <- :ets.lookup(name, msg_id) do
+      {:ok, entry}
+    else
       _ -> :error
     end
   end
 
   @impl true
-  def count(_state, profile), do: :ets.info(table(profile), :size)
+  def count(_state, profile) do
+    case :ets.whereis(table(profile)) do
+      :undefined -> 0
+      name -> :ets.info(name, :size)
+    end
+  end
+
+  @doc """
+  Create the profile's table. Called once by the supervised `TableOwner` at
+  connection start (before any reader), so we never create lazily on first use —
+  no create race, no rescue. Idempotent.
+  """
+  @spec ensure_table(atom() | String.t()) :: atom()
+  def ensure_table(profile) do
+    name = table(profile)
+
+    case :ets.whereis(name) do
+      :undefined -> :ets.new(name, [:set, :public, :named_table, read_concurrency: true])
+      _ -> name
+    end
+  end
 
   # --- internals ---
 
-  # The per-profile table, created (idempotently) on first use.
-  defp table(profile) do
-    name = :"amarula_retry_cache_#{profile}"
-
-    case :ets.whereis(name) do
-      :undefined ->
-        # read_concurrency for the get-heavy retry path; another process may win
-        # the race to create it, so tolerate the already-exists badarg.
-        try do
-          :ets.new(name, [:set, :public, :named_table, read_concurrency: true])
-        rescue
-          ArgumentError -> name
-        end
-
-      _tid ->
-        name
-    end
-  end
+  defp table(profile), do: :"amarula_retry_cache_#{profile}"
 
   defp evict(table, max) do
     over = :ets.info(table, :size) - max

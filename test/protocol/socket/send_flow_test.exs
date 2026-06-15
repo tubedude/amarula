@@ -504,7 +504,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       recipient_jid: @jid
     ]
 
-    :ok = ConversationSender.deliver(opts, %{msg_id: "3EB0HALT", text: "nope"})
+    {:ok, _pid} = ConversationSender.deliver(opts, %{msg_id: "3EB0HALT", text: "nope"})
 
     assert_receive {:send_failed, "3EB0HALT", {:halted, :blocked}}, 2000
     refute_receive {:frame_out, _}, 100
@@ -854,5 +854,82 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # The correct ack still completes it — the connection survived the stray ack.
     ack(ctx, msg_id)
     assert {:ok, ^msg_id} = await_send_result(task)
+  end
+
+  # --- Sender crash (#7): Connection monitors each sender; its :DOWN fails the
+  # recipient's parked sends fast + correctly, instead of hanging to :ack_timeout.
+
+  # The per-recipient sender pid, looked up in the same Registry Connection uses.
+  defp sender_pid(ctx, jid) do
+    case Registry.lookup(ctx.registry, jid) do
+      [{pid, _}] -> pid
+      [] -> flunk("no sender registered for #{jid}")
+    end
+  end
+
+  test "a sender crash fails the parked caller fast with :sender_crashed", ctx do
+    task = send_text_async(ctx, @jid, "in flight")
+    # Drive the pipe to the point the sender is alive + the send is parked, then
+    # kill it as if it had crashed mid-pipe (before reporting any result).
+    _message = relay_text(ctx)
+
+    Process.exit(sender_pid(ctx, @jid), :kill)
+
+    # The caller is unblocked promptly — NOT after the 30s ack-timeout — and with
+    # the right reason.
+    assert {:error, {:sender_crashed, :killed}} = await_send_result(task)
+  end
+
+  test "a sender crash fails ALL of that recipient's in-flight sends", ctx do
+    # Two sends to the same recipient share one sender. Park the first (full
+    # flow), then queue a second to the same jid (device cache hit → message only).
+    task1 = send_text_async(ctx, @jid, "first")
+    _m1 = relay_text(ctx)
+
+    task2 = send_text_async(ctx, @jid, "second")
+    _m2 = relay_text(ctx)
+
+    # One crash takes out both parked sends.
+    Process.exit(sender_pid(ctx, @jid), :kill)
+
+    assert {:error, {:sender_crashed, :killed}} = await_send_result(task1)
+    assert {:error, {:sender_crashed, :killed}} = await_send_result(task2)
+  end
+
+  test "a sender crash does not affect another recipient's parked send", ctx do
+    other = "10000000003@s.whatsapp.net"
+
+    task_a = send_text_async(ctx, @jid, "to A")
+    msg_a = relay_text(ctx)
+
+    task_b = send_text_async(ctx, other, "to B")
+    msg_b = relay_text(ctx)
+
+    # Crash only A's sender.
+    Process.exit(sender_pid(ctx, @jid), :kill)
+    assert {:error, {:sender_crashed, :killed}} = await_send_result(task_a)
+
+    # B is untouched — its ack still completes it normally.
+    ack(ctx, msg_b.attrs["id"])
+    assert {:ok, _} = await_send_result(task_b)
+    refute msg_a.attrs["id"] == msg_b.attrs["id"]
+  end
+
+  test "a sender idle-stop (:normal) does not reply or crash the connection", ctx do
+    # Complete a send fully so nothing is parked; Connection demonitors the sender.
+    task = send_text_async(ctx, @jid, "done")
+    message = relay_text(ctx)
+    ack(ctx, message.attrs["id"])
+    assert {:ok, _} = await_send_result(task)
+
+    # Now stop the (unmonitored, idle) sender normally. Connection must shrug it
+    # off: no stray reply, still alive.
+    pid = sender_pid(ctx, @jid)
+    ref = Process.monitor(pid)
+    GenServer.stop(pid, :normal)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1000
+
+    assert Process.alive?(ctx.pid)
+    refute_receive {:frame_out, _}, 50
   end
 end

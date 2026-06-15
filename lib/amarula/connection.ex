@@ -88,7 +88,8 @@ defmodule Amarula.Connection do
     pending_iqs: %{},
     msg_retry_counts: %{},
     pending_sends: %{},
-    pending_acks: %{}
+    pending_acks: %{},
+    sender_monitors: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -127,10 +128,15 @@ defmodule Amarula.Connection do
           },
           # Sends awaiting the server's <ack class="message" id=msg_id>. Each entry
           # holds the consumer's `from` (parked until the ack), the reply-shaping
-          # fun applied on a successful ack, and the ack-timeout timer.
+          # fun applied on a successful ack, the ack-timeout timer, and the
+          # recipient jid (so a sender :DOWN can fail all of that recipient's
+          # parked sends at once).
           pending_acks: %{
-            String.t() => {GenServer.from(), (:ok -> term()), reference()}
-          }
+            String.t() => {GenServer.from(), (:ok -> term()), reference(), String.t()}
+          },
+          # One monitor per recipient with a live sender holding parked sends.
+          # On the sender's :DOWN we fail every pending_acks entry for that jid.
+          sender_monitors: %{String.t() => reference()}
         }
 
   # Client API
@@ -892,6 +898,20 @@ defmodule Amarula.Connection do
     {:noreply, resolve_ack(state, msg_id, fn _shape -> {:error, :ack_timeout} end)}
   end
 
+  # A per-recipient Sender died. If it crashed mid-pipe it never reported
+  # {:send_failed,...}, so its parked sends would otherwise hang to :ack_timeout
+  # (and be mislabeled). Fail them now, fast and correctly. A :normal exit is the
+  # idle-stop of a sender with no in-flight sends — just drop the (already empty)
+  # monitor. An unknown ref isn't ours — ignore.
+  @impl GenServer
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case pop_monitor_by_ref(state, ref) do
+      {nil, state} -> {:noreply, state}
+      {_jid, state} when reason == :normal -> {:noreply, state}
+      {jid, state} -> {:noreply, fail_recipient_sends(state, jid, reason)}
+    end
+  end
+
   # Handle keep-alive messages
   # This matches Baileys startKeepAliveRequest() behavior exactly
   @impl GenServer
@@ -1122,21 +1142,41 @@ defmodule Amarula.Connection do
     # The Sender carries the msg_id and reports its pipe result back to `cm`
     # (Connection) — it no longer holds the consumer's `from`.
     msg = Map.put(payload, :msg_id, msg_id)
-    :ok = ConversationSender.deliver(opts, msg)
+    {:ok, sender} = ConversationSender.deliver(opts, msg)
 
-    {:noreply, park_ack(state, msg_id, from, shape)}
+    state = ensure_sender_monitor(state, jid, sender)
+    {:noreply, park_ack(state, msg_id, from, shape, jid)}
+  end
+
+  # Monitor a recipient's sender once, the first time we park a send for it. The
+  # sender is per recipient and may hold several in-flight sends; one monitor
+  # covers them all. On its :DOWN we fail every parked send for this jid. A
+  # fire-and-forget send (no parked entry) needs no monitor — but harmless to set.
+  defp ensure_sender_monitor(state, jid, sender) do
+    case Map.fetch(state.sender_monitors, jid) do
+      {:ok, _ref} ->
+        state
+
+      :error ->
+        ref = Process.monitor(sender)
+        %{state | sender_monitors: Map.put(state.sender_monitors, jid, ref)}
+    end
   end
 
   # Park the consumer's `from` (with its ack-success shape and a timeout timer)
   # until the server confirms msg_id. A fire-and-forget send (from == nil) parks
   # nothing: no caller waits, so a missing ack is silently fine.
-  defp park_ack(state, _msg_id, nil, _shape), do: state
+  defp park_ack(state, _msg_id, nil, _shape, _jid), do: state
 
-  defp park_ack(state, msg_id, from, shape) do
+  defp park_ack(state, msg_id, from, shape, jid) do
     timer = Process.send_after(self(), {:ack_timeout, msg_id}, ack_timeout_ms(state))
     # The shape stored applies to a successful ack only; it is given msg_id here.
     on_ack = fn :ok -> shape.(:ok, msg_id) end
-    %{state | pending_acks: Map.put(state.pending_acks, msg_id, {from, on_ack, timer})}
+
+    %{
+      state
+      | pending_acks: Map.put(state.pending_acks, msg_id, {from, on_ack, timer, jid})
+    }
   end
 
   defp ack_timeout_ms(%{config: %{ack_timeout_ms: ms}}) when is_integer(ms), do: ms
@@ -1152,11 +1192,58 @@ defmodule Amarula.Connection do
       {nil, _acks} ->
         state
 
-      {{from, on_ack, timer}, acks} ->
+      {{from, on_ack, timer, jid}, acks} ->
         Process.cancel_timer(timer)
         GenServer.reply(from, reply_fun.(on_ack))
-        %{state | pending_acks: acks}
+        maybe_drop_monitor(%{state | pending_acks: acks}, jid)
     end
+  end
+
+  # Once a recipient has no remaining parked sends, stop monitoring its sender so
+  # monitor refs don't leak and we don't hold a stale monitor on a sender that
+  # will idle-stop and respawn. The next send re-establishes the monitor.
+  defp maybe_drop_monitor(state, jid) do
+    still_parked? = Enum.any?(state.pending_acks, fn {_id, {_f, _o, _t, j}} -> j == jid end)
+
+    if still_parked? do
+      state
+    else
+      case Map.pop(state.sender_monitors, jid) do
+        {nil, _} ->
+          state
+
+        {ref, monitors} ->
+          Process.demonitor(ref, [:flush])
+          %{state | sender_monitors: monitors}
+      end
+    end
+  end
+
+  # Find which recipient a :DOWN ref belonged to and drop that monitor entry.
+  # The monitor already fired, so no demonitor is needed.
+  defp pop_monitor_by_ref(state, ref) do
+    case Enum.find(state.sender_monitors, fn {_jid, r} -> r == ref end) do
+      nil ->
+        {nil, state}
+
+      {jid, ^ref} ->
+        {jid, %{state | sender_monitors: Map.delete(state.sender_monitors, jid)}}
+    end
+  end
+
+  # Reply every parked send for a crashed recipient with {:error,
+  # {:sender_crashed, reason}}, cancel their timers, and drop them. (The monitor
+  # entry was already removed by pop_monitor_by_ref.)
+  defp fail_recipient_sends(state, jid, reason) do
+    {mine, rest} =
+      Map.split_with(state.pending_acks, fn {_id, {_f, _o, _t, j}} -> j == jid end)
+
+    Enum.each(mine, fn {_id, {from, _on_ack, timer, _j}} ->
+      Process.cancel_timer(timer)
+      GenServer.reply(from, {:error, {:sender_crashed, reason}})
+    end)
+
+    %{state | pending_acks: rest}
   end
 
   @doc false

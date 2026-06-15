@@ -69,9 +69,10 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       → `{:send_failed, msg_id, reason}` — no frame went out, so Connection
       replies the parked caller the failure immediately.
 
-  Returns `:ok`.
+  Returns `{:ok, pid}` — the (started or reused) sender pid, so Connection can
+  monitor it and fail the recipient's parked sends if it crashes mid-pipe.
   """
-  @spec deliver(keyword(), map()) :: :ok
+  @spec deliver(keyword(), map()) :: {:ok, pid()}
   def deliver(opts, msg) do
     registry = Keyword.fetch!(opts, :registry)
     recipient = Keyword.fetch!(opts, :recipient_jid)
@@ -83,6 +84,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       end
 
     GenServer.cast(pid, {:send, msg})
+    {:ok, pid}
   end
 
   defp start_child(opts) do

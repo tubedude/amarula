@@ -47,6 +47,12 @@ defmodule Amarula.Connection do
 
   # How long to wait for an IQ reply before failing the waiting caller.
   @iq_timeout_ms 20_000
+
+  # How long to wait for the server's <ack class="message"> confirming a relayed
+  # send before failing the parked caller with :ack_timeout. The frame was written
+  # but never confirmed. Overridable via config (`:ack_timeout_ms`) for tests; the
+  # client-side @send_call_timeout must exceed enrich + this worst case.
+  @ack_timeout_ms 30_000
   alias Amarula.Protocol.Crypto.Constants
   alias Amarula.Protocol.Proto
 
@@ -81,7 +87,8 @@ defmodule Amarula.Connection do
     :qr_timer,
     pending_iqs: %{},
     msg_retry_counts: %{},
-    pending_sends: %{}
+    pending_sends: %{},
+    pending_acks: %{}
   ]
 
   @type t :: %__MODULE__{
@@ -117,6 +124,12 @@ defmodule Amarula.Connection do
               target_jid: String.t(),
               devices: [map()]
             }
+          },
+          # Sends awaiting the server's <ack class="message" id=msg_id>. Each entry
+          # holds the consumer's `from` (parked until the ack), the reply-shaping
+          # fun applied on a successful ack, and the ack-timeout timer.
+          pending_acks: %{
+            String.t() => {GenServer.from(), (:ok -> term()), reference()}
           }
         }
 
@@ -854,6 +867,31 @@ defmodule Amarula.Connection do
     {:noreply, handle_iq_timeout(state, id)}
   end
 
+  # --- Ack-on-send (Design 2): the per-recipient Sender reports its pipe result
+  # back here; the consumer's `from` was parked under msg_id at dispatch.
+
+  # The frame went out — keep the parked entry and let the ack-timeout run. The
+  # consumer is replied later, when the server's <ack> arrives (or on timeout).
+  @impl GenServer
+  def handle_info({:send_relayed, _msg_id}, state) do
+    {:noreply, state}
+  end
+
+  # The pipe failed before any frame went out (not_on_whatsapp, IQ timeout,
+  # encrypt error, plugin halt). No ack will ever come, so reply the parked caller
+  # the failure directly (bypassing the ack-success shape) and drop the entry.
+  @impl GenServer
+  def handle_info({:send_failed, msg_id, reason}, state) do
+    {:noreply, resolve_ack(state, msg_id, fn _shape -> {:error, reason} end)}
+  end
+
+  # The send was relayed but the server never confirmed it within the timeout.
+  # Report it honestly as unconfirmed.
+  @impl GenServer
+  def handle_info({:ack_timeout, msg_id}, state) do
+    {:noreply, resolve_ack(state, msg_id, fn _shape -> {:error, :ack_timeout} end)}
+  end
+
   # Handle keep-alive messages
   # This matches Baileys startKeepAliveRequest() behavior exactly
   @impl GenServer
@@ -1055,19 +1093,21 @@ defmodule Amarula.Connection do
     :ok
   end
 
-  # Dispatch a message to the per-recipient ConversationSender and DON'T block:
-  # the caller's `from` is forwarded so the sender replies directly when the send
-  # finishes. Connection returns `{:noreply, state}` and is immediately free for
-  # other sends (to other recipients, in parallel). The caller still blocks on its
-  # own GenServer.call until the sender answers.
+  # Dispatch a message to the per-recipient ConversationSender and DON'T block.
+  # Connection mints the msg_id and PARKS the caller's `from` under it in
+  # `pending_acks`, then returns `{:noreply, state}` and is immediately free for
+  # other sends. The reply to the caller is deferred to ack time (Design 2): the
+  # Sender reports its pipe result back to Connection (`{:send_relayed, …}` /
+  # `{:send_failed, …}`), and the consumer's `from` is answered only when the
+  # server's <ack class="message" id=msg_id> arrives (a plain ack → `shape.(:ok)`)
+  # — or sooner on a pipe failure, or never-confirmed → `:ack_timeout`.
   #
-  # `from` nil = fire-and-forget (a retry resend, no caller waiting). `shape` maps
-  # the raw send result to the caller's reply (default: {:ok, msg_id}/{:error,..}).
+  # `from` nil = fire-and-forget (a retry resend, no caller waiting) → nothing is
+  # parked. `shape` maps a successful ack to the caller's reply (default:
+  # `{:ok, msg_id}`; poll adds its secret).
   defp deliver_async(state, target, payload, from, shape \\ &default_send_reply/2) do
     jid = Amarula.Address.to_wire(target)
     msg_id = Map.get(payload, :msg_id) || generate_message_id()
-    # The sender applies `shape.(result, msg_id)` to build the caller's reply.
-    reply_shape = &shape.(&1, msg_id)
     instance_id = state.instance_id
 
     opts = [
@@ -1079,19 +1119,50 @@ defmodule Amarula.Connection do
       recipient_jid: jid
     ]
 
-    msg =
-      payload
-      |> Map.put(:msg_id, msg_id)
-      |> Map.put(:reply_to, from)
-      |> Map.put(:reply_shape, reply_shape)
-
+    # The Sender carries the msg_id and reports its pipe result back to `cm`
+    # (Connection) — it no longer holds the consumer's `from`.
+    msg = Map.put(payload, :msg_id, msg_id)
     :ok = ConversationSender.deliver(opts, msg)
-    {:noreply, state}
+
+    {:noreply, park_ack(state, msg_id, from, shape)}
   end
 
-  defp default_send_reply(:ok, msg_id), do: {:ok, msg_id}
-  defp default_send_reply({:error, reason}, _msg_id), do: {:error, reason}
-  defp default_send_reply({:halted, reason}, _msg_id), do: {:error, {:halted, reason}}
+  # Park the consumer's `from` (with its ack-success shape and a timeout timer)
+  # until the server confirms msg_id. A fire-and-forget send (from == nil) parks
+  # nothing: no caller waits, so a missing ack is silently fine.
+  defp park_ack(state, _msg_id, nil, _shape), do: state
+
+  defp park_ack(state, msg_id, from, shape) do
+    timer = Process.send_after(self(), {:ack_timeout, msg_id}, ack_timeout_ms(state))
+    # The shape stored applies to a successful ack only; it is given msg_id here.
+    on_ack = fn :ok -> shape.(:ok, msg_id) end
+    %{state | pending_acks: Map.put(state.pending_acks, msg_id, {from, on_ack, timer})}
+  end
+
+  defp ack_timeout_ms(%{config: %{ack_timeout_ms: ms}}) when is_integer(ms), do: ms
+  defp ack_timeout_ms(_state), do: @ack_timeout_ms
+
+  # Resolve a parked send: reply the consumer `reply_fun.(on_ack)`, cancel the
+  # timeout timer, and drop the entry. `reply_fun` receives the stored ack-success
+  # shape so the success path can apply it (`on_ack.(:ok)`) while failure/timeout
+  # bypass it. An unknown id (already resolved, fire-and-forget, or not ours) is a
+  # no-op — the same id never resolves twice (a duplicate ack is harmless).
+  defp resolve_ack(state, msg_id, reply_fun) do
+    case Map.pop(state.pending_acks, msg_id) do
+      {nil, _acks} ->
+        state
+
+      {{from, on_ack, timer}, acks} ->
+        Process.cancel_timer(timer)
+        GenServer.reply(from, reply_fun.(on_ack))
+        %{state | pending_acks: acks}
+    end
+  end
+
+  @doc false
+  def default_send_reply(:ok, msg_id), do: {:ok, msg_id}
+  def default_send_reply({:error, reason}, _msg_id), do: {:error, reason}
+  def default_send_reply({:halted, reason}, _msg_id), do: {:error, {:halted, reason}}
 
   defp generate_message_id do
     "3EB0" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :upper))
@@ -1260,6 +1331,8 @@ defmodule Amarula.Connection do
   defp dispatch_node(state, :receipt_ack, node), do: handle_receipt(state, node)
   # Incoming call offer/terminate. Baileys acks calls; processing not ported.
   defp dispatch_node(state, :call_ack, node), do: send_message_ack(state, node)
+  # Server confirmation of a send we relayed — reply the parked consumer.
+  defp dispatch_node(state, :message_ack, node), do: handle_message_ack(state, node)
 
   # Informational nodes that need no reply (thread_metadata, incoming <ack>).
   defp dispatch_node(state, :ignore, _node), do: state
@@ -1279,6 +1352,22 @@ defmodule Amarula.Connection do
 
   defp first_child_tag(%Node{content: [%Node{tag: t} | _]}), do: t
   defp first_child_tag(_), do: nil
+
+  # The server confirmed (or rejected) a message we sent. `<ack class="message"
+  # id=msg_id [error=code]>`. Reply the parked consumer and drop the entry:
+  #   - plain ack (no `error`) → success → the parked ack-success shape `on_ack.(:ok)`.
+  #   - ack carrying `error` → {:error, {:send_rejected, code}}.
+  # NEVER auto-resend on a `phash` ack — a plain ack (even with phash) is success;
+  # only an `error` attr is a failure (Baileys handleBadAck loops otherwise). An
+  # ack for an unknown/already-resolved id is a no-op (resolve_ack handles it).
+  defp handle_message_ack(state, node) do
+    msg_id = NodeUtils.get_attr(node, "id")
+
+    case NodeUtils.get_attr(node, "error") do
+      nil -> resolve_ack(state, msg_id, fn on_ack -> on_ack.(:ok) end)
+      code -> resolve_ack(state, msg_id, fn _on_ack -> {:error, {:send_rejected, code}} end)
+    end
+  end
 
   # The recipient couldn't decrypt a message we sent and is asking us to resend it
   # (their Signal session was out of sync). We:

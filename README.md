@@ -70,7 +70,7 @@ every ~20s (each rotation emits a fresh `:connection_update` — re-render on ea
 Render it as-is; don't reformat. Example with [`eqrcode`](https://hex.pm/packages/eqrcode):
 
 ```elixir
-{:whatsapp, :connection_update, %{qr: qr}} when is_binary(qr) ->
+{:whatsapp, :connection_update, %{qr: qr}} ->
   qr |> EQRCode.encode() |> EQRCode.png() |> then(&File.write!("qr.png", &1))
 ```
 

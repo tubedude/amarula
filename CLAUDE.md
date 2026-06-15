@@ -263,7 +263,7 @@ end
 
 - `examples/connection.ex` - GenServer that embeds a connection (pairing + listen + send)
 - `lib/amarula.ex` - The public API facade (the entry point library consumers use)
-- `lib/amarula/protocol/messages/ARCHITECTURE.md` - Detailed message handling architecture
+- `docs/INFRASTRUCTURE.md` - The living architecture reference (process model, send/ack/crash semantics)
 - `lib/amarula/connection.ex` - The per-connection process: websocket + cipher + IQ + sends + consumer API (the facade delegates here)
 - `lib/amarula/protocol/crypto/noise_handler.ex` - Noise Protocol implementation
 - `AGENTS.md` - Comprehensive Elixir coding guidelines for this project

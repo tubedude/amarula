@@ -148,19 +148,65 @@ comes later" — so the Sender doesn't even block on the write. A Connection cra
 then fails all in-flight sends, which is correct (no socket = nothing to send on);
 ConnectionSupervisor restarts it and callers get an error, not a hang.
 
-## The payoff for the ack-on-send feature (Design 2)
+## Ack-on-send (Design 2) — DETAILED SPEC [merge done; this is next]
 
-Once merged, "send completes on the server `<ack>`" is clean and local to one
-process:
-- Connection.handle_call(send) → enrich+relay via ConversationSender, **park**
-  `from` under msg_id in a `pending_sends` map, return `{:noreply}` (consumer hangs
-  on its call to Connection directly).
-- Connection's frame decode sees `<ack class=message id=X>` (Router → `:message_ack`),
-  looks up X → `GenServer.reply(from, {:ok, X})`, drops it. Error ack (`attrs.error`)
-  → `{:error, code}`. Timeout → `{:error, :ack_timeout}`.
-- No forwarding between processes; the cipher, the ack, and the `from` are all here.
-- WARNING (from Baileys handleBadAck): do NOT auto-resend on a `phash` ack — it
-  loops. Only treat `error` acks as failures; a plain ack = success.
+`{:ok, msg_id}` must mean "the server CONFIRMED the message" (received the
+`<ack class=message id=X>`), not just "frame written". Now that Connection is one
+process owning the cipher + the inbound ack + the consumer's `from`, this is local.
+
+### Current behaviour (to change)
+ConversationSender runs the pipe (resolve → ensure_sessions → encrypt → relay) and,
+on success, `GenServer.reply`s the parked `from` with `{:ok, msg_id}` **right after
+relay (frame written)**. We move that reply to **ack time**.
+
+### Target
+Connection holds `pending_acks: %{msg_id => {from, shape, timer_ref}}`.
+
+Send dispatch (`deliver_async`):
+- Mint msg_id. Park `{msg_id => {from, shape, timer}}` and start an ack-timeout
+  timer (`Process.send_after(self(), {:ack_timeout, msg_id}, @ack_timeout_ms)`).
+- The Sender no longer carries the consumer `from`. It reports its PIPE result back
+  to Connection (not the consumer):
+  - relay succeeded (frame written) → `{:send_relayed, msg_id}` → Connection keeps
+    the parked entry, lets the timer run, awaits the ack. (Sender does NOT reply.)
+  - pipe failed (not_on_whatsapp / IQ timeout / encrypt error) →
+    `{:send_failed, msg_id, reason}` → Connection replies `from` `{:error, reason}`,
+    cancels timer, drops entry. (No frame went out, so no ack will ever come.)
+- Fire-and-forget sends (retry resend, `from == nil`) park nothing.
+
+Ack path (`Router`: `{"ack", _, _, _}` when class=="message" → `:message_ack`):
+- `pending_acks[id]`:
+  - plain ack (no `error` attr) → `GenServer.reply(from, shape.(:ok))` →
+    `{:ok, msg_id}` to the caller.
+  - ack with `error` attr → `GenServer.reply(from, {:error, {:send_rejected, code}})`.
+  - either way: cancel timer, drop the entry.
+- unknown id (already replied / not ours) → ignore.
+
+Timeout path (`{:ack_timeout, msg_id}`):
+- if still parked → `GenServer.reply(from, {:error, :ack_timeout})`, drop.
+  (The frame was written but never confirmed — report it as unconfirmed, honest.)
+
+### Hard rules
+- **Never auto-resend on a `phash` ack** — Baileys `handleBadAck` warns it loops.
+  A plain ack (even with phash) = success; only an `error` attr is a failure.
+- Only `class="message"` acks correlate to sends. Other acks stay `:ignore`.
+- One `<ack>` per sent msg_id (incl. group — one message stanza, one ack). Reply
+  on the first matching ack; drop so a duplicate is a no-op.
+- A Connection crash drops all pending_acks with it (callers get `:DOWN` from their
+  monitor on Connection) — correct: dead socket, nothing to confirm.
+
+### Touch points
+- `Router.route/1` — add the `:message_ack` decision (class=message).
+- `Connection` — `pending_acks` state; `deliver_async` parks instead of passing
+  `from` to the Sender; `handle_info({:send_relayed,…})`, `{:send_failed,…})`,
+  `{:ack_timeout,…})`; the `:message_ack` dispatch.
+- `ConversationSender` — stop replying the consumer; report `{:send_relayed,…}` /
+  `{:send_failed,…}` to Connection. (deliver stays a cast.)
+- Tests: the existing send_flow tests assert reply-on-relay — they must now inject
+  an `<ack id=…>` to get the `{:ok, msg_id}` reply. Add: ack-success, error-ack,
+  ack-timeout, and keep the out-of-order test (acks back in a different order).
+- `@ack_timeout_ms` (~30s) and the client-side `@send_call_timeout` must exceed
+  enrich + ack worst case.
 
 ## Risks / call-outs
 

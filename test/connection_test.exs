@@ -115,7 +115,7 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
-  describe "lifecycle + subscription" do
+  describe "lifecycle" do
     test "disconnect on a freshly-started (disconnected) manager is a :ok no-op",
          %{config: config} do
       {:ok, pid} = Connection.start_link(config)
@@ -123,19 +123,18 @@ defmodule Amarula.ConnectionTest do
       assert Connection.get_connection_state(pid) == :disconnected
       GenServer.stop(pid)
     end
+  end
 
-    test "subscribe/unsubscribe accept any event topic (incl. unknown) and dedupe",
-         %{config: config} do
-      {:ok, pid} = Connection.start_link(config)
+  describe "consumer event delivery (direct to parent_pid)" do
+    test "emits {:whatsapp, type, data} straight to the parent_pid", %{config: config} do
+      # No internal subscriber registry anymore — Connection sends consumer events
+      # directly to the parent_pid it was started with. Injecting a stream-end
+      # close drives an emit through the same path the consumer sees.
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
 
-      # Known + unknown topics both accepted; double-subscribe is idempotent.
-      assert Connection.subscribe(pid, :connection_update, self()) == :ok
-      assert Connection.subscribe(pid, :connection_update, self()) == :ok
-      assert Connection.subscribe(pid, :totally_made_up, self()) == :ok
+      send(pid, {:ws_event, nil, {:close, :test}})
 
-      assert Connection.unsubscribe(pid, :connection_update, self()) == :ok
-      assert Connection.unsubscribe(pid, :never_subscribed, self()) == :ok
-
+      assert_receive {:whatsapp, :connection_update, %{connection: :disconnected}}
       GenServer.stop(pid)
     end
   end

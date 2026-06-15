@@ -5,13 +5,13 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
 
       ConnectionSupervisor (:one_for_one)
       ├── Registry            (per-instance; keys = {instance_id, role})
-      ├── Connection   (login + socket + IQ correlation)
-      ├── SenderSupervisor    (DynamicSupervisor) — ConversationSender…
-      └── Socket              (public API; resolves siblings via the Registry)
+      ├── TableOwner          (per-connection retry-cache ETS)
+      ├── Connection          (THE socket: ws + cipher + IQ + sends + consumer API)
+      └── SenderSupervisor    (DynamicSupervisor) — ConversationSender…
 
-  Replaces the old approach where `Socket` start_link'd its children inline.
-  `Socket.make_socket/2` starts this supervisor and returns the Socket child pid,
-  so the public API (`connect/send_text/...` on that pid) is unchanged.
+  `Connection.make_socket/2` starts this supervisor and returns the `Connection`
+  child pid — the consumer's handle, so the public API (`connect/send_text/...`
+  on that pid) lands on Connection directly (no relay).
 
   Siblings find each other through the per-instance `Registry` by role, via
   `name/2` / `whereis/2` — no global atom names, no leaked atoms.
@@ -19,12 +19,11 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
 
   use Supervisor
 
-  alias Amarula.Protocol.Socket
   alias Amarula.Connection
 
   @doc """
   Start a connection instance. `opts` may carry `:parent_pid`. Returns
-  `{:ok, sup_pid, socket_pid}` — `socket_pid` is the public handle.
+  `{:ok, sup_pid, connection_pid}` — `connection_pid` is the consumer handle.
   """
   @spec start_instance(Amarula.Conn.t(), keyword()) ::
           {:ok, pid(), pid()} | {:error, term()}
@@ -33,10 +32,10 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
     init_arg = %{instance_id: instance_id, conn: conn, opts: opts}
 
     with {:ok, sup} <- Supervisor.start_link(__MODULE__, init_arg),
-         socket when is_pid(socket) <- whereis(instance_id, :socket) do
-      {:ok, sup, socket}
+         connection when is_pid(connection) <- whereis(instance_id, :connection) do
+      {:ok, sup, connection}
     else
-      :undefined -> {:error, :socket_not_started}
+      :undefined -> {:error, :connection_not_started}
       {:error, _} = err -> err
     end
   end
@@ -63,17 +62,14 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
     children = [
       {Registry, keys: :unique, name: registry},
       # Owns the per-connection ETS caches; first child so the tables exist before
-      # Connection/Socket read them (no lazy create, no race).
+      # Connection reads them (no lazy create, no race).
       {Amarula.Protocol.Socket.TableOwner, profile: conn.profile},
-      {Connection, {conn, name: name(instance_id, :connection_manager)}},
-      {DynamicSupervisor, name: name(instance_id, :sender_supervisor), strategy: :one_for_one},
-      {Socket,
-       %{
-         instance_id: instance_id,
-         conn: conn,
-         parent_pid: Keyword.get(opts, :parent_pid),
-         name: name(instance_id, :socket)
-       }}
+      {Connection,
+       {conn,
+        name: name(instance_id, :connection),
+        instance_id: instance_id,
+        parent_pid: Keyword.get(opts, :parent_pid)}},
+      {DynamicSupervisor, name: name(instance_id, :sender_supervisor), strategy: :one_for_one}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

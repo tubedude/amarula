@@ -53,17 +53,12 @@ defmodule Amarula.Protocol.Crypto.Crypto do
   """
   @spec aes_encrypt_gcm(binary(), binary(), binary(), binary()) :: encryption_result()
   def aes_encrypt_gcm(plaintext, key, iv, additional_data) do
-    try do
-      # Create cipher with AES-256-GCM
-      # :crypto.crypto_one_time_aead returns {CipherText, CipherTag} when encrypting
-      {ciphertext, tag} =
-        :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, plaintext, additional_data, true)
+    # :crypto.crypto_one_time_aead returns {CipherText, CipherTag} when encrypting.
+    # Bad key/iv sizes raise ArgumentError — a caller bug, so let it crash.
+    {ciphertext, tag} =
+      :crypto.crypto_one_time_aead(:aes_256_gcm, key, iv, plaintext, additional_data, true)
 
-      encrypted = ciphertext <> tag
-      {:ok, encrypted}
-    rescue
-      error -> {:error, error}
-    end
+    {:ok, ciphertext <> tag}
   end
 
   @doc """
@@ -73,33 +68,25 @@ defmodule Amarula.Protocol.Crypto.Crypto do
   """
   @spec aes_decrypt_gcm(binary(), binary(), binary(), binary()) :: decryption_result()
   def aes_decrypt_gcm(ciphertext, key, iv, additional_data) do
-    try do
-      # Split ciphertext and auth tag
-      tag_length = Constants.gcm_tag_length()
+    # Split ciphertext and auth tag
+    tag_length = Constants.gcm_tag_length()
 
-      {encrypted_data, auth_tag} =
-        :erlang.split_binary(ciphertext, byte_size(ciphertext) - tag_length)
+    {encrypted_data, auth_tag} =
+      :erlang.split_binary(ciphertext, byte_size(ciphertext) - tag_length)
 
-      # Decrypt with auth tag
-      plaintext =
-        :crypto.crypto_one_time_aead(
-          :aes_256_gcm,
-          key,
-          iv,
-          encrypted_data,
-          additional_data,
-          auth_tag,
-          false
-        )
-
-      # Check if plaintext is actually an error
-      case plaintext do
-        :error -> {:error, "GCM decryption authentication failed"}
-        other when is_binary(other) -> {:ok, plaintext}
-        other -> {:error, "Unexpected plaintext type: #{inspect(other)}"}
-      end
-    rescue
-      error -> {:error, error}
+    # Decrypt with auth tag. :crypto returns :error on auth failure (a real,
+    # expected outcome → tagged tuple); malformed sizes raise → let it crash.
+    case :crypto.crypto_one_time_aead(
+           :aes_256_gcm,
+           key,
+           iv,
+           encrypted_data,
+           additional_data,
+           auth_tag,
+           false
+         ) do
+      :error -> {:error, "GCM decryption authentication failed"}
+      plaintext when is_binary(plaintext) -> {:ok, plaintext}
     end
   end
 

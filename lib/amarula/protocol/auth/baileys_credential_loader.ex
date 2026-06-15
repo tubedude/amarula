@@ -16,18 +16,23 @@ defmodule Amarula.Protocol.Auth.BaileysCredentialLoader do
   """
   @spec load_from_file(String.t()) :: {:ok, Types.auth_creds()} | {:error, term()}
   def load_from_file(file_path) do
-    try do
-      case File.read(file_path) do
-        {:ok, content} ->
-          creds_map = Jason.decode!(content)
-          convert_to_amarula_format(creds_map)
+    with {:ok, content} <- read_file(file_path),
+         {:ok, creds_map} <- decode_json(content) do
+      convert_to_amarula_format(creds_map)
+    end
+  end
 
-        {:error, reason} ->
-          {:error, {:file_read_error, reason}}
-      end
-    rescue
-      e ->
-        {:error, {:parse_error, e}}
+  defp read_file(file_path) do
+    case File.read(file_path) do
+      {:ok, content} -> {:ok, content}
+      {:error, reason} -> {:error, {:file_read_error, reason}}
+    end
+  end
+
+  defp decode_json(content) do
+    case Jason.decode(content) do
+      {:ok, creds_map} -> {:ok, creds_map}
+      {:error, reason} -> {:error, {:parse_error, reason}}
     end
   end
 

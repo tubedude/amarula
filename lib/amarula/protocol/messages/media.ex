@@ -52,7 +52,7 @@ defmodule Amarula.Protocol.Messages.Media do
   """
   @spec download(map(), media_type()) :: {:ok, binary()} | {:error, term()}
   def download(ref, type) do
-    media_key = ref[:media_key] || ref[:mediaKey] || ref.mediaKey
+    media_key = media_key(ref)
     url = download_url(ref)
 
     case Req.get(url, decode_body: false) do
@@ -62,9 +62,11 @@ defmodule Amarula.Protocol.Messages.Media do
     end
   end
 
+  defp media_key(ref), do: Map.get(ref, :media_key) || Map.get(ref, :mediaKey)
+
   defp download_url(ref) do
-    case ref[:direct_path] || ref[:directPath] || Map.get(ref, :directPath) do
-      nil -> ref[:url] || Map.get(ref, :url)
+    case Map.get(ref, :direct_path) || Map.get(ref, :directPath) do
+      nil -> Map.get(ref, :url)
       path -> "https://#{@default_media_host}#{path}"
     end
   end

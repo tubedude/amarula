@@ -25,23 +25,18 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
   @spec parse_qr_string(String.t()) ::
           {:ok, {String.t(), String.t(), String.t(), String.t()}} | {:error, String.t()}
   def parse_qr_string(qr_string) do
-    try do
-      case String.split(qr_string, ",", parts: 4) do
-        [ref, noise_key_b64, identity_key_b64, adv_secret_key_b64] ->
-          # Validate that all components are non-empty
-          if ref != "" and noise_key_b64 != "" and identity_key_b64 != "" and
-               adv_secret_key_b64 != "" do
-            {:ok, {ref, noise_key_b64, identity_key_b64, adv_secret_key_b64}}
-          else
-            {:error, "QR code components cannot be empty"}
-          end
+    case String.split(qr_string, ",", parts: 4) do
+      [ref, noise_key_b64, identity_key_b64, adv_secret_key_b64] ->
+        # Validate that all components are non-empty
+        if ref != "" and noise_key_b64 != "" and identity_key_b64 != "" and
+             adv_secret_key_b64 != "" do
+          {:ok, {ref, noise_key_b64, identity_key_b64, adv_secret_key_b64}}
+        else
+          {:error, "QR code components cannot be empty"}
+        end
 
-        _ ->
-          {:error, "Invalid QR code format - expected 4 comma-separated components"}
-      end
-    rescue
-      error ->
-        {:error, "Failed to parse QR code: #{inspect(error)}"}
+      _ ->
+        {:error, "Invalid QR code format - expected 4 comma-separated components"}
     end
   end
 
@@ -155,51 +150,46 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
   """
   @spec render_ascii(String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def render_ascii(qr_string) do
-    try do
-      case QRCode.create(qr_string) do
-        {:ok, qr_code} ->
-          # Convert QR matrix to ASCII using half-height blocks
-          # Each terminal line represents 2 QR pixels (top and bottom)
-          matrix = qr_code.matrix
+    case QRCode.create(qr_string) do
+      {:ok, qr_code} ->
+        # Convert QR matrix to ASCII using half-height blocks
+        # Each terminal line represents 2 QR pixels (top and bottom)
+        matrix = qr_code.matrix
 
-          ascii_qr =
-            matrix
-            |> Enum.chunk_every(2)
-            |> Enum.map(fn
-              # Two rows - use half blocks
-              [top_row, bottom_row] ->
-                Enum.zip(top_row, bottom_row)
-                |> Enum.map(fn
-                  # Both pixels filled
-                  {1, 1} -> "█"
-                  # Top pixel filled
-                  {1, 0} -> "▀"
-                  # Bottom pixel filled
-                  {0, 1} -> "▄"
-                  # Both pixels empty
-                  {0, 0} -> " "
-                end)
-                |> Enum.join("")
+        ascii_qr =
+          matrix
+          |> Enum.chunk_every(2)
+          |> Enum.map(fn
+            # Two rows - use half blocks
+            [top_row, bottom_row] ->
+              Enum.zip(top_row, bottom_row)
+              |> Enum.map(fn
+                # Both pixels filled
+                {1, 1} -> "█"
+                # Top pixel filled
+                {1, 0} -> "▀"
+                # Bottom pixel filled
+                {0, 1} -> "▄"
+                # Both pixels empty
+                {0, 0} -> " "
+              end)
+              |> Enum.join("")
 
-              # Single row (odd number of rows) - use top half block
-              [single_row] ->
-                single_row
-                |> Enum.map(fn
-                  1 -> "▀"
-                  0 -> " "
-                end)
-                |> Enum.join("")
-            end)
-            |> Enum.join("\n")
+            # Single row (odd number of rows) - use top half block
+            [single_row] ->
+              single_row
+              |> Enum.map(fn
+                1 -> "▀"
+                0 -> " "
+              end)
+              |> Enum.join("")
+          end)
+          |> Enum.join("\n")
 
-          {:ok, ascii_qr}
+        {:ok, ascii_qr}
 
-        {:error, reason} ->
-          {:error, "Failed to create QR code: #{reason}"}
-      end
-    rescue
-      error ->
-        {:error, "Error rendering ASCII QR: #{inspect(error)}"}
+      {:error, reason} ->
+        {:error, "Failed to create QR code: #{reason}"}
     end
   end
 

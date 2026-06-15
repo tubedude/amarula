@@ -106,16 +106,10 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
     iv = Crypto.generate_iv(state.write_counter)
     aad = if state.handshake_state == :transport, do: <<>>, else: state.hash
 
-    case Crypto.aes_encrypt_gcm(plaintext, state.enc_key, iv, aad) do
-      {:ok, encrypted} ->
-        new_state = %{state | write_counter: state.write_counter + 1}
-        new_state = authenticate(new_state, encrypted)
-        {encrypted, new_state}
-
-      {:error, reason} ->
-        Logger.error("Encryption failed: #{inspect(reason)}")
-        raise "Encryption failed: #{inspect(reason)}"
-    end
+    {:ok, encrypted} = Crypto.aes_encrypt_gcm(plaintext, state.enc_key, iv, aad)
+    new_state = %{state | write_counter: state.write_counter + 1}
+    new_state = authenticate(new_state, encrypted)
+    {encrypted, new_state}
   end
 
   @doc """
@@ -220,33 +214,24 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
   """
   @spec process_handshake(noise_state(), map(), Crypto.key_pair()) :: handshake_result()
   def process_handshake(state, %{serverHello: server_hello}, noise_key) do
-    try do
-      # Authenticate the server's ephemeral public key into the hash
-      state = authenticate(state, server_hello.ephemeral)
+    # Authenticate the server's ephemeral public key into the hash
+    state = authenticate(state, server_hello.ephemeral)
 
-      # Compute the shared secret from ECDH and mix into keys
-      shared_key = Crypto.shared_key(state.ephemeral_key_pair.private, server_hello.ephemeral)
-      state = mix_into_key(state, shared_key)
-      state = %{state | handshake_state: :awaiting_server_hello}
+    # Compute the shared secret from ECDH and mix into keys
+    shared_key = Crypto.shared_key(state.ephemeral_key_pair.private, server_hello.ephemeral)
+    state = mix_into_key(state, shared_key)
+    state = %{state | handshake_state: :awaiting_server_hello}
 
-      # Decrypt and mix server static
-      {:ok, decrypted_static, state_after_first_decrypt} = decrypt(state, server_hello.static)
-      shared_static = Crypto.shared_key(state.ephemeral_key_pair.private, decrypted_static)
-      state_after_mix = mix_into_key(state_after_first_decrypt, shared_static)
+    # Decrypt and mix server static
+    {:ok, decrypted_static, state_after_first_decrypt} = decrypt(state, server_hello.static)
+    shared_static = Crypto.shared_key(state.ephemeral_key_pair.private, decrypted_static)
+    state_after_mix = mix_into_key(state_after_first_decrypt, shared_static)
 
-      # Decrypt and verify certificate
-      {:ok, cert_decoded, state_after_second_decrypt} =
-        decrypt(state_after_mix, server_hello.payload)
+    # Decrypt and verify certificate
+    {:ok, cert_decoded, state_after_second_decrypt} =
+      decrypt(state_after_mix, server_hello.payload)
 
-      case verify_certificate(cert_decoded) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          Logger.error("Certificate verification failed: #{inspect(reason)}")
-          raise "Certificate verification failed: #{reason}"
-      end
-
+    with :ok <- verify_certificate(cert_decoded) do
       # Encrypt noise key
       {key_encrypted, state_after_encrypt} = encrypt(state_after_second_decrypt, noise_key.public)
 
@@ -255,10 +240,6 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
       final_state = mix_into_key(state_after_encrypt, noise_shared)
 
       {:ok, key_encrypted, final_state}
-    rescue
-      error ->
-        Logger.error("Handshake processing failed: #{inspect(error)}")
-        {:error, error}
     end
   end
 

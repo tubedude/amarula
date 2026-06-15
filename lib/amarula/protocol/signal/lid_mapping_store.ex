@@ -107,50 +107,33 @@ defmodule Amarula.Protocol.Signal.LIDMappingStore do
 
   @impl GenServer
   def handle_call({:store_mappings, mappings}, _from, state) do
-    try do
-      # Validate and process mappings
-      pair_map = validate_and_process_mappings(mappings, state)
+    # Validate and process mappings
+    pair_map = validate_and_process_mappings(mappings, state)
 
-      if map_size(pair_map) == 0 do
-        {:reply, :ok, state}
-      else
-        # Store in key store and update cache
-        case store_mappings_in_key_store(state.key_store, pair_map) do
-          :ok ->
-            update_cache(state.cache, pair_map)
-            Logger.debug("Stored #{map_size(pair_map)} LID-PN mappings")
-            {:reply, :ok, state}
+    if map_size(pair_map) == 0 do
+      {:reply, :ok, state}
+    else
+      # Store in key store and update cache
+      case store_mappings_in_key_store(state.key_store, pair_map) do
+        :ok ->
+          update_cache(state.cache, pair_map)
+          Logger.debug("Stored #{map_size(pair_map)} LID-PN mappings")
+          {:reply, :ok, state}
 
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
       end
-    rescue
-      error ->
-        {:reply, {:error, "Failed to store mappings: #{inspect(error)}"}, state}
     end
   end
 
   @impl GenServer
   def handle_call({:get_lids_for_pns, pns}, _from, state) do
-    try do
-      result = process_pns_for_lids(pns, state)
-      {:reply, result, state}
-    rescue
-      error ->
-        {:reply, {:error, "Failed to get LIDs for PNs: #{inspect(error)}"}, state}
-    end
+    {:reply, process_pns_for_lids(pns, state), state}
   end
 
   @impl GenServer
   def handle_call({:get_pn_for_lid, lid}, _from, state) do
-    try do
-      result = process_lid_for_pn(lid, state)
-      {:reply, result, state}
-    rescue
-      error ->
-        {:reply, {:error, "Failed to get PN for LID: #{inspect(error)}"}, state}
-    end
+    {:reply, process_lid_for_pn(lid, state), state}
   end
 
   # ============================================================================

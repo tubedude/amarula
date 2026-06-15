@@ -96,7 +96,8 @@ defmodule Amarula.Protocol.Signal.SessionBuilder do
     end
 
     base_key = Crypto.generate_key_pair()
-    device_pre_key = device[:pre_key] && device.pre_key.public
+    pre_key = Map.get(device, :pre_key)
+    device_pre_key = pre_key && pre_key.public
 
     session =
       init_session(
@@ -113,7 +114,7 @@ defmodule Amarula.Protocol.Signal.SessionBuilder do
     pending =
       %{signed_key_id: spk.key_id, base_key: base_key.public}
       |> then(fn p ->
-        if device[:pre_key], do: Map.put(p, :pre_key_id, device.pre_key.key_id), else: p
+        if pre_key, do: Map.put(p, :pre_key_id, pre_key.key_id), else: p
       end)
 
     session = Map.put(session, :pending_pre_key, pending)

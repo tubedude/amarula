@@ -30,4 +30,26 @@ defmodule Amarula.Protocol.Crypto.CryptoTest do
       assert <<5, _rest::binary>> = result
     end
   end
+
+  describe "link-code pairing primitives" do
+    test "AES-256-CTR round-trips" do
+      key = :crypto.strong_rand_bytes(32)
+      iv = :crypto.strong_rand_bytes(16)
+      plaintext = :crypto.strong_rand_bytes(32)
+
+      ciphertext = Crypto.aes_encrypt_ctr(plaintext, key, iv)
+      assert ciphertext != plaintext
+      assert Crypto.aes_decrypt_ctr(ciphertext, key, iv) == plaintext
+    end
+
+    test "derive_pairing_code_key matches Baileys PBKDF2 vector" do
+      # PBKDF2-HMAC-SHA256, 131_072 iters, 32 bytes — verified against node crypto.
+      salt = :binary.copy(<<7>>, 32)
+
+      expected =
+        Base.decode16!("53F722816410C86D5216D645032297D9F368F24AC925C8B9911B995A789B1EF0")
+
+      assert Crypto.derive_pairing_code_key("ABCD2345", salt) == expected
+    end
+  end
 end

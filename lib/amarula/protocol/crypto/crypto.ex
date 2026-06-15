@@ -104,6 +104,38 @@ defmodule Amarula.Protocol.Crypto.Crypto do
   end
 
   @doc """
+  Encrypt plaintext using AES-256-CTR.
+
+  Used by the link-code (phone-number) pairing flow to wrap ephemeral public
+  keys. Mirrors Baileys `aesEncryptCTR`. Returns the ciphertext as a binary.
+  """
+  @spec aes_encrypt_ctr(binary(), binary(), binary()) :: binary()
+  def aes_encrypt_ctr(plaintext, key, iv) do
+    :crypto.crypto_one_time(:aes_256_ctr, key, iv, plaintext, true)
+  end
+
+  @doc """
+  Decrypt ciphertext using AES-256-CTR.
+
+  Mirrors Baileys `aesDecryptCTR`. Returns the plaintext as a binary.
+  """
+  @spec aes_decrypt_ctr(binary(), binary(), binary()) :: binary()
+  def aes_decrypt_ctr(ciphertext, key, iv) do
+    :crypto.crypto_one_time(:aes_256_ctr, key, iv, ciphertext, false)
+  end
+
+  @doc """
+  Derive the link-code pairing key from the pairing code and salt.
+
+  PBKDF2-HMAC-SHA256, 131_072 iterations (`2 << 16`), 32-byte output — matches
+  Baileys `derivePairingCodeKey`.
+  """
+  @spec derive_pairing_code_key(binary(), binary()) :: binary()
+  def derive_pairing_code_key(pairing_code, salt) do
+    :crypto.pbkdf2_hmac(:sha256, pairing_code, salt, 131_072, 32)
+  end
+
+  @doc """
   Generate SHA-256 hash of input data.
 
   Returns the hash as a binary.

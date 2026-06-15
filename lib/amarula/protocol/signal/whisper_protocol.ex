@@ -128,7 +128,7 @@ defmodule Amarula.Protocol.Signal.WhisperProtocol do
 
       2 ->
         {len, rest} = read_varint(rest)
-        <<value::binary-size(len), rest::binary>> = rest
+        <<value::binary-size(^len), rest::binary>> = rest
         decode_fields(rest, Map.put(acc, field_num, value))
 
       _ ->

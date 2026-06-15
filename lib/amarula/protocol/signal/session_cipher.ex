@@ -159,7 +159,7 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
     check_version!(vbyte)
 
     proto_len = byte_size(message_buffer) - 1 - 8
-    <<_v, message_proto::binary-size(proto_len), mac::binary-size(8)>> = message_buffer
+    <<_v, message_proto::binary-size(^proto_len), mac::binary-size(8)>> = message_buffer
     message = WhisperProtocol.decode_whisper_message(message_proto)
 
     session = maybe_step_ratchet(session, message.ephemeral_key, message.previous_counter)

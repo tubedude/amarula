@@ -590,15 +590,11 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     store = SessionStore.build(ctx.creds)
     record = SessionStore.load_session(ctx.conn, addr)
 
-    case SessionCipher.encrypt(record, plaintext, store) do
-      {:ok, enc_type, ciphertext, record} ->
-        SessionStore.store_session(ctx.conn, addr, record)
-        {device_jid, enc_type, ciphertext}
-
-      other ->
-        Logger.warning("Encryption for a device failed: #{inspect(other)} — skipping device")
-        nil
-    end
+    # SessionCipher.encrypt returns {:ok, ...} or raises (let-it-crash); there is
+    # no error tuple to handle.
+    {:ok, enc_type, ciphertext, record} = SessionCipher.encrypt(record, plaintext, store)
+    SessionStore.store_session(ctx.conn, addr, record)
+    {device_jid, enc_type, ciphertext}
   end
 
   defp load_session(ctx, jid),

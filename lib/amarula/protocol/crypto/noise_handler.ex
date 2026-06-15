@@ -352,7 +352,7 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
 
       true ->
         # Extract frame data
-        <<frame_data::binary-size(length), remaining::binary>> = rest
+        <<frame_data::binary-size(^length), remaining::binary>> = rest
 
         Logger.debug(
           "Extracted frame data, remaining=#{byte_size(remaining)} bytes after this frame"

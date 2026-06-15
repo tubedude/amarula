@@ -40,7 +40,7 @@ defmodule Amarula.Protocol.Messages.PollCrypto do
     aad = "#{ctx.poll_msg_id}\0#{ctx.voter_jid}"
 
     ct_len = byte_size(payload) - @gcm_tag_len
-    <<ciphertext::binary-size(ct_len), tag::binary-size(@gcm_tag_len)>> = payload
+    <<ciphertext::binary-size(^ct_len), tag::binary-size(@gcm_tag_len)>> = payload
 
     case :crypto.crypto_one_time_aead(:aes_256_gcm, dec_key, iv, ciphertext, aad, tag, false) do
       plaintext when is_binary(plaintext) ->

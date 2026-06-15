@@ -55,7 +55,7 @@ defmodule Amarula.MixProject do
       {:telemetry, "~> 1.0"},
 
       # WebSocket client
-      {:websockex, "~> 0.4.3"},
+      {:websockex, "~> 0.5.1"},
 
       # JSON handling
       {:jason, "~> 1.4"},

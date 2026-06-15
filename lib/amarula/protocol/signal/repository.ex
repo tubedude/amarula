@@ -8,7 +8,6 @@ defmodule Amarula.Protocol.Signal.Repository do
   """
 
   use GenServer
-  require Logger
   alias Amarula.Protocol.Signal.{LIDMappingStore}
 
   alias Amarula.Protocol.Signal.Group.{

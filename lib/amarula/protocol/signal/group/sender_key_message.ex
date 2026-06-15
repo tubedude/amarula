@@ -74,7 +74,7 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyMessage do
   def from_serialized(serialized) do
     body_len = byte_size(serialized) - @signature_length - 1
 
-    <<version, message_part::binary-size(body_len), signature::binary-size(@signature_length)>> =
+    <<version, message_part::binary-size(^body_len), signature::binary-size(@signature_length)>> =
       serialized
 
     msg = Proto.SenderKeyMessage.decode(message_part)

@@ -7,7 +7,6 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
   signed identity keys, pre-keys, and registration data.
   """
 
-  require Logger
   alias Amarula.Protocol.Crypto.{Crypto, Constants}
   alias Amarula.Protocol.Proto
 

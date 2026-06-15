@@ -11,8 +11,6 @@ defmodule Amarula.Protocol.Messages.HistorySync do
   moves the phone from "Paused" to "active".
   """
 
-  require Logger
-
   alias Amarula.{Address, Chat, Contact}
   alias Amarula.Protocol.Messages.Media
   alias Amarula.Protocol.Proto

@@ -887,15 +887,11 @@ defmodule Amarula.Connection do
         {:ws_event, _ws_pid, {:frame, data}},
         %{connection_state: :connected, noise_state: noise_state} = state
       ) do
-    # Application frame - decode with noise
-    with {:ok, updated_state} <-
-           decode_and_emit_frame(noise_state, data, state) do
-      {:noreply, %{updated_state | last_recv_time: System.monotonic_time(:millisecond)}}
-    else
-      {:error, reason} ->
-        Logger.warning("Frame processing failed: #{inspect(reason)}")
-        {:noreply, state}
-    end
+    # Application frame - decode with noise. decode_and_emit_frame always returns
+    # {:ok, _} (NoiseHandler.decode_frame never errors; a real node-handling bug
+    # crashes the socket so the supervisor restores clean crypto state).
+    {:ok, updated_state} = decode_and_emit_frame(noise_state, data, state)
+    {:noreply, %{updated_state | last_recv_time: System.monotonic_time(:millisecond)}}
   end
 
   # Catch-all: a frame arriving in an unexpected state (not connecting/connected).
@@ -2279,11 +2275,6 @@ defmodule Amarula.Connection do
         Logger.error("Failed to process pair-success: #{inspect(reason)}")
         emit_to_subscribers(state, :pairing_failure, %{reason: inspect(reason)})
         handle_connection_error(state, {:pairing_error, reason})
-
-      error ->
-        Logger.error("Unexpected error in pair-success: #{inspect(error)}")
-        emit_to_subscribers(state, :pairing_failure, %{reason: inspect(error)})
-        handle_connection_error(state, {:pairing_error, error})
     end
   end
 

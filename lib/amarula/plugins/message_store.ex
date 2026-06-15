@@ -29,7 +29,6 @@ defmodule Amarula.Plugins.MessageStore do
   """
 
   use GenServer
-  require Logger
 
   alias Amarula.Protocol.Messages.MessageContent
 

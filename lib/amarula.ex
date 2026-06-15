@@ -447,11 +447,12 @@ defmodule Amarula do
     cond do
       match?(%Amarula.Msg{}, q.message) -> {:ok, q.message}
       cached = get_message(conn, id) -> {:ok, cached}
-      true -> {:requested, request_resend_for_quoted(conn, msg)}
+      true -> request_resend_for_quoted(conn, msg)
     end
   end
 
   # Build the MessageKey for the quoted original + ask the server to re-deliver it.
+  # {:requested, request_id} on success; the resend's {:error, reason} otherwise.
   defp request_resend_for_quoted(conn, %Amarula.Msg{quoted: q} = msg) do
     key = %Proto.MessageKey{
       remoteJid: Amarula.Address.to_wire(q.chat || msg.chat),
@@ -460,8 +461,8 @@ defmodule Amarula do
     }
 
     case request_resend(conn, key) do
-      {:ok, request_id} -> request_id
-      _ -> nil
+      {:ok, request_id} -> {:requested, request_id}
+      {:error, _} = err -> err
     end
   end
 

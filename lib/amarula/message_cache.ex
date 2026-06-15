@@ -47,6 +47,10 @@ defmodule Amarula.MessageCache do
 
     case :ets.whereis(name) do
       :undefined ->
+        # Lazy, first-use creation. Two processes can race here; the loser's
+        # :ets.new raises ArgumentError (table already exists) and we just reuse
+        # the name. This is the same idiom as Amarula.RetryCache.ETS — the rescue
+        # is a create-race guard, not error-swallowing.
         try do
           :ets.new(name, [:set, :public, :named_table, read_concurrency: true])
         rescue

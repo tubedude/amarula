@@ -111,6 +111,31 @@ defmodule Amarula.MsgTest do
       assert msg.quoted == nil
     end
 
+    test "the inlined quoted message is capped at one level (its own quote ignored)" do
+      # A quotedMessage that itself carries a contextInfo with a deeper quote.
+      deep_ctx = %ContextInfo{
+        stanzaId: "DEEP",
+        quotedMessage: %Proto.Message{conversation: "deep"}
+      }
+
+      ctx = %ContextInfo{
+        stanzaId: "ORIG",
+        quotedMessage: %Proto.Message{
+          extendedTextMessage: %Proto.Message.ExtendedTextMessage{
+            text: "mid",
+            contextInfo: deep_ctx
+          }
+        }
+      }
+
+      reply =
+        build(%Proto.Message{
+          extendedTextMessage: %Proto.Message.ExtendedTextMessage{text: "top", contextInfo: ctx}
+        })
+
+      assert %Amarula.Msg{content: "mid", quoted: nil} = reply.quoted.message
+    end
+
     test "mentions are parsed to Addresses" do
       ctx = %ContextInfo{
         mentionedJid: ["5511888888888@s.whatsapp.net", "120363@g.us"]

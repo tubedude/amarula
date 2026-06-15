@@ -98,7 +98,9 @@ defmodule Amarula.Msg do
 
   # Build the `quoted` view from a message's contextInfo (nil if not a reply).
   # The inlined quotedMessage is wrapped as a nested %Msg{} so consumers read it
-  # the same way as any message.
+  # the same way as any message. Capped at ONE level: WhatsApp only inlines the
+  # immediate quoted message, and a nested quote inside it is ignored (no
+  # unbounded recursion on crafted input).
   defp quoted(nil, _chat), do: nil
 
   defp quoted(%Proto.ContextInfo{stanzaId: id} = ctx, chat) when is_binary(id) and id != "" do
@@ -106,17 +108,31 @@ defmodule Amarula.Msg do
 
     inner =
       case ctx.quotedMessage do
-        %Proto.Message{} = qm ->
-          from_proto(qm, %{id: id, chat: chat, sender: participant})
-
-        _ ->
-          nil
+        %Proto.Message{} = qm -> nested_msg(qm, id, chat, participant)
+        _ -> nil
       end
 
     %{id: id, participant: participant, chat: address(ctx.remoteJid) || chat, message: inner}
   end
 
   defp quoted(_ctx, _chat), do: nil
+
+  # The inlined quoted message as a %Msg{} WITHOUT its own `quoted` (one level only).
+  defp nested_msg(%Proto.Message{} = proto, id, chat, sender) do
+    {type, content} = classify(proto)
+
+    %__MODULE__{
+      id: id,
+      chat: chat,
+      sender: sender,
+      from_me: false,
+      type: type,
+      content: content,
+      quoted: nil,
+      mentions: [],
+      raw: proto
+    }
+  end
 
   defp mentions(nil), do: []
 

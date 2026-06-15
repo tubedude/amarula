@@ -828,6 +828,12 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     delay = calculate_retry_delay(state.retry_count, state.retry_delay)
     Logger.info("Scheduling reconnection in #{delay}ms")
 
+    Amarula.Telemetry.emit([:amarula, :reconnect, :scheduled], profile(state), %{
+      count: 1,
+      delay_ms: delay,
+      attempt: state.retry_count
+    })
+
     retry_timer = Process.send_after(self(), :reconnect, delay)
     %{state | retry_timer: retry_timer}
   end
@@ -845,6 +851,10 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
       received_pending_notifications: false,
       qr: nil
     }
+
+    Amarula.Telemetry.emit([:amarula, :connection, :update], profile(state), %{count: 1}, %{
+      state: connection_state
+    })
 
     emit_event(state, :connection_update, update)
   end
@@ -1075,6 +1085,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
 
   defp handle_retry_receipt(state, node) do
     state = send_message_ack(state, node)
+    Amarula.Telemetry.emit([:amarula, :retry, :received], profile(state), %{count: 1})
 
     msg_id = NodeUtils.get_attr(node, "id")
     from = NodeUtils.get_attr(node, "from")
@@ -1446,10 +1457,19 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         "Stream error 515 (restart required) — reconnecting to log in with paired credentials"
       )
 
+      Amarula.Telemetry.emit([:amarula, :stream_error, :restart], profile(state), %{count: 1}, %{
+        code: code
+      })
+
       # Creds were already persisted at pairing; just reconnect.
       restart_connection(state)
     else
       Logger.error("Stream error: code=#{code}, reason=#{reason}")
+
+      Amarula.Telemetry.emit([:amarula, :stream_error, :received], profile(state), %{count: 1}, %{
+        code: code
+      })
+
       handle_connection_error(state, {:stream_error, code, reason})
     end
   end
@@ -2038,6 +2058,38 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
     })
   end
 
+  # One :message,:received per decrypted message — throughput + media volume.
+  # media_bytes is the sender's declared fileLength (no eager download). Privacy:
+  # counts/kinds/booleans only.
+  defp emit_message_telemetry(state, msgs, node, from) do
+    group? = JID.is_jid_group?(from)
+    offline? = NodeUtils.get_attr(node, "offline") not in [nil, ""]
+
+    Enum.each(msgs, fn msg ->
+      {media?, media_kind, bytes} =
+        case msg do
+          %{type: :media, content: %{kind: kind, media: m}} ->
+            {true, kind, Map.get(m, :fileLength) || 0}
+
+          _ ->
+            {false, nil, 0}
+        end
+
+      Amarula.Telemetry.emit(
+        [:amarula, :message, :received],
+        profile(state),
+        %{count: 1, media_bytes: bytes},
+        %{
+          from_me?: msg.from_me,
+          group?: group?,
+          offline?: offline?,
+          media?: media?,
+          media_kind: media_kind
+        }
+      )
+    end)
+  end
+
   defp maybe_address(nil), do: nil
   defp maybe_address(jid), do: Amarula.Address.parse(jid)
 
@@ -2089,6 +2141,8 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
         kinds = Enum.map(msgs, & &1.type)
         Logger.info("📩 Decrypted #{length(msgs)} message(s) from #{from} (#{inspect(kinds)})")
 
+        emit_message_telemetry(state, msgs, node, from)
+
         emit_to_subscribers(state, :messages_upsert, %{
           from: Amarula.Address.parse(from),
           id: msg_id,
@@ -2124,6 +2178,11 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
 
       true ->
         Logger.debug("Message #{msg_id} from #{from}: nothing decrypted — retry + nack")
+
+        Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
+          reason: :nothing_decrypted
+        })
+
         state = send_retry_request(state, node)
         send_message_ack(state, node, @nack_unhandled_error)
     end
@@ -2340,6 +2399,15 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
       }
 
       Logger.info("Sending retry receipt for message #{msg_id} (count=#{retry_count})")
+
+      # `attempt` is the escalating per-peer retry count: a one-off is normal, a
+      # climbing attempt means a peer we can't re-establish a session with (poison
+      # message / lost sender key). That's the signal worth alerting on.
+      Amarula.Telemetry.emit([:amarula, :retry, :sent], profile(state), %{
+        count: 1,
+        attempt: retry_count
+      })
+
       send_binary_node(state, receipt)
     end
   end
@@ -2903,6 +2971,7 @@ defmodule Amarula.Protocol.Socket.ConnectionManager do
 
   defp upload_pre_keys(state, count, kind \\ :prekey_upload) do
     Logger.info("Uploading #{count} pre-keys")
+    Amarula.Telemetry.emit([:amarula, :prekey, :upload], profile(state), %{count: count})
     {updated_creds, node} = PreKeys.get_next_pre_keys_node(state.auth_creds, count)
 
     # Persist the generated prekeys before the upload round-trip so a crash

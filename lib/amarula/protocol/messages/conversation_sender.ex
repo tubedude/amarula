@@ -29,7 +29,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   alias Amarula.Protocol.Binary.{JID, Node}
   alias Amarula.Protocol.Crypto.Constants
   alias Amarula.Protocol.Groups.Metadata, as: GroupMetadata
-  alias Amarula.Protocol.Messages.{MessageEncoder, Relay}
+  alias Amarula.Protocol.Messages.{MessageContent, MessageEncoder, Relay}
   alias Amarula.Protocol.Proto
 
   alias Amarula.Protocol.Signal.{
@@ -182,19 +182,51 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       skmsg: nil
     }
 
-    # Each stage returns {:ok, ctx} or {:error, {stage, reason}}; `with` threads the
-    # happy path and stops at the first failure. A recoverable failure (e.g. a
-    # timed-out IQ, an unreachable recipient) is logged and returned; unexpected
-    # errors still crash the (disposable) process.
+    profile = state.conn.profile
+    {media?, media_kind, bytes} = media_stats(message)
+
+    # Telemetry span around the whole send. :stop carries duration + byte size +
+    # media kind; :exception carries the failing stage. (Privacy: counts/kinds
+    # only — no jid/content.)
+    Amarula.Telemetry.span(
+      [:amarula, :send],
+      profile,
+      %{kind: kind, media?: media?, media_kind: media_kind},
+      fn -> {run_pipe(ctx, msg_id, jid, profile), %{bytes: bytes}} end
+    )
+  end
+
+  # Each stage returns {:ok, ctx} or {:error, {stage, reason}}; `with` threads the
+  # happy path and stops at the first failure. A recoverable failure (e.g. a
+  # timed-out IQ, an unreachable recipient) is logged and returned; unexpected
+  # errors still crash the (disposable) process.
+  defp run_pipe(ctx, msg_id, jid, profile) do
     with {:ok, ctx} <- resolve_devices(ctx),
          {:ok, ctx} <- ensure_sessions(ctx),
          {:ok, ctx} <- encrypt(ctx),
          :ok <- relay(ctx) do
       :ok
     else
-      {:error, {stage, reason}} ->
-        Logger.error("Send #{msg_id} to #{jid} dropped at #{stage}: #{inspect(reason)}")
-        {:error, reason}
+      {:error, {:resolve_devices, :not_on_whatsapp} = stage_reason} ->
+        Amarula.Telemetry.emit([:amarula, :send, :not_on_whatsapp], profile)
+        log_drop(msg_id, jid, stage_reason)
+
+      {:error, {_stage, _reason} = stage_reason} ->
+        log_drop(msg_id, jid, stage_reason)
+    end
+  end
+
+  defp log_drop(msg_id, jid, {stage, reason}) do
+    Logger.error("Send #{msg_id} to #{jid} dropped at #{stage}: #{inspect(reason)}")
+    {:error, reason}
+  end
+
+  # Byte size + media kind of an outgoing message, for telemetry. Media protos
+  # carry fileLength; text/other report 0 bytes and media? = false.
+  defp media_stats(%Proto.Message{} = message) do
+    case MessageContent.classify(message) do
+      {:media, kind, m} -> {true, kind, Map.get(m, :fileLength) || 0}
+      _ -> {false, nil, 0}
     end
   end
 

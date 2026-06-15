@@ -50,6 +50,9 @@ defmodule Amarula.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      # Telemetry events (operators attach handlers / a metrics reporter)
+      {:telemetry, "~> 1.0"},
+
       # WebSocket client
       {:websockex, "~> 0.4.3"},
 

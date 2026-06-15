@@ -306,6 +306,36 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     assert is_binary(identity) and byte_size(identity) > 0
   end
 
+  test "emits an [:amarula, :send, :stop] telemetry span on a successful send", ctx do
+    ref = make_ref()
+    test_pid = self()
+
+    :telemetry.attach(
+      {ref, :send_stop},
+      [:amarula, :send, :stop],
+      fn name, meas, meta, _ -> send(test_pid, {:telemetry, name, meas, meta}) end,
+      nil
+    )
+
+    {_msg_id, task} = send_text_task(ctx, @jid, "hi")
+    usync = recv_frame()
+    inject(ctx, usync_devices_reply(attr(usync, "id")))
+    bundle = recv_frame()
+    inject(ctx, bundle_reply(attr(bundle, "id")))
+    _message = recv_frame()
+    assert :ok = Task.await(task)
+
+    assert_receive {:telemetry, [:amarula, :send, :stop], measurements, metadata}
+    assert is_integer(measurements.duration)
+    # text send → 0 declared media bytes, not a media message.
+    assert measurements.bytes == 0
+    assert metadata.kind == :dm
+    assert metadata.media? == false
+    assert metadata.profile == ctx.conn.profile
+
+    :telemetry.detach({ref, :send_stop})
+  end
+
   test "drops the send (no relay) when the recipient resolves to no devices", ctx do
     # A number that isn't on WhatsApp returns a USync list with no devices. The
     # send must NOT fabricate a device and relay a phantom message (Baileys#2635);

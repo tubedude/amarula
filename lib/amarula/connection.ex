@@ -2910,17 +2910,27 @@ defmodule Amarula.Connection do
     # session/sender key) then <ack error="500"> nack.
     cond do
       messages != [] ->
-        msgs = Enum.map(messages, &build_msg(state, &1, node, from, msg_id))
-        kinds = Enum.map(msgs, & &1.type)
-        Logger.debug("Decrypted #{length(msgs)} message(s) from #{from} (#{inspect(kinds)})")
+        # Pure Signal plumbing (a bare senderKeyDistributionMessage) has already had
+        # its side effect applied in MessageDecryptor; it is group-session-key plumbing,
+        # not a user message, so it must NOT surface to the consumer. Drop it from the
+        # emitted list — but keep it counting as a successful decrypt, so we still send
+        # the delivery receipt (drain the offline queue) and never nack a node whose
+        # only enc was an SKDM.
+        emitted = Enum.reject(messages, &signal_control?/1)
 
-        emit_message_telemetry(state, msgs, node, from)
+        if emitted != [] do
+          msgs = Enum.map(emitted, &build_msg(state, &1, node, from, msg_id))
+          kinds = Enum.map(msgs, & &1.type)
+          Logger.debug("Decrypted #{length(msgs)} message(s) from #{from} (#{inspect(kinds)})")
 
-        emit_to_subscribers(state, :messages_upsert, %{
-          from: Amarula.Address.parse(from),
-          id: msg_id,
-          messages: msgs
-        })
+          emit_message_telemetry(state, msgs, node, from)
+
+          emit_to_subscribers(state, :messages_upsert, %{
+            from: Amarula.Address.parse(from),
+            id: msg_id,
+            messages: msgs
+          })
+        end
 
         state = send_delivery_receipt(state, node)
 
@@ -3023,6 +3033,17 @@ defmodule Amarula.Connection do
     do: history_sync_message?(inner)
 
   defp history_sync_message?(_), do: false
+
+  # True when a decrypted Proto.Message is pure Signal group-session-key plumbing
+  # (a bare senderKeyDistributionMessage with no user-visible content). Its side
+  # effect ran in MessageDecryptor; classify/1 tags it :sender_key only when no
+  # real content clause matched (SKDM riding along with content classifies as that
+  # content, so this stays false for it). Such messages are dropped before emit.
+  defp signal_control?(%Proto.Message{} = proto) do
+    match?({:sender_key, _}, Amarula.Protocol.Messages.MessageContent.classify(proto))
+  end
+
+  defp signal_control?(_), do: false
 
   # Download + decode the history-sync blob(s) these messages reference and emit
   # the chats/contacts to the consumer. The download is a network call; run it in

@@ -59,6 +59,29 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     assert {:other, %Proto.Message{}} = MessageContent.classify(%Proto.Message{})
   end
 
+  test "a bare senderKeyDistributionMessage classifies as :sender_key (plumbing)" do
+    skdm = %Proto.Message{
+      senderKeyDistributionMessage: %Proto.Message.SenderKeyDistributionMessage{
+        groupId: "status@broadcast",
+        axolotlSenderKeyDistributionMessage: <<1, 2, 3>>
+      }
+    }
+
+    assert {:sender_key, %{groupId: "status@broadcast"}} = MessageContent.classify(skdm)
+  end
+
+  test "SKDM riding along with real content classifies as the content, not :sender_key" do
+    msg = %Proto.Message{
+      conversation: "hi",
+      senderKeyDistributionMessage: %Proto.Message.SenderKeyDistributionMessage{
+        groupId: "g@g.us",
+        axolotlSenderKeyDistributionMessage: <<1>>
+      }
+    }
+
+    assert {:text, "hi"} = MessageContent.classify(msg)
+  end
+
   test "classifies contact / contacts / location" do
     contact = %Proto.Message{contactMessage: %Proto.Message.ContactMessage{displayName: "Bob"}}
     assert {:contact, %{displayName: "Bob"}} = MessageContent.classify(contact)

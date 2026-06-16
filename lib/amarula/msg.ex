@@ -23,6 +23,11 @@ defmodule Amarula.Msg do
 
   `raw` is always the underlying `%Proto.Message{}` — the escape hatch for
   anything not surfaced here.
+
+  Pure Signal-protocol plumbing (a bare `senderKeyDistributionMessage`) is applied
+  internally and never emitted as a `%Msg{}` — consumers do not see it. Every `%Msg{}`
+  delivered via `:messages_upsert` therefore has a non-nil `chat`. The struct itself
+  still permits `chat: nil` (`from_proto/2` is total), so the type is `Address.t() | nil`.
   """
 
   alias Amarula.Address
@@ -46,7 +51,7 @@ defmodule Amarula.Msg do
 
   @type t :: %__MODULE__{
           id: String.t() | nil,
-          chat: Address.t(),
+          chat: Address.t() | nil,
           sender: Address.t() | nil,
           from_me: boolean(),
           timestamp: integer() | nil,

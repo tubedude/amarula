@@ -12,6 +12,7 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     * `{:revoke, target_key}`
     * `{:media, type, message_struct}`            — type in :image/:video/:audio/:document/:sticker
     * `{:protocol, type, protocol_message}`       — other protocolMessages (history sync, keys, …)
+    * `{:sender_key, skdm}`                        — Signal group-session-key plumbing (filtered before emit)
     * `{:other, message}`                          — anything not yet classified
 
   WhatsApp may wrap the real content in `deviceSentMessage` (our own other
@@ -101,6 +102,15 @@ defmodule Amarula.Protocol.Messages.MessageContent do
 
   # Votes arrive encrypted; decrypt with PollCrypto.decrypt_vote/2 + the poll secret.
   defp do_classify(%Proto.Message{pollUpdateMessage: m}) when not is_nil(m), do: {:poll_vote, m}
+
+  # A bare senderKeyDistributionMessage is Signal group-session-key plumbing, not a
+  # user message: the recipient installs the key so it can decrypt subsequent group
+  # messages. The side effect runs in MessageDecryptor; this classification lets the
+  # emit path drop it (Connection.signal_control?/1) so consumers never see it. When
+  # SKDM rides ALONG WITH real content (group messages attach it to the first
+  # message), the content clauses above win and this is never reached.
+  defp do_classify(%Proto.Message{senderKeyDistributionMessage: skdm}) when not is_nil(skdm),
+    do: {:sender_key, skdm}
 
   defp do_classify(message), do: {:other, message}
 

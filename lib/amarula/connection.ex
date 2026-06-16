@@ -365,11 +365,7 @@ defmodule Amarula.Connection do
   def group_op(pid \\ __MODULE__, %Node{} = iq, transform),
     do: GenServer.call(pid, {:group_op, iq, transform}, 30_000)
 
-  @doc "Log out: unlink this companion server-side, then disconnect. Local storage is kept."
-  @spec logout(GenServer.server()) :: :ok
-  def logout(pid \\ __MODULE__), do: GenServer.call(pid, :logout)
-
-  @doc "Wipe ALL local storage for this connection's profile, then disconnect. Destructive."
+  @doc "Unlink this companion server-side, wipe ALL local storage, then disconnect. Destructive."
   @spec wipe_credentials(GenServer.server()) :: :ok | {:error, term()}
   def wipe_credentials(pid \\ __MODULE__), do: GenServer.call(pid, :wipe_credentials)
 
@@ -595,21 +591,16 @@ defmodule Amarula.Connection do
   end
 
   @impl GenServer
-  def handle_call(:logout, _from, state) do
-    # Baileys logout: unlink this companion server-side (the phone drops the
-    # device), then disconnect. Local storage is intentionally KEPT — use
-    # `wipe_credentials/1` to forget the profile entirely.
-    state = send_remove_companion(state)
-    Logger.info("Logged out: companion removed for #{inspect(profile(state))}")
-    {:reply, :ok, disconnect_websocket(state)}
-  end
-
-  @impl GenServer
   def handle_call(:wipe_credentials, _from, state) do
-    # Destructive: forget the profile entirely. Wipe all local storage, then
-    # disconnect. Does NOT unlink server-side — call `logout/1` first for that.
+    # Destructive: forget the profile entirely. Unlink this companion server-side
+    # (the phone drops the device), wipe all local storage, then disconnect.
+    state = send_remove_companion(state)
     result = Amarula.Storage.clear(scope(state), profile(state))
-    Logger.info("Wiped local storage for #{inspect(profile(state))}: #{inspect(result)}")
+
+    Logger.info(
+      "Wiped credentials for #{inspect(profile(state))}: companion removed, storage #{inspect(result)}"
+    )
+
     {:reply, result, disconnect_websocket(state)}
   end
 
@@ -2729,7 +2720,7 @@ defmodule Amarula.Connection do
     send_binary_node(state, Login.unified_session_node())
   end
 
-  # Baileys logout: <iq set xmlns=md><remove-companion-device jid=<me.id>
+  # Server-side device unlink: <iq set xmlns=md><remove-companion-device jid=<me.id>
   # reason="user_initiated"/></iq>. Fire-and-forget; we tear down right after.
   defp send_remove_companion(state) do
     case me(state) do

@@ -274,18 +274,13 @@ defmodule Amarula do
   end
 
   @doc """
-  Log out this connection: unlink the companion on WhatsApp's side (the phone
-  drops the device), then disconnect. **Local storage is kept** — re-pairing
-  reuses the profile slot. To also forget the stored credentials, call
-  `wipe_credentials/1`.
-  """
-  @spec logout(conn()) :: :ok
-  defdelegate logout(conn), to: Connection
+  Destructively forget this connection's profile: unlink the companion on
+  WhatsApp's side (the phone drops the device), wipe **all** local storage for it
+  (creds, sessions, keys, mappings), then disconnect. After this the profile must
+  be re-paired to use again.
 
-  @doc """
-  Destructively forget this connection's profile: wipe **all** local storage for
-  it (creds, sessions, keys, mappings), then disconnect. After this the profile
-  must be re-paired. Does not unlink server-side — call `logout/1` first for that.
+  For a non-destructive teardown that keeps the credentials, use `disconnect/1`
+  (websocket only) or `stop/1` (the whole tree, freeing the profile slot).
   """
   @spec wipe_credentials(conn()) :: :ok | {:error, term()}
   defdelegate wipe_credentials(conn), to: Connection

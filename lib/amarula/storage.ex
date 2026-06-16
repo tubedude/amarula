@@ -80,7 +80,7 @@ defmodule Amarula.Storage do
   @callback delete(adapter_state(), profile(), namespace(), key()) :: :ok | {:error, term()}
 
   @doc """
-  Wipe ALL stored data for `profile` (every namespace) — used by logout/forget.
+  Wipe ALL stored data for `profile` (every namespace) — used by `wipe_credentials`.
   A filesystem adapter removes the profile directory; a DB adapter drops the
   tenant's rows. Optional: adapters that don't implement it report `{:error,
   :not_supported}`.
@@ -142,7 +142,7 @@ defmodule Amarula.Storage do
   def delete(%Scope{adapter: a, state: s}, profile, namespace, key),
     do: a.delete(s, profile, namespace, key)
 
-  @doc "Wipe all data for `profile` (logout/forget). `{:error, :not_supported}` if the adapter can't."
+  @doc "Wipe all data for `profile` (`wipe_credentials`). `{:error, :not_supported}` if the adapter can't."
   @spec clear(Scope.t(), profile()) :: :ok | {:error, term()}
   def clear(%Scope{adapter: a, state: s}, profile) do
     if function_exported?(a, :clear, 2), do: a.clear(s, profile), else: {:error, :not_supported}

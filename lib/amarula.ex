@@ -562,6 +562,34 @@ defmodule Amarula do
     end)
   end
 
+  ## Contacts & profile --------------------------------------------------------
+  #
+  # These live in focused submodules (`Amarula.Contacts`, `Amarula.Profile`) to
+  # keep the facade thin; they are re-exported here so the flat `Amarula.*` call
+  # style keeps working. See those modules for the full docs.
+
+  @doc "Check which phone numbers are on WhatsApp. See `Amarula.Contacts.on_whatsapp/2`."
+  defdelegate on_whatsapp(conn, phones), to: Amarula.Contacts
+
+  @doc "Fetch users' status/bio text. See `Amarula.Contacts.fetch_status/2`."
+  defdelegate fetch_status(conn, jids), to: Amarula.Contacts
+
+  @doc "Fetch a profile-picture URL. See `Amarula.Profile.picture_url/3`."
+  defdelegate profile_picture_url(conn, jid, type \\ :preview),
+    to: Amarula.Profile,
+    as: :picture_url
+
+  @doc "Set your profile status/bio. See `Amarula.Profile.update_status/2`."
+  defdelegate update_profile_status(conn, status), to: Amarula.Profile, as: :update_status
+
+  @doc "Set a profile picture from JPEG bytes. See `Amarula.Profile.update_picture/3`."
+  defdelegate update_profile_picture(conn, jid, jpeg_bytes),
+    to: Amarula.Profile,
+    as: :update_picture
+
+  @doc "Remove a profile picture. See `Amarula.Profile.remove_picture/2`."
+  defdelegate remove_profile_picture(conn, jid), to: Amarula.Profile, as: :remove_picture
+
   # --- group reply transforms (run in the connection process) ---
 
   # A reply is {:ok, node} | {:error, node}; pull the node (parsers take a node).

@@ -101,7 +101,7 @@ defmodule Amarula.Protocol.USync do
 
   Returns `{:error, :no_protocols}` if no protocol was added.
   """
-  @spec build_iq(t(), String.t()) :: {:ok, Node.t()} | {:error, :no_protocols}
+  @spec build_iq(t(), String.t() | nil) :: {:ok, Node.t()} | {:error, :no_protocols}
   def build_iq(query, sid \\ nil)
 
   def build_iq(%__MODULE__{protocols: []}, _sid), do: {:error, :no_protocols}

@@ -606,7 +606,7 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:group_metadata, group}, from, state) do
-    group_jid = Amarula.Address.to_wire(group)
+    group_jid = Amarula.Address.to_wire!(group)
     iq = Amarula.Protocol.Groups.Metadata.query_iq(group_jid)
 
     transform = fn
@@ -652,7 +652,7 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:send_chatstate, jid, type}, _from, state) do
-    node = Amarula.Protocol.Presence.chatstate(type, Amarula.Address.to_wire(jid), me(state))
+    node = Amarula.Protocol.Presence.chatstate(type, Amarula.Address.to_wire!(jid), me(state))
     {:reply, :ok, send_binary_node(state, node)}
   end
 
@@ -672,7 +672,7 @@ defmodule Amarula.Connection do
   def handle_call({:presence_subscribe, jid}, _from, state) do
     node =
       Amarula.Protocol.Presence.subscribe(
-        Amarula.Address.to_wire(jid),
+        Amarula.Address.to_wire!(jid),
         generate_message_tag(state)
       )
 
@@ -681,8 +681,8 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:mark_read, message_ids, jid, participant}, _from, state) do
-    jid = Amarula.Address.to_wire(jid)
-    participant = participant && Amarula.Address.to_wire(participant)
+    jid = Amarula.Address.to_wire!(jid)
+    participant = participant && Amarula.Address.to_wire!(participant)
     node = Amarula.Protocol.Receipt.read(message_ids, jid, participant)
     {:reply, :ok, send_binary_node(state, node)}
   end
@@ -1279,7 +1279,7 @@ defmodule Amarula.Connection do
   # parked. `shape` maps a successful ack to the caller's reply (default:
   # `{:ok, msg_id}`; poll adds its secret).
   defp deliver_async(state, target, payload, from, shape \\ &default_send_reply/2) do
-    jid = Amarula.Address.to_wire(target)
+    jid = Amarula.Address.to_wire!(target)
     msg_id = Map.get(payload, :msg_id) || generate_message_id()
     instance_id = state.instance_id
 
@@ -2817,18 +2817,32 @@ defmodule Amarula.Connection do
   # Wrap a decrypted proto into the consumer %Amarula.Msg{}, pulling the envelope
   # (chat, sender, timestamp, from_me) off the stanza so the consumer never sees a
   # raw protobuf.
-  defp build_msg(state, proto, node, from, msg_id) do
-    chat = Amarula.Address.parse(from)
-    sender = node |> NodeUtils.get_attr("participant") |> maybe_address()
-    author = sender || chat
+  # `to_addr` is our own identity — constant across a node's messages, so the caller
+  # computes it once per batch (via `own_address/1`) and passes it in.
+  defp build_msg(state, proto, node, from, msg_id, to_addr) do
+    # Three address roles (see Amarula.Msg): `channel` is the room (the stanza `from`
+    # — group jid for groups, the peer for DMs; the reply handle). `from` is the
+    # writer (the participant in a group, else the channel) and carries the sending
+    # device. `to` is whom it was addressed to — our own identity.
+    channel = Amarula.Address.parse(from)
+    from_addr = node |> NodeUtils.get_attr("participant") |> maybe_address() || channel
 
     Amarula.Msg.from_proto(proto, %{
       id: msg_id,
-      chat: chat,
-      sender: sender,
-      from_me: own_account?(state, author),
+      channel: channel,
+      from: from_addr,
+      to: to_addr,
+      from_me: own_account?(state, from_addr),
       timestamp: parse_ts(NodeUtils.get_attr(node, "t"))
     })
+  end
+
+  # Our own identity as an Address (the addressed `to`), or empty before login.
+  defp own_address(state) do
+    case me(state)[:id] do
+      id when is_binary(id) -> Amarula.Address.parse(id) || Amarula.Address.empty()
+      _ -> Amarula.Address.empty()
+    end
   end
 
   # One :message,:received per decrypted message — throughput + media volume.
@@ -2916,9 +2930,11 @@ defmodule Amarula.Connection do
         # (classifying once) and drop the :sender_key ones — but keep them counting as a
         # successful decrypt, so we still send the delivery receipt (drain the offline
         # queue) and never nack a node whose only enc was an SKDM.
+        to_addr = own_address(state)
+
         msgs =
           messages
-          |> Enum.map(&build_msg(state, &1, node, from, msg_id))
+          |> Enum.map(&build_msg(state, &1, node, from, msg_id, to_addr))
           |> Enum.reject(&(&1.type == :sender_key))
 
         if msgs != [] do

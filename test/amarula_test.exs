@@ -32,6 +32,8 @@ defmodule AmarulaTest do
 
     defp reply_for(:get_connection_state), do: :connected
     defp reply_for(:disconnect), do: :ok
+    # own_address/1 reads creds.me.id; a linked device carries a :29 suffix.
+    defp reply_for(:get_auth_creds), do: %{me: %{id: "5511999999999:29@s.whatsapp.net"}}
     defp reply_for(_), do: {:ok, "MSGID"}
   end
 
@@ -147,13 +149,37 @@ defmodule AmarulaTest do
 
   test "download_media on a non-media Msg returns {:error, :not_media}" do
     msg = %Amarula.Msg{
-      chat: Amarula.Address.parse("x@s.whatsapp.net"),
+      channel: Amarula.Address.parse("x@s.whatsapp.net"),
       type: :text,
       content: "hi",
       raw: %Proto.Message{conversation: "hi"}
     }
 
     assert {:error, :not_media} = Amarula.download_media(msg)
+  end
+
+  # --- own_address/1 (identity / device) ---
+
+  test "own_address/1 returns our PN Address with the companion device", %{conn: conn} do
+    addr = Amarula.own_address(conn)
+    assert %Amarula.Address{user: "5511999999999", kind: :pn, device: 29} = addr
+    assert_received {:got, :get_auth_creds}
+  end
+
+  test "own_address/1 is total: empty Address when no creds / no suffix" do
+    # A stub whose creds vary, to exercise the no-suffix and pre-login branches.
+    defmodule CredStub do
+      use GenServer
+      def start_link(me), do: GenServer.start_link(__MODULE__, me)
+      def init(me), do: {:ok, me}
+      def handle_call(:get_auth_creds, _from, me), do: {:reply, %{me: me}, me}
+    end
+
+    {:ok, primary} = CredStub.start_link(%{id: "5511999999999@s.whatsapp.net"})
+    assert %Amarula.Address{device: nil, kind: :pn} = Amarula.own_address(primary)
+
+    {:ok, pre_login} = CredStub.start_link(%{})
+    assert Amarula.Address.is_empty?(Amarula.own_address(pre_login))
   end
 
   # --- convenience delegations forward the right tuple ---

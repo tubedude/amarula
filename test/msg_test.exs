@@ -4,15 +4,15 @@ defmodule Amarula.MsgTest do
   alias Amarula.{Address, Msg}
   alias Amarula.Protocol.Proto
 
-  @chat Address.parse("5511999999999@s.whatsapp.net")
+  @channel Address.parse("5511999999999@s.whatsapp.net")
 
-  defp build(proto, meta \\ %{}), do: Msg.from_proto(proto, Map.merge(%{chat: @chat}, meta))
+  defp build(proto, meta \\ %{}), do: Msg.from_proto(proto, Map.merge(%{channel: @channel}, meta))
 
   test "text message" do
     msg = build(%Proto.Message{conversation: "hello"})
     assert msg.type == :text
     assert msg.content == "hello"
-    assert msg.chat == @chat
+    assert msg.channel == @channel
     assert msg.raw.conversation == "hello"
   end
 
@@ -33,19 +33,35 @@ defmodule Amarula.MsgTest do
     assert msg.content == %{key: key, emoji: "👍"}
   end
 
-  test "envelope fields are carried" do
+  test "envelope fields are carried (channel/from/to)" do
     msg =
       build(%Proto.Message{conversation: "hi"}, %{
         id: "MSGID",
-        sender: Address.parse("5511888888888@s.whatsapp.net"),
+        from: Address.parse("5511888888888@s.whatsapp.net"),
+        to: Address.parse("5511999999999@s.whatsapp.net"),
         from_me: true,
         timestamp: 1_700_000_000
       })
 
     assert msg.id == "MSGID"
-    assert %Address{user: "5511888888888"} = msg.sender
+    assert %Address{user: "5511888888888"} = msg.from
+    assert %Address{user: "5511999999999"} = msg.to
     assert msg.from_me == true
     assert msg.timestamp == 1_700_000_000
+  end
+
+  test "from carries the sending device — the self-send loop signal" do
+    # A self-chat send by a linked device (e.g. :29) comes back from_me with the
+    # device on `from`; a consumer compares it to Amarula.own_address(conn).device.
+    # Fake jid only (no real number).
+    msg =
+      build(%Proto.Message{conversation: "to myself"}, %{
+        from: Address.parse("5511999999999:29@s.whatsapp.net"),
+        from_me: true
+      })
+
+    assert msg.from.device == 29
+    assert msg.from_me == true
   end
 
   test "from_me defaults to false; raw is always the proto" do
@@ -99,7 +115,7 @@ defmodule Amarula.MsgTest do
       assert reply.type == :text
       assert reply.content == "my reply"
 
-      assert %{id: "ORIGID", participant: %Address{user: "5511888888888"}, message: q} =
+      assert %{id: "ORIGID", from: %Address{user: "5511888888888"}, message: q} =
                reply.quoted
 
       # the inlined quoted message is itself a %Msg{}

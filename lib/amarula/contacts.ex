@@ -65,7 +65,7 @@ defmodule Amarula.Contacts do
   @spec fetch_status(conn(), [String.t() | Address.t()] | String.t() | Address.t()) ::
           {:ok, [status()]} | {:error, term()}
   def fetch_status(conn, jids) do
-    jids = jids |> List.wrap() |> Enum.map(&Address.to_wire/1)
+    jids = jids |> List.wrap() |> Enum.map(&Address.to_wire!/1)
 
     query =
       USync.new()

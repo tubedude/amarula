@@ -27,11 +27,36 @@ defmodule Amarula.Msg do
   Pure Signal-protocol plumbing (a bare `senderKeyDistributionMessage`) is applied
   internally and never emitted as a `%Msg{}` — consumers do not see it.
 
-  `chat` is typed `Address.t() | nil` because `from_proto/2` is total: it copies
-  `meta[:chat]` verbatim, which a directly-constructed `%Msg{}` may leave nil. In
-  practice every `%Msg{}` emitted on `:messages_upsert` has a non-nil `chat`, because
-  the emit path derives it from the stanza's `from` (always present) — see
-  `Amarula.Connection`'s `build_msg/5` — not because of the plumbing filter above.
+  ## Addressing — `channel`, `from`, `to`
+
+  Every message carries three address roles, each an `Amarula.Address` (terms chosen
+  to read across chat / PubSub / generic messaging, not just WhatsApp):
+
+  | role      | meaning                                                  | 1:1 DM       | group         | self-chat       |
+  |-----------|----------------------------------------------------------|--------------|---------------|-----------------|
+  | `channel` | the room it was published to — **the reply handle**      | the peer     | the **group** | me              |
+  | `from`    | who **wrote** it (carries the sending **device**)        | the peer / me| the participant | me (+device)  |
+  | `to`      | who it was **addressed to** (≈ you)                      | me           | me            | me              |
+
+  To **reply**, put `msg.channel` straight into a send's target — it routes back to the
+  same conversation. In a **1:1, `from == channel`**; in a **group, `from` (the
+  participant) ≠ `channel` (the group)**.
+
+  The sending **device** is on `from`: `msg.from.device` (`nil` = primary / phone). To
+  detect a message this app/device itself sent — e.g. to ignore the agent's own
+  self-chat sends and avoid a loop — compare it to `Amarula.own_address/1` and pair
+  with `from_me`:
+
+      if msg.from_me and msg.from.device == Amarula.own_address(conn).device do
+        :ignore   # this device sent it
+      end
+
+  `channel`/`from`/`to` are typed `Address.t() | nil` because `from_proto/2` is total
+  (it copies `meta` verbatim, which a directly-constructed `%Msg{}` may leave nil). In
+  practice every top-level `%Msg{}` emitted on `:messages_upsert` has a non-nil
+  `channel`, `from`, and `to` — the receive path derives them from the stanza and our
+  creds. The one exception is a **nested quoted message** (`quoted.message`): it carries
+  `channel`/`from` but `to: nil` (a quote isn't independently addressed to you).
   """
 
   alias Amarula.Address
@@ -48,15 +73,16 @@ defmodule Amarula.Msg do
   """
   @type quoted :: %{
           id: String.t(),
-          participant: Address.t() | nil,
-          chat: Address.t() | nil,
+          from: Address.t() | nil,
+          channel: Address.t() | nil,
           message: t() | nil
         }
 
   @type t :: %__MODULE__{
           id: String.t() | nil,
-          chat: Address.t() | nil,
-          sender: Address.t() | nil,
+          channel: Address.t() | nil,
+          from: Address.t() | nil,
+          to: Address.t() | nil,
           from_me: boolean(),
           timestamp: integer() | nil,
           type: atom(),
@@ -66,11 +92,12 @@ defmodule Amarula.Msg do
           raw: Proto.Message.t()
         }
 
-  @enforce_keys [:chat, :type, :raw]
+  @enforce_keys [:channel, :type, :raw]
   defstruct [
     :id,
-    :chat,
-    :sender,
+    :channel,
+    :from,
+    :to,
     :from_me,
     :timestamp,
     :type,
@@ -83,8 +110,9 @@ defmodule Amarula.Msg do
   @doc """
   Build a `%Msg{}` from a decrypted proto and its envelope.
 
-  `meta` carries the stanza fields: `:id`, `:chat` (an `Address`), `:sender`
-  (`Address` of the actual author in a group, else nil), `:from_me`, `:timestamp`.
+  `meta` carries the stanza fields: `:id`, `:channel` (the room `Address`), `:from`
+  (the writer `Address` — participant in a group, else the channel), `:to` (the
+  addressed identity `Address`), `:from_me`, `:timestamp`.
   """
   @spec from_proto(Proto.Message.t(), map()) :: t()
   def from_proto(%Proto.Message{} = proto, meta) do
@@ -93,13 +121,14 @@ defmodule Amarula.Msg do
 
     %__MODULE__{
       id: meta[:id],
-      chat: meta[:chat],
-      sender: meta[:sender],
+      channel: meta[:channel],
+      from: meta[:from],
+      to: meta[:to],
       from_me: meta[:from_me] || false,
       timestamp: meta[:timestamp],
       type: type,
       content: content,
-      quoted: quoted(ctx, meta[:chat]),
+      quoted: quoted(ctx, meta[:channel]),
       mentions: mentions(ctx),
       raw: proto
     }
@@ -110,30 +139,32 @@ defmodule Amarula.Msg do
   # the same way as any message. Capped at ONE level: WhatsApp only inlines the
   # immediate quoted message, and a nested quote inside it is ignored (no
   # unbounded recursion on crafted input).
-  defp quoted(nil, _chat), do: nil
+  defp quoted(nil, _channel), do: nil
 
-  defp quoted(%Proto.ContextInfo{stanzaId: id} = ctx, chat) when is_binary(id) and id != "" do
-    participant = address(ctx.participant)
+  defp quoted(%Proto.ContextInfo{stanzaId: id} = ctx, channel) when is_binary(id) and id != "" do
+    from = address(ctx.participant)
+    channel = address(ctx.remoteJid) || channel
 
     inner =
       case ctx.quotedMessage do
-        %Proto.Message{} = qm -> nested_msg(qm, id, chat, participant)
+        %Proto.Message{} = qm -> nested_msg(qm, id, channel, from || channel)
         _ -> nil
       end
 
-    %{id: id, participant: participant, chat: address(ctx.remoteJid) || chat, message: inner}
+    %{id: id, from: from, channel: channel, message: inner}
   end
 
-  defp quoted(_ctx, _chat), do: nil
+  defp quoted(_ctx, _channel), do: nil
 
   # The inlined quoted message as a %Msg{} WITHOUT its own `quoted` (one level only).
-  defp nested_msg(%Proto.Message{} = proto, id, chat, sender) do
+  defp nested_msg(%Proto.Message{} = proto, id, channel, from) do
     {type, content} = classify(proto)
 
     %__MODULE__{
       id: id,
-      chat: chat,
-      sender: sender,
+      channel: channel,
+      from: from,
+      to: nil,
       from_me: false,
       type: type,
       content: content,

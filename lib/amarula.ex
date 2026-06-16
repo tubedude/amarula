@@ -360,6 +360,35 @@ defmodule Amarula do
   @spec canonical_jid(conn(), String.t()) :: String.t()
   defdelegate canonical_jid(conn, jid), to: Connection
 
+  ## Identity -----------------------------------------------------------------
+
+  @doc """
+  This connection's own identity as an `Amarula.Address` — our phone-number address,
+  carrying our companion **device** id (`creds.me.id`).
+
+  Total: before login (no identity yet) it returns `Amarula.Address.empty/0`, so you
+  never have to nil-guard. `own_address(conn).device` is `nil` for the primary
+  device / phone, or the linked-device number (e.g. `29`) for a companion like this app.
+
+  Use it to detect messages this app/device itself sent — e.g. to ignore the agent's
+  own self-chat sends and avoid a feedback loop. This does a call into the connection,
+  and our own device is constant after login, so **read it once** and reuse the device:
+
+      own_device = Amarula.own_address(conn).device
+
+      # then, per received message:
+      if msg.from_me and msg.from.device == own_device do
+        :ignore   # this device sent it
+      end
+  """
+  @spec own_address(conn()) :: Amarula.Address.t()
+  def own_address(conn) do
+    case conn |> Connection.get_auth_creds() |> get_in([:me, :id]) do
+      id when is_binary(id) -> Amarula.Address.parse(id) || Amarula.Address.empty()
+      _ -> Amarula.Address.empty()
+    end
+  end
+
   @doc "Send a 1:1/group text message to `jid`."
   @spec send_text(conn(), jid(), String.t()) :: send_result()
   defdelegate send_text(conn, jid, text), to: Connection
@@ -670,9 +699,9 @@ defmodule Amarula do
 
   def resolve_quoted(conn, %Amarula.Msg{quoted: q} = msg) do
     key = %Proto.MessageKey{
-      remoteJid: Amarula.Address.to_wire(q.chat || msg.chat),
+      remoteJid: Amarula.Address.to_wire!(q.channel || msg.channel),
       id: q.id,
-      participant: q.participant && Amarula.Address.to_wire(q.participant)
+      participant: q.from && Amarula.Address.to_wire!(q.from)
     }
 
     case request_resend(conn, key) do

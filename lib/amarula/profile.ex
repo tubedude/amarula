@@ -31,7 +31,7 @@ defmodule Amarula.Profile do
   @spec picture_url(conn(), String.t() | Address.t(), Ops.pic_type()) ::
           {:ok, String.t() | nil} | {:error, term()}
   def picture_url(conn, jid, type \\ :preview) do
-    target = Address.to_wire(jid)
+    target = Address.to_wire!(jid)
 
     with {:ok, reply} <- Connection.query_iq(conn, Ops.picture_url_query(target, type)) do
       {:ok, Ops.parse_url(reply)}
@@ -69,10 +69,8 @@ defmodule Amarula.Profile do
   # account (Baileys omits target for self), else the wire jid. Falls back to the
   # wire jid if creds aren't available yet (e.g. not logged in).
   defp target_for(conn, jid) do
-    addr = Address.coerce(jid)
-    wire = Address.to_jid(addr)
-
-    if own_account?(conn, addr), do: nil, else: wire
+    addr = Address.parse!(jid)
+    if own_account?(conn, addr), do: nil, else: Address.to_jid!(addr)
   end
 
   # `get_auth_creds` returns a map; `me` defaults to `%{}` before login, so no

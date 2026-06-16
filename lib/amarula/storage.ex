@@ -86,7 +86,14 @@ defmodule Amarula.Storage do
   :not_supported}`.
   """
   @callback clear(adapter_state(), profile()) :: :ok | {:error, term()}
-  @optional_callbacks clear: 2
+
+  @doc """
+  List every `profile` that has data in this store (one entry per profile that has
+  ever been persisted to, e.g. each paired credential). Order is unspecified.
+  Optional: adapters that don't implement it report `{:error, :not_supported}`.
+  """
+  @callback list_profiles(adapter_state()) :: {:ok, [profile()]} | {:error, term()}
+  @optional_callbacks clear: 2, list_profiles: 1
 
   # The adapter used when config gives bare opts / no :storage. Configurable so
   # the core privileges no concrete backend:
@@ -139,5 +146,53 @@ defmodule Amarula.Storage do
   @spec clear(Scope.t(), profile()) :: :ok | {:error, term()}
   def clear(%Scope{adapter: a, state: s}, profile) do
     if function_exported?(a, :clear, 2), do: a.clear(s, profile), else: {:error, :not_supported}
+  end
+
+  @doc """
+  List every profile with data in this store. `{:error, :not_supported}` if the
+  adapter can't enumerate profiles.
+  """
+  @spec list_profiles(Scope.t()) :: {:ok, [profile()]} | {:error, term()}
+  def list_profiles(%Scope{adapter: a, state: s}) do
+    if function_exported?(a, :list_profiles, 1),
+      do: a.list_profiles(s),
+      else: {:error, :not_supported}
+  end
+
+  @typedoc """
+  A profile plus a friendly summary read from its `:creds` — the logged-in
+  identity (`jid`/`lid`) and display `name`, for UIs that pick between profiles.
+  Fields are `nil` if the profile has no usable creds yet (e.g. mid-pairing).
+  """
+  @type profile_info :: %{
+          profile: profile(),
+          jid: String.t() | nil,
+          lid: String.t() | nil,
+          name: String.t() | nil
+        }
+
+  @doc """
+  Like `list_profiles/1`, but enriches each profile with its `:creds` identity
+  (`jid`/`lid`/`name`) for a friendlier picker. One extra `get/4` per profile.
+
+  This is the one place the storage layer peeks inside a value (`creds.me`); every
+  other call treats values as opaque. `{:error, :not_supported}` if the adapter
+  can't enumerate profiles.
+  """
+  @spec list_profiles_with_metadata(Scope.t()) :: {:ok, [profile_info()]} | {:error, term()}
+  def list_profiles_with_metadata(%Scope{} = scope) do
+    with {:ok, profiles} <- list_profiles(scope) do
+      {:ok, Enum.map(profiles, &profile_info(scope, &1))}
+    end
+  end
+
+  defp profile_info(scope, profile) do
+    me =
+      case get(scope, profile, :creds, :self) do
+        {:ok, %{me: me}} when is_map(me) -> me
+        _ -> %{}
+      end
+
+    %{profile: profile, jid: me[:id], lid: me[:lid], name: me[:name]}
   end
 end

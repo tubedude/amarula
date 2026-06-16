@@ -365,9 +365,13 @@ defmodule Amarula.Connection do
   def group_op(pid \\ __MODULE__, %Node{} = iq, transform),
     do: GenServer.call(pid, {:group_op, iq, transform}, 30_000)
 
-  @doc "Log out: unlink this companion server-side, wipe local storage, disconnect."
+  @doc "Log out: unlink this companion server-side, then disconnect. Local storage is kept."
   @spec logout(GenServer.server()) :: :ok
   def logout(pid \\ __MODULE__), do: GenServer.call(pid, :logout)
+
+  @doc "Wipe ALL local storage for this connection's profile, then disconnect. Destructive."
+  @spec wipe_credentials(GenServer.server()) :: :ok | {:error, term()}
+  def wipe_credentials(pid \\ __MODULE__), do: GenServer.call(pid, :wipe_credentials)
 
   @doc """
   Remember a just-sent message (id → content + recipient) so it can be
@@ -593,11 +597,20 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call(:logout, _from, state) do
     # Baileys logout: unlink this companion server-side (the phone drops the
-    # device), then wipe local storage for this profile, then disconnect.
+    # device), then disconnect. Local storage is intentionally KEPT — use
+    # `wipe_credentials/1` to forget the profile entirely.
     state = send_remove_companion(state)
-    Amarula.Storage.clear(scope(state), profile(state))
-    Logger.info("Logged out: companion removed + storage wiped for #{inspect(profile(state))}")
+    Logger.info("Logged out: companion removed for #{inspect(profile(state))}")
     {:reply, :ok, disconnect_websocket(state)}
+  end
+
+  @impl GenServer
+  def handle_call(:wipe_credentials, _from, state) do
+    # Destructive: forget the profile entirely. Wipe all local storage, then
+    # disconnect. Does NOT unlink server-side — call `logout/1` first for that.
+    result = Amarula.Storage.clear(scope(state), profile(state))
+    Logger.info("Wiped local storage for #{inspect(profile(state))}: #{inspect(result)}")
+    {:reply, result, disconnect_websocket(state)}
   end
 
   @impl GenServer

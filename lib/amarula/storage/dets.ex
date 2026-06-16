@@ -68,6 +68,26 @@ defmodule Amarula.Storage.DETS do
     :ok
   end
 
+  @impl true
+  def list_profiles(%{root: root}) do
+    case File.ls(root) do
+      {:ok, entries} ->
+        profiles =
+          for name <- entries,
+              File.exists?(Path.join([root, name, "storage.dets"])),
+              match?([_], :dets.lookup(open(root, name), {:creds, :self})),
+              do: name
+
+        {:ok, profiles}
+
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   # --- internals ---
 
   # Open (idempotently) the per-profile DETS table, named by {root, profile} so

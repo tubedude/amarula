@@ -80,4 +80,31 @@ defmodule Amarula.Storage.DETSTest do
     # reopen works (fresh empty table)
     assert :error = Storage.get(s, @profile, :creds, :self)
   end
+
+  test "list_profiles returns only profiles with a creds entry", %{scope: s} do
+    assert {:ok, []} = Storage.list_profiles(s)
+
+    Storage.put(s, "primary", :creds, :self, %{me: %{id: "1"}})
+    Storage.put(s, "work", :creds, :self, %{me: %{id: "2"}})
+    # a profile with data but no creds is not listed
+    Storage.put(s, "no_creds", :session, "a.0", :x)
+
+    {:ok, profiles} = Storage.list_profiles(s)
+    assert Enum.sort(profiles) == ["primary", "work"]
+  end
+
+  test "list_profiles_with_metadata carries the creds identity", %{scope: s} do
+    Storage.put(s, "primary", :creds, :self, %{
+      me: %{id: "555@s.whatsapp.net", lid: "12345@lid", name: "Alice"}
+    })
+
+    assert {:ok, [info]} = Storage.list_profiles_with_metadata(s)
+
+    assert info == %{
+             profile: "primary",
+             jid: "555@s.whatsapp.net",
+             lid: "12345@lid",
+             name: "Alice"
+           }
+  end
 end

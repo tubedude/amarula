@@ -89,6 +89,28 @@ defmodule Amarula.Storage.File do
     end
   end
 
+  @impl true
+  def list_profiles(%{root: root}) do
+    creds_file = Map.fetch!(@prefixes, :creds) <> ".term"
+
+    case File.ls(root) do
+      {:ok, entries} ->
+        profiles =
+          for name <- entries,
+              File.dir?(Path.join(root, name)),
+              File.exists?(Path.join([root, name, creds_file])),
+              do: name
+
+        {:ok, profiles}
+
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   # --- internals ---
 
   defp decode(bin, path) do

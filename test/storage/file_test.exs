@@ -94,4 +94,38 @@ defmodule Amarula.Storage.FileTest do
     # other profile untouched
     assert {:ok, %{me: 2}} = Storage.get(s, :other, :creds, :self)
   end
+
+  test "list_profiles returns only profiles with a creds entry", %{scope: s} do
+    assert {:ok, []} = Storage.list_profiles(s)
+
+    Storage.put(s, "primary", :creds, :self, %{me: %{id: "1"}})
+    Storage.put(s, "work", :creds, :self, %{me: %{id: "2"}})
+    # a profile with data but no creds is not listed
+    Storage.put(s, "no_creds", :session, "a.0", :x)
+
+    {:ok, profiles} = Storage.list_profiles(s)
+    assert Enum.sort(profiles) == ["primary", "work"]
+  end
+
+  test "list_profiles_with_metadata carries the creds identity", %{scope: s} do
+    Storage.put(s, "primary", :creds, :self, %{
+      me: %{id: "555@s.whatsapp.net", lid: "12345@lid", name: "Alice"}
+    })
+
+    assert {:ok, [info]} = Storage.list_profiles_with_metadata(s)
+
+    assert info == %{
+             profile: "primary",
+             jid: "555@s.whatsapp.net",
+             lid: "12345@lid",
+             name: "Alice"
+           }
+  end
+
+  test "list_profiles_with_metadata leaves identity nil for creds without :me", %{scope: s} do
+    Storage.put(s, "pairing", :creds, :self, %{registration_id: 7})
+
+    assert {:ok, [%{profile: "pairing", jid: nil, lid: nil, name: nil}]} =
+             Storage.list_profiles_with_metadata(s)
+  end
 end

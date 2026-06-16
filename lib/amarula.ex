@@ -274,12 +274,74 @@ defmodule Amarula do
   end
 
   @doc """
-  Log out / forget this connection: unlink the companion on WhatsApp's side (the
-  phone drops the device) and wipe all local storage for its profile, then
-  disconnect. After this the profile must be re-paired to use again.
+  Log out this connection: unlink the companion on WhatsApp's side (the phone
+  drops the device), then disconnect. **Local storage is kept** — re-pairing
+  reuses the profile slot. To also forget the stored credentials, call
+  `wipe_credentials/1`.
   """
   @spec logout(conn()) :: :ok
   defdelegate logout(conn), to: Connection
+
+  @doc """
+  Destructively forget this connection's profile: wipe **all** local storage for
+  it (creds, sessions, keys, mappings), then disconnect. After this the profile
+  must be re-paired. Does not unlink server-side — call `logout/1` first for that.
+  """
+  @spec wipe_credentials(conn()) :: :ok | {:error, term()}
+  defdelegate wipe_credentials(conn), to: Connection
+
+  @doc """
+  List every profile that has stored credentials in `storage`.
+
+  Takes a storage source rather than a live connection: a `t:Amarula.Storage.Scope.t/0`,
+  a built `%Amarula.Conn{}` (use its scope), or a `{adapter, opts}` / bare-opts
+  storage spec (the same value `new/1` accepts as `:storage`). Returns the profile
+  names that have a `:creds` entry — what you'd pass as `:profile` to reconnect.
+
+      Amarula.list_profiles(storage: "./auth")
+      #=> {:ok, [:primary, "work"]}
+
+  `{:error, :not_supported}` if the storage adapter can't enumerate profiles.
+  """
+  @spec list_profiles(
+          Amarula.Storage.Scope.t()
+          | Amarula.Conn.t()
+          | {module(), keyword()}
+          | keyword()
+        ) ::
+          {:ok, [Amarula.Storage.profile()]} | {:error, term()}
+  def list_profiles(%Amarula.Conn{storage: scope}), do: Amarula.Storage.list_profiles(scope)
+  def list_profiles(%Amarula.Storage.Scope{} = scope), do: Amarula.Storage.list_profiles(scope)
+
+  def list_profiles(storage_spec),
+    do: Amarula.Storage.list_profiles(Amarula.Storage.scope(storage_spec))
+
+  @doc """
+  Like `list_profiles/1`, but each entry carries the logged-in identity read from
+  that profile's stored creds — for building a friendlier account picker:
+
+      Amarula.list_profiles_with_metadata(storage: "./auth")
+      #=> {:ok, [%{profile: :primary, jid: "5511...@s.whatsapp.net",
+      #           lid: "12345@lid", name: "Alice"}]}
+
+  Costs one extra storage read per profile. `name`/`jid`/`lid` are `nil` for a
+  profile that hasn't finished pairing. Accepts the same storage sources as
+  `list_profiles/1`.
+  """
+  @spec list_profiles_with_metadata(
+          Amarula.Storage.Scope.t()
+          | Amarula.Conn.t()
+          | {module(), keyword()}
+          | keyword()
+        ) :: {:ok, [Amarula.Storage.profile_info()]} | {:error, term()}
+  def list_profiles_with_metadata(%Amarula.Conn{storage: scope}),
+    do: Amarula.Storage.list_profiles_with_metadata(scope)
+
+  def list_profiles_with_metadata(%Amarula.Storage.Scope{} = scope),
+    do: Amarula.Storage.list_profiles_with_metadata(scope)
+
+  def list_profiles_with_metadata(storage_spec),
+    do: Amarula.Storage.list_profiles_with_metadata(Amarula.Storage.scope(storage_spec))
 
   @doc "Current connection state (e.g. `:disconnected`, `:connecting`, `:connected`)."
   @spec connection_state(conn()) :: atom()

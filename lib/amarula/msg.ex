@@ -25,9 +25,13 @@ defmodule Amarula.Msg do
   anything not surfaced here.
 
   Pure Signal-protocol plumbing (a bare `senderKeyDistributionMessage`) is applied
-  internally and never emitted as a `%Msg{}` — consumers do not see it. Every `%Msg{}`
-  delivered via `:messages_upsert` therefore has a non-nil `chat`. The struct itself
-  still permits `chat: nil` (`from_proto/2` is total), so the type is `Address.t() | nil`.
+  internally and never emitted as a `%Msg{}` — consumers do not see it.
+
+  `chat` is typed `Address.t() | nil` because `from_proto/2` is total: it copies
+  `meta[:chat]` verbatim, which a directly-constructed `%Msg{}` may leave nil. In
+  practice every `%Msg{}` emitted on `:messages_upsert` has a non-nil `chat`, because
+  the emit path derives it from the stanza's `from` (always present) — see
+  `Amarula.Connection`'s `build_msg/5` — not because of the plumbing filter above.
   """
 
   alias Amarula.Address

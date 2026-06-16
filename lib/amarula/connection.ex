@@ -2912,14 +2912,16 @@ defmodule Amarula.Connection do
       messages != [] ->
         # Pure Signal plumbing (a bare senderKeyDistributionMessage) has already had
         # its side effect applied in MessageDecryptor; it is group-session-key plumbing,
-        # not a user message, so it must NOT surface to the consumer. Drop it from the
-        # emitted list — but keep it counting as a successful decrypt, so we still send
-        # the delivery receipt (drain the offline queue) and never nack a node whose
-        # only enc was an SKDM.
-        emitted = Enum.reject(messages, &signal_control?/1)
+        # not a user message, so it must NOT surface to the consumer. Build each %Msg{}
+        # (classifying once) and drop the :sender_key ones — but keep them counting as a
+        # successful decrypt, so we still send the delivery receipt (drain the offline
+        # queue) and never nack a node whose only enc was an SKDM.
+        msgs =
+          messages
+          |> Enum.map(&build_msg(state, &1, node, from, msg_id))
+          |> Enum.reject(&(&1.type == :sender_key))
 
-        if emitted != [] do
-          msgs = Enum.map(emitted, &build_msg(state, &1, node, from, msg_id))
+        if msgs != [] do
           kinds = Enum.map(msgs, & &1.type)
           Logger.debug("Decrypted #{length(msgs)} message(s) from #{from} (#{inspect(kinds)})")
 
@@ -3033,17 +3035,6 @@ defmodule Amarula.Connection do
     do: history_sync_message?(inner)
 
   defp history_sync_message?(_), do: false
-
-  # True when a decrypted Proto.Message is pure Signal group-session-key plumbing
-  # (a bare senderKeyDistributionMessage with no user-visible content). Its side
-  # effect ran in MessageDecryptor; classify/1 tags it :sender_key only when no
-  # real content clause matched (SKDM riding along with content classifies as that
-  # content, so this stays false for it). Such messages are dropped before emit.
-  defp signal_control?(%Proto.Message{} = proto) do
-    match?({:sender_key, _}, Amarula.Protocol.Messages.MessageContent.classify(proto))
-  end
-
-  defp signal_control?(_), do: false
 
   # Download + decode the history-sync blob(s) these messages reference and emit
   # the chats/contacts to the consumer. The download is a network call; run it in

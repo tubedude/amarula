@@ -406,6 +406,41 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     assert log =~ "not_on_whatsapp"
   end
 
+  test "self-chat send relays to our own devices (not dropped as not_on_whatsapp)", ctx do
+    # Messaging yourself ("Message Yourself") targets our own account, so every
+    # resolved device is ours. The recipient-devices guard would reject that, but
+    # a self-chat is a real conversation — it must relay, addressed to our other
+    # devices (our sending device 0 is excluded).
+    own_device_jid = "10000000002:1@s.whatsapp.net"
+
+    send_text(ctx, @me_jid, "note to self")
+    usync_iq = recv_frame()
+    # USync enumerates only our own user (device 0 = our sending device, 1 = companion).
+    inject(
+      ctx,
+      with_id(
+        Node.create("iq", %{"type" => "result"}, [
+          Node.create("usync", %{}, [
+            Node.create("list", %{}, [usync_user_node(@me_jid, ["0", "1"])])
+          ])
+        ]),
+        attr(usync_iq, "id")
+      )
+    )
+
+    message = drain_until_message(ctx)
+
+    jids =
+      message
+      |> NodeUtils.get_binary_node_child("participants")
+      |> Map.get(:content)
+      |> Enum.map(&NodeUtils.get_attr(&1, "jid"))
+
+    # Our companion device receives it; our own sending device (0) is excluded.
+    assert own_device_jid in jids
+    refute @me_jid in jids
+  end
+
   @tag :capture_log
   test "concurrent sends complete in the server's ACK order, not the send order", ctx do
     # Three sends to three different recipients → three ConversationSenders running

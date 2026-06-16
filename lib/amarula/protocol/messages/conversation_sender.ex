@@ -331,12 +331,17 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       # the recipient-devices guard below doesn't apply. Baileys sends these to
       # jidNormalizedUser(me.id) with no such check (sendPeerDataOperationMessage).
       #
+      # A self-chat ("Message Yourself") targets our own account — every resolved
+      # device is ours, so the recipient-devices guard below would reject it. It's
+      # a real conversation though (Baileys allows sendMessage to me.id), so skip
+      # the guard, exactly like the peer_send? carve-out.
+      #
       # Otherwise: if the recipient resolved to no real devices, the number isn't
       # reachable on WhatsApp (unregistered / wrong number). Fail instead of
       # fabricating a device and producing a "sent" message the server silently
       # drops — Baileys#2635. The recipient must contribute at least one device
       # (our own devices don't count).
-      if peer_send?(ctx) or recipient_devices?(ctx, devices) do
+      if peer_send?(ctx) or self_send?(ctx) or recipient_devices?(ctx, devices) do
         {:ok, %{ctx | devices: devices}}
       else
         {:error, {:resolve_devices, :not_on_whatsapp}}
@@ -347,6 +352,14 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   # A peer-category stanza targets our own devices (PEER_DATA_OPERATION).
   defp peer_send?(%{stanza_attrs: %{"category" => "peer"}}), do: true
   defp peer_send?(_), do: false
+
+  # A self-chat: the target normalizes to our own account (id or lid), ignoring
+  # device. Our own devices are the legitimate recipients here.
+  defp self_send?(%{target_jid: target, creds: %{me: me}}) do
+    target_user = JID.jid_normalized_user(target)
+    mine = [me[:id], me[:lid]] |> Enum.reject(&is_nil/1) |> Enum.map(&JID.jid_normalized_user/1)
+    target_user in mine
+  end
 
   # The device set for a list of user jids: cache-hit users skip USync; misses
   # are fetched in one query. {:ok, flat device list} | {:error, {stage, reason}}.

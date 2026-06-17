@@ -2847,6 +2847,8 @@ defmodule Amarula.Connection do
       from: from_addr,
       to: to_addr,
       from_me: own_account?(state, from_addr),
+      # The sender's display name, off the stanza envelope (absent on our own sends).
+      pushname: NodeUtils.get_attr(node, "notify"),
       timestamp: parse_ts(NodeUtils.get_attr(node, "t"))
     })
   end

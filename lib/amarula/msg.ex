@@ -57,6 +57,14 @@ defmodule Amarula.Msg do
   `channel`, `from`, and `to` — the receive path derives them from the stanza and our
   creds. The one exception is a **nested quoted message** (`quoted.message`): it carries
   `channel`/`from` but `to: nil` (a quote isn't independently addressed to you).
+
+  ## `pushname`
+
+  `pushname` is the sender's display name as it rides on the inbound stanza (the
+  `notify` attr WhatsApp ships alongside `participant`/`from`). It lets a consumer name
+  a contact the moment they message — no re-pairing, no separate contact fetch — even
+  for someone WhatsApp only addresses by LID/number. It's `nil` for our own
+  (`from_me`) messages and any stanza without the attr.
   """
 
   alias Amarula.Address
@@ -84,6 +92,7 @@ defmodule Amarula.Msg do
           from: Address.t() | nil,
           to: Address.t() | nil,
           from_me: boolean(),
+          pushname: String.t() | nil,
           timestamp: integer() | nil,
           type: atom(),
           content: term(),
@@ -99,6 +108,7 @@ defmodule Amarula.Msg do
     :from,
     :to,
     :from_me,
+    :pushname,
     :timestamp,
     :type,
     :content,
@@ -112,7 +122,8 @@ defmodule Amarula.Msg do
 
   `meta` carries the stanza fields: `:id`, `:channel` (the room `Address`), `:from`
   (the writer `Address` — participant in a group, else the channel), `:to` (the
-  addressed identity `Address`), `:from_me`, `:timestamp`.
+  addressed identity `Address`), `:from_me`, `:pushname` (the sender's display name
+  off the stanza, `nil` when absent), `:timestamp`.
   """
   @spec from_proto(Proto.Message.t(), map()) :: t()
   def from_proto(%Proto.Message{} = proto, meta) do
@@ -125,6 +136,7 @@ defmodule Amarula.Msg do
       from: meta[:from],
       to: meta[:to],
       from_me: meta[:from_me] || false,
+      pushname: meta[:pushname],
       timestamp: meta[:timestamp],
       type: type,
       content: content,

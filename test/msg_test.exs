@@ -50,6 +50,14 @@ defmodule Amarula.MsgTest do
     assert msg.timestamp == 1_700_000_000
   end
 
+  test "pushname carries the sender's display name (nil when absent)" do
+    named = build(%Proto.Message{conversation: "hi"}, %{pushname: "Renata"})
+    assert named.pushname == "Renata"
+
+    unnamed = build(%Proto.Message{conversation: "hi"})
+    assert is_nil(unnamed.pushname)
+  end
+
   test "from carries the sending device — the self-send loop signal" do
     # A self-chat send by a linked device (e.g. :29) comes back from_me with the
     # device on `from`; a consumer compares it to Amarula.own_address(conn).device.

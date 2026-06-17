@@ -20,7 +20,7 @@ defmodule Amarula.MixProject do
   defp package do
     [
       licenses: ["MIT"],
-      files: ~w(lib mix.exs README.md LICENSE NOTICE),
+      files: ~w(lib mix.exs README.md usage-rules.md LICENSE NOTICE),
       links: %{
         "GitHub" => "https://github.com/tubedude/amarula",
         "Baileys (upstream)" => "https://github.com/WhiskeySockets/Baileys"

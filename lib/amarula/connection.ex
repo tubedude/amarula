@@ -2887,8 +2887,12 @@ defmodule Amarula.Connection do
     # Only for non-group stanzas: a group's room is the group jid (`from`), and
     # group messages carry `participant`, never `recipient` (Baileys applies the
     # recipient override only in the PN/LID-user branch, not the group branch).
+    # `stanza_from` is nil when `from` doesn't parse (the decrypt-failure path — a
+    # Signal-desynced contact: "Key used already" / old counter / bad PreKey id). Such
+    # a message must NOT crash the connection (it'd loop-crash inbound + fetch_groups);
+    # skip the recipient override and let the fallback branch carry the nils through.
     recipient =
-      if stanza_from.kind != :group,
+      if stanza_from && stanza_from.kind != :group,
         do: node |> NodeUtils.get_attr("recipient") |> maybe_address()
 
     {channel, to} =

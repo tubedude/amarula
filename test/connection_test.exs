@@ -321,6 +321,21 @@ defmodule Amarula.ConnectionTest do
       assert %Address{kind: :group} = msg.channel
       assert match?(%Msg{}, msg)
     end
+
+    test "an unparseable sender (decrypt-failure path) does not crash; carries nils" do
+      # On the Signal-desync path (e.g. \"Key used already\") `from` may not parse to an
+      # Address. build_msg must NOT raise (a crash here loop-crashes the connection) —
+      # it builds a %Msg{} with nil channel/from and falls back to to_addr.
+      bad = "x@unknown-server"
+      node = msg_node(%{"from" => bad, "id" => "M6"})
+
+      msg = Connection.build_msg(@state, %Proto.Message{conversation: "?"}, node, bad, "M6", @own)
+
+      assert match?(%Msg{}, msg)
+      refute msg.from_me
+      assert is_nil(msg.channel)
+      assert Address.same_account?(msg.to, @own)
+    end
   end
 
   describe "own_chat?/2 — the self-chat command channel (LID/PN agnostic)" do

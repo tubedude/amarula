@@ -13,6 +13,7 @@ defmodule Amarula.ContactsTest do
 
   @phone "15550001234"
   @jid "15550001234@s.whatsapp.net"
+  @lid "111111111111111@lid"
 
   describe "on_whatsapp query construction" do
     # Mirror what Contacts.on_whatsapp/2 builds, so a regression in protocol/mode/
@@ -43,7 +44,42 @@ defmodule Amarula.ContactsTest do
     end
   end
 
+  describe "resolve_lid query construction" do
+    # resolve_lid needs BOTH protocols: :contact (gives the PN id) and :lid (gives
+    # the LID); on_whatsapp's contact-only query can't establish a mapping.
+    test "is a lid+contact USync with one phone user per number" do
+      query =
+        USync.new()
+        |> USync.with_context("interactive")
+        |> USync.with_mode("query")
+        |> USync.with_protocol(:lid)
+        |> USync.with_protocol(:contact)
+        |> USync.with_user(%{phone: @phone})
+
+      {:ok, iq} = USync.build_iq(query)
+      usync = NodeUtils.get_binary_node_child(iq, "usync")
+      query_node = NodeUtils.get_binary_node_child(usync, "query")
+      assert Enum.sort(Enum.map(query_node.content, & &1.tag)) == ["contact", "lid"]
+
+      list = NodeUtils.get_binary_node_child(usync, "list")
+      [user] = list.content
+      [contact] = user.content
+      assert contact.content == @phone
+    end
+  end
+
   describe "reply contract consumed by the mapper" do
+    test "a lid reply parses to `\"lid\" => <lid jid>` keyed by the PN jid" do
+      # entry_lid_pn pairs entry[:id] (PN) with entry["lid"] (LID); both must be
+      # present and the lid non-empty for a mapping to be stored.
+      query = USync.new() |> USync.with_protocol(:lid) |> USync.with_protocol(:contact)
+
+      reply = lid_reply(@jid, @lid)
+      assert %{list: [entry]} = USync.parse_result(query, reply)
+      assert entry.id == @jid
+      assert entry["lid"] == @lid
+    end
+
     test "a contact reply parses to `\"contact\" => true/false` keyed by jid" do
       query = USync.new() |> USync.with_protocol(:contact)
 
@@ -74,6 +110,19 @@ defmodule Amarula.ContactsTest do
         tag: "user",
         attrs: %{"jid" => jid},
         content: [%Node{tag: "contact", attrs: %{"type" => type}, content: nil}]
+      }
+    ])
+  end
+
+  defp lid_reply(jid, lid) do
+    usync_reply([
+      %Node{
+        tag: "user",
+        attrs: %{"jid" => jid},
+        content: [
+          %Node{tag: "lid", attrs: %{"val" => lid}, content: nil},
+          %Node{tag: "contact", attrs: %{"type" => "in"}, content: nil}
+        ]
       }
     ])
   end

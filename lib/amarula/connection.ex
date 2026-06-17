@@ -277,6 +277,15 @@ defmodule Amarula.Connection do
   end
 
   @doc """
+  The connection's `%Amarula.Conn{}` — its storage scope + profile. Library code
+  that needs to read/write the Storage seam (sessions, LID mappings) from the
+  *caller's* process holds the pid; this hands it the `%Conn{}` those stores key
+  by. Internal: consumers use the higher-level facade calls.
+  """
+  @spec get_conn(GenServer.server()) :: Amarula.Conn.t()
+  def get_conn(pid \\ __MODULE__), do: GenServer.call(pid, :conn)
+
+  @doc """
   Send an IQ and block until the matching websocket reply arrives.
 
   Returns `{:ok, node}` on a `type="result"` reply, `{:error, node}` on an
@@ -557,6 +566,11 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call({:canonical_jid, jid}, _from, state) do
     {:reply, do_canonical_jid(state.conn, jid), state}
+  end
+
+  @impl GenServer
+  def handle_call(:conn, _from, state) do
+    {:reply, state.conn, state}
   end
 
   @impl GenServer

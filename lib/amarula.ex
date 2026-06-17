@@ -603,6 +603,9 @@ defmodule Amarula do
   @doc "Fetch users' status/bio text. See `Amarula.Contacts.fetch_status/2`."
   defdelegate fetch_status(conn, jids), to: Amarula.Contacts
 
+  @doc "Resolve + persist a contact's LID↔PN mapping. See `Amarula.Contacts.resolve_lid/2`."
+  defdelegate resolve_lid(conn, phones), to: Amarula.Contacts
+
   @doc "Fetch a profile-picture URL. See `Amarula.Profile.picture_url/3`."
   defdelegate profile_picture_url(conn, jid, type \\ :preview),
     to: Amarula.Profile,

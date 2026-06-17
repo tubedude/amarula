@@ -286,8 +286,11 @@ defmodule Amarula.Connection do
   server has sent it), so it matches `msg.to` against **both** of our own identities
   (device ignored) rather than forcing a single normalized form.
 
-  Note our own replies are *also* `from_me` to the self chat, so `own_chat?/2` is true
-  for them too; dedupe the agent's echoes by tracking the `msg_id` you got from the send.
+  On a **single connection** there is no feedback loop: a reply this connection sends to
+  the self chat is delivered to our *other* devices but not back to us (the send path
+  excludes our own sending device), so you don't need to filter your own sends. Only when
+  running **two connections on the same account** do their self-chat sends reach each
+  other — dedupe those cross-connection by the `msg_id` from the send.
   """
   @spec own_chat?(GenServer.server(), Amarula.Msg.t()) :: boolean()
   def own_chat?(pid \\ __MODULE__, %Amarula.Msg{} = msg) do

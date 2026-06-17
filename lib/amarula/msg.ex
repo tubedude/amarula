@@ -61,9 +61,16 @@ defmodule Amarula.Msg do
       end
 
   `own_chat?/2` handles the LID/PN duality (the self chat may be addressed by either our
-  PN or our LID) by matching `to` against both of our own identities. The agent's *own*
-  replies also come back `from_me` with `to` = the self account (so `own_chat?/2` is true
-  for them too); dedupe the echoes by tracking the `msg_id` you got from the send.
+  PN or our LID) by matching `to` against both of our own identities.
+
+  **No echo on a single connection.** WhatsApp delivers a message only to the devices it
+  was encrypted for, and the send path excludes our *own* sending device from that set.
+  So a reply this connection sends to the self chat is delivered to our *other* devices
+  (phone, other companions) but is **not** delivered back to us — there is no feedback
+  loop, and you do **not** need to dedupe your own sends. (The only exception is running
+  **two connections on the same account**: each then receives the other's sends, since
+  they're different devices — there, dedupe cross-connection by the `msg_id` you got from
+  the send.)
 
   `channel`/`from`/`to` are typed `Address.t() | nil` because `from_proto/2` is total
   (it copies `meta` verbatim, which a directly-constructed `%Msg{}` may leave nil). In

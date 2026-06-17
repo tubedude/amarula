@@ -396,8 +396,11 @@ defmodule Amarula do
 
   Handles the LID/PN duality: the self chat may be addressed by our PN or our LID, so it
   matches `msg.to` against both of our own identities (see `Amarula.Connection.own_chat?/2`).
-  Our own replies are also `from_me` to the self chat, so this is true for them too —
-  dedupe the agent's echoes by the `msg_id` you got from the send.
+
+  On a single connection there's no feedback loop — a reply this connection sends to the
+  self chat is not delivered back to it (the sender's own device is excluded from
+  delivery), so you don't need to filter your own sends. Dedupe by `msg_id` only when
+  running two connections on the same account.
   """
   @spec own_chat?(conn(), Amarula.Msg.t()) :: boolean()
   defdelegate own_chat?(conn, msg), to: Connection

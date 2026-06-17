@@ -244,4 +244,131 @@ defmodule Amarula.ConnectionTest do
       GenServer.stop(pid)
     end
   end
+
+  describe "build_msg/6 — real recipient on own (fan-out) messages" do
+    alias Amarula.{Address, Msg}
+    alias Amarula.Protocol.Proto
+
+    # Minimal state: build_msg only reads me(state) (creds.me.id) for own_account?.
+    @me_pn "5511999999999@s.whatsapp.net"
+    @other "5511888888888@s.whatsapp.net"
+    @state %{auth_creds: %{me: %{id: @me_pn}}}
+    @own Address.parse(@me_pn)
+
+    defp msg_node(attrs), do: %Node{tag: "message", attrs: attrs, content: nil}
+
+    test "a from_me message to another contact carries that contact as channel + to" do
+      # WhatsApp fans our send out as a from_me stanza whose `from` is our own
+      # account; the real peer is the `recipient` attr.
+      node = msg_node(%{"from" => @me_pn, "recipient" => @other, "id" => "M1"})
+
+      msg =
+        Connection.build_msg(@state, %Proto.Message{conversation: "hi"}, node, @me_pn, "M1", @own)
+
+      assert msg.from_me
+      assert %Address{user: "5511888888888"} = msg.to
+      assert %Address{user: "5511888888888"} = msg.channel
+    end
+
+    test "a from_me message to self keeps self as to (to == own account)" do
+      node = msg_node(%{"from" => @me_pn, "recipient" => @me_pn, "id" => "M2"})
+
+      msg =
+        Connection.build_msg(
+          @state,
+          %Proto.Message{conversation: "note"},
+          node,
+          @me_pn,
+          "M2",
+          @own
+        )
+
+      assert msg.from_me
+      assert Address.same_account?(msg.to, @own)
+    end
+
+    test "an inbound (not from_me) message keeps the passed-in to_addr and stanza from" do
+      node = msg_node(%{"from" => @other, "id" => "M3"})
+
+      msg =
+        Connection.build_msg(@state, %Proto.Message{conversation: "yo"}, node, @other, "M3", @own)
+
+      refute msg.from_me
+      assert Address.same_account?(msg.to, @own)
+      assert %Address{user: "5511888888888"} = msg.channel
+    end
+
+    test "a from_me message with no recipient attr falls back to to_addr (peer-routed self stanza)" do
+      node = msg_node(%{"from" => @me_pn, "id" => "M4"})
+
+      msg =
+        Connection.build_msg(@state, %Proto.Message{conversation: "x"}, node, @me_pn, "M4", @own)
+
+      assert msg.from_me
+      assert Address.same_account?(msg.to, @own)
+    end
+
+    test "a group from_me message keeps the group as channel (recipient override is DM-only)" do
+      group = "123456789@g.us"
+      # group stanza: from = group, participant = us; even a stray recipient must not win.
+      node =
+        msg_node(%{"from" => group, "participant" => @me_pn, "recipient" => @other, "id" => "M5"})
+
+      msg =
+        Connection.build_msg(@state, %Proto.Message{conversation: "g"}, node, group, "M5", @own)
+
+      assert msg.from_me
+      assert %Address{kind: :group} = msg.channel
+      assert match?(%Msg{}, msg)
+    end
+  end
+
+  describe "own_chat?/2 — the self-chat command channel (LID/PN agnostic)" do
+    alias Amarula.{Address, Msg, Storage}
+    alias Amarula.Protocol.Proto
+
+    @me_pn "5511999999999@s.whatsapp.net"
+    @me_lid "147451226890315@lid"
+    @other "5511888888888@s.whatsapp.net"
+
+    # A %Msg{} addressed `to` `jid`, optionally from_me.
+    defp msg_to(jid, from_me?) do
+      %Msg{
+        channel: Address.parse(jid),
+        to: Address.parse(jid),
+        from_me: from_me?,
+        type: :text,
+        content: "x",
+        raw: %Proto.Message{conversation: "x"}
+      }
+    end
+
+    setup do
+      root = Path.join(System.tmp_dir!(), "amarula_ownchat_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(root) end)
+      conn = Amarula.new(%{profile: :own_chat_test, storage: {Storage.File, root: root}})
+      # Logged-in creds carry BOTH our PN (always) and our LID (best-effort).
+      creds = %{registration_id: 7, me: %{id: @me_pn, lid: @me_lid, name: "~"}}
+      :ok = Storage.put(conn.storage, conn.profile, :creds, :self, creds)
+      {:ok, pid} = Connection.start_link(conn)
+      on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+      {:ok, pid: pid}
+    end
+
+    test "true for a from_me message addressed to our PN", %{pid: pid} do
+      assert Connection.own_chat?(pid, msg_to(@me_pn, true))
+    end
+
+    test "true for a from_me message addressed to our LID (the duality case)", %{pid: pid} do
+      assert Connection.own_chat?(pid, msg_to(@me_lid, true))
+    end
+
+    test "false for a from_me message to someone else", %{pid: pid} do
+      refute Connection.own_chat?(pid, msg_to(@other, true))
+    end
+
+    test "false for an inbound (not from_me) message to ourselves", %{pid: pid} do
+      refute Connection.own_chat?(pid, msg_to(@me_pn, false))
+    end
+  end
 end

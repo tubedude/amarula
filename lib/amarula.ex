@@ -389,6 +389,19 @@ defmodule Amarula do
     end
   end
 
+  @doc """
+  Whether `msg` is in our **own** chat (the "Message Yourself" chat): `from_me` and
+  addressed `to` our own account. The check a self-chat command channel needs — drive
+  an agent by messaging yourself.
+
+  Handles the LID/PN duality: the self chat may be addressed by our PN or our LID, so it
+  matches `msg.to` against both of our own identities (see `Amarula.Connection.own_chat?/2`).
+  Our own replies are also `from_me` to the self chat, so this is true for them too —
+  dedupe the agent's echoes by the `msg_id` you got from the send.
+  """
+  @spec own_chat?(conn(), Amarula.Msg.t()) :: boolean()
+  defdelegate own_chat?(conn, msg), to: Connection
+
   @doc "Send a 1:1/group text message to `jid`."
   @spec send_text(conn(), jid(), String.t()) :: send_result()
   defdelegate send_text(conn, jid, text), to: Connection

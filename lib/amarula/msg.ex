@@ -36,20 +36,34 @@ defmodule Amarula.Msg do
   |-----------|----------------------------------------------------------|--------------|---------------|-----------------|
   | `channel` | the room it was published to — **the reply handle**      | the peer     | the **group** | me              |
   | `from`    | who **wrote** it (carries the sending **device**)        | the peer / me| the participant | me (+device)  |
-  | `to`      | who it was **addressed to** (≈ you)                      | me           | me            | me              |
+  | `to`      | who it was **addressed to** — the real recipient         | the peer / me| the group     | me              |
 
   To **reply**, put `msg.channel` straight into a send's target — it routes back to the
   same conversation. In a **1:1, `from == channel`**; in a **group, `from` (the
   participant) ≠ `channel` (the group)**.
 
-  The sending **device** is on `from`: `msg.from.device` (`nil` = primary / phone). To
-  detect a message this app/device itself sent — e.g. to ignore the agent's own
-  self-chat sends and avoid a loop — compare it to `Amarula.own_address/1` and pair
-  with `from_me`:
+  ## `from_me` and the real recipient
 
-      if msg.from_me and msg.from.device == Amarula.own_address(conn).device do
-        :ignore   # this device sent it
+  WhatsApp's multi-device model **fans every message you send out to your linked
+  devices** as a `from_me` message. The stanza's `from` is then your *own* account, not
+  the peer — so for a `from_me` message the receive path derives `channel` and `to` from
+  the stanza's `recipient` (the actual other party), not from `from`. This means `to` is
+  the **real recipient**: it tells "I messaged myself" apart from "I messaged someone
+  else", which `from`/`channel` alone cannot (both collapse to your account on a linked
+  device).
+
+  So a **self-chat command channel** — talking to an agent by messaging yourself — is
+  `Amarula.own_chat?/2` (no device comparison: the sending device isn't recoverable for
+  own messages — WhatsApp strips it from the writer jid):
+
+      if Amarula.own_chat?(conn, msg) do
+        handle_self_command(msg)   # the user messaged themselves → drive the agent
       end
+
+  `own_chat?/2` handles the LID/PN duality (the self chat may be addressed by either our
+  PN or our LID) by matching `to` against both of our own identities. The agent's *own*
+  replies also come back `from_me` with `to` = the self account (so `own_chat?/2` is true
+  for them too); dedupe the echoes by tracking the `msg_id` you got from the send.
 
   `channel`/`from`/`to` are typed `Address.t() | nil` because `from_proto/2` is total
   (it copies `meta` verbatim, which a directly-constructed `%Msg{}` may leave nil). In

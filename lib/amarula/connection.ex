@@ -277,6 +277,24 @@ defmodule Amarula.Connection do
   end
 
   @doc """
+  Whether `msg` is a message in our **own** chat (the "Message Yourself" chat) — i.e.
+  it's `from_me` and addressed `to` our own account.
+
+  This is the check a self-chat command channel needs (drive an agent by messaging
+  yourself), and it handles the LID/PN duality for you: WhatsApp may address the self
+  chat by either our PN (`me.id`, always present) or our LID (`me.lid`, present once the
+  server has sent it), so it matches `msg.to` against **both** of our own identities
+  (device ignored) rather than forcing a single normalized form.
+
+  Note our own replies are *also* `from_me` to the self chat, so `own_chat?/2` is true
+  for them too; dedupe the agent's echoes by tracking the `msg_id` you got from the send.
+  """
+  @spec own_chat?(GenServer.server(), Amarula.Msg.t()) :: boolean()
+  def own_chat?(pid \\ __MODULE__, %Amarula.Msg{} = msg) do
+    GenServer.call(pid, {:own_chat?, msg})
+  end
+
+  @doc """
   The connection's `%Amarula.Conn{}` — its storage scope + profile. Library code
   that needs to read/write the Storage seam (sessions, LID mappings) from the
   *caller's* process holds the pid; this hands it the `%Conn{}` those stores key
@@ -566,6 +584,19 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call({:canonical_jid, jid}, _from, state) do
     {:reply, do_canonical_jid(state.conn, jid), state}
+  end
+
+  @impl GenServer
+  def handle_call(
+        {:own_chat?, %Amarula.Msg{from_me: true, to: %Amarula.Address{} = to}},
+        _from,
+        state
+      ) do
+    {:reply, own_account?(state, to), state}
+  end
+
+  def handle_call({:own_chat?, %Amarula.Msg{}}, _from, state) do
+    {:reply, false, state}
   end
 
   @impl GenServer
@@ -2833,20 +2864,43 @@ defmodule Amarula.Connection do
   # raw protobuf.
   # `to_addr` is our own identity — constant across a node's messages, so the caller
   # computes it once per batch (via `own_address/1`) and passes it in.
-  defp build_msg(state, proto, node, from, msg_id, to_addr) do
-    # Three address roles (see Amarula.Msg): `channel` is the room (the stanza `from`
-    # — group jid for groups, the peer for DMs; the reply handle). `from` is the
-    # writer (the participant in a group, else the channel) and carries the sending
-    # device. `to` is whom it was addressed to — our own identity.
-    channel = Amarula.Address.parse(from)
-    from_addr = node |> NodeUtils.get_attr("participant") |> maybe_address() || channel
+  @doc false
+  def build_msg(state, proto, node, from, msg_id, to_addr) do
+    # Three address roles (see Amarula.Msg): `channel` is the room (the reply handle —
+    # group jid for groups, the peer for DMs). `from` is the writer (the participant in
+    # a group, else the channel) and carries the sending device. `to` is whom it was
+    # addressed to.
+    stanza_from = Amarula.Address.parse(from)
+    from_addr = node |> NodeUtils.get_attr("participant") |> maybe_address() || stanza_from
+    from_me? = own_account?(state, from_addr)
+
+    # WhatsApp fans every message we send out to our linked devices as a `from_me`
+    # stanza whose `from` is our own account — so the stanza `from` is NOT the peer.
+    # The real other party is the `recipient` attr (Baileys decode: own message →
+    # chatId = recipient). Use it for both the room (`channel`/reply handle) and `to`,
+    # so a consumer can tell "I messaged myself" (to == self) from "I messaged someone
+    # else" (to == that contact). Falls back to the old behaviour when absent (e.g. a
+    # peer-routed self stanza with no recipient).
+    # Only for non-group stanzas: a group's room is the group jid (`from`), and
+    # group messages carry `participant`, never `recipient` (Baileys applies the
+    # recipient override only in the PN/LID-user branch, not the group branch).
+    recipient =
+      if stanza_from.kind != :group,
+        do: node |> NodeUtils.get_attr("recipient") |> maybe_address()
+
+    {channel, to} =
+      if from_me? && recipient do
+        {recipient, recipient}
+      else
+        {stanza_from, to_addr}
+      end
 
     Amarula.Msg.from_proto(proto, %{
       id: msg_id,
       channel: channel,
       from: from_addr,
-      to: to_addr,
-      from_me: own_account?(state, from_addr),
+      to: to,
+      from_me: from_me?,
       # The sender's display name, off the stanza envelope (absent on our own sends).
       pushname: NodeUtils.get_attr(node, "notify"),
       timestamp: parse_ts(NodeUtils.get_attr(node, "t"))

@@ -1016,7 +1016,8 @@ defmodule Amarula.Connection do
 
   # Test seam: inject an already-decoded server node straight into the routing
   # path, skipping noise decode. Mirrors what decode_and_emit_frame does per
-  # frame. Only reachable when a test sends this message.
+  # frame. Used by Connection's own tests and by `Amarula.Testing` (the public
+  # consumer test-support API) to feed synthetic inbound messages.
   @impl GenServer
   def handle_info({:inject_node, node}, state) do
     {:noreply, process_server_node(state, node)}
@@ -1326,7 +1327,25 @@ defmodule Amarula.Connection do
   # `from` nil = fire-and-forget (a retry resend, no caller waiting) → nothing is
   # parked. `shape` maps a successful ack to the caller's reply (default:
   # `{:ok, msg_id}`; poll adds its secret).
-  defp deliver_async(state, target, payload, from, shape \\ &default_send_reply/2) do
+  defp deliver_async(state, target, payload, from, shape \\ &default_send_reply/2)
+
+  # Sandbox (offline) mode: the connection has no socket and there is no peer to
+  # reach, so a send must not run the real pipeline (USync/bundle fetch IQs would
+  # block forever with nothing to answer them). Short-circuit at the boundary:
+  # mint a msg_id and reply exactly as a confirmed send would (`shape.(:ok, …)` →
+  # `{:ok, id}`, or `{:ok, id, secret}` for a poll). Nothing is encrypted, no
+  # frame leaves the process — the consumer's bot logic runs unchanged. A
+  # fire-and-forget send (from == nil) simply does nothing.
+  defp deliver_async(%{config: %{offline: true}} = state, _target, payload, from, shape) do
+    msg_id = Map.get(payload, :msg_id) || generate_message_id()
+
+    case from do
+      nil -> {:noreply, state}
+      _ -> {:reply, shape.(:ok, msg_id), state}
+    end
+  end
+
+  defp deliver_async(state, target, payload, from, shape) do
     jid = Amarula.Address.to_wire!(target)
     msg_id = Map.get(payload, :msg_id) || generate_message_id()
     instance_id = state.instance_id

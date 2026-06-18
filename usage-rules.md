@@ -180,6 +180,35 @@ Manage (all return `:ok`/`{:ok, ...}`/`{:error, {:group_op_failed, code, text}}`
 `profile_picture_url(conn, jid, type)`, `update_profile_status/2`,
 `update_profile_picture/3`, `remove_profile_picture/2`.
 
+## Testing your bot
+
+To test message-handling logic — "when a message like X arrives, does my bot reply
+with Y?" — use `Amarula.Testing`, **not** Mox. Mox mocks behaviours your code *calls
+out to*; the bot's input is an event in its mailbox and its reply is a call *into*
+Amarula, so there is nothing for Mox to attach to. Instead, run an **offline sandbox
+connection**: inbound messages are the ones you deliver, and outbound sends
+short-circuit to `{:ok, msg_id}` without touching any network.
+
+```elixir
+{:ok, conn} = Amarula.Testing.start_offline(profile: :test)
+
+# Feed an inbound message (runs the REAL decode/classify pipeline → a true %Msg{}).
+Amarula.Testing.deliver_text(conn, from: "15551234567@s.whatsapp.net", text: "ping")
+
+# Your bot receives :messages_upsert and replies. In sandbox mode the reply
+# returns {:ok, id} and sends nothing — no encrypt, no frame, no real message.
+assert_receive {:whatsapp, :messages_upsert, %{messages: [%Amarula.Msg{}]}}
+```
+
+- `start_offline/1` returns the same `conn` handle as `connect/2`; pass it to
+  `send_text/3` etc. Events go to `:parent_pid` (default: the caller), so
+  `assert_receive` works in the calling test.
+- Equivalent to a normal connection built with `Amarula.new(%{profile: x, offline:
+  true})` — `offline:` is a real connection property, not test-only magic.
+- `deliver/2` takes any `%Amarula.Protocol.Proto.Message{}` for media/reactions/etc.
+- `send_media/5` is the one send that does NOT work offline (it uploads media, which
+  needs a live socket).
+
 ## Common mistakes to avoid
 
 - Calling a send before `connection: :open` — wait for the open event.
@@ -189,3 +218,4 @@ Manage (all return `:ok`/`{:ok, ...}`/`{:error, {:group_op_failed, code, text}}`
 - Reformatting the QR string, or expecting a built-in QR image — render the raw string yourself.
 - Reaching for a global/singleton connection — every call takes an explicit `conn`.
 - Assuming inbound media includes bytes — call `download_media/1`.
+- Reaching for Mox to test your bot — use `Amarula.Testing` (offline sandbox) instead.

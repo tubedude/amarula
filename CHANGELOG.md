@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Offline sandbox + `Amarula.Testing`** — test your bot's receive→reply logic
+  with no WhatsApp connection. `Amarula.new(%{profile: x, offline: true})` runs a
+  connection with no socket whose `send_*` calls short-circuit to `{:ok, msg_id}`
+  (no encrypt, no frame, no real-world effect). `Amarula.Testing.start_offline/1`
+  starts one; `deliver_text/2` and `deliver/2` feed synthetic inbound messages
+  through the real decode/classify pipeline, so your bot receives a true
+  `%Amarula.Msg{}`. `send_media/5` is unsupported offline (needs a live socket).
 - `Amarula.list_profiles/1` — list the profiles that have stored credentials in a
   given storage source (a `Conn`, a `Storage.Scope`, or a `{adapter, opts}` /
   bare-opts storage spec). Returns the names you'd pass as `:profile` to reconnect.

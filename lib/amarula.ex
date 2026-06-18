@@ -36,6 +36,12 @@ defmodule Amarula do
   pass only `:profile`. For a ready-made supervised wrapper, see
   `Amarula.Examples.Connection`.
 
+  ## Testing your bot
+
+  To test your message-handling logic without a real WhatsApp connection, use
+  `Amarula.Testing` — it starts an offline connection and lets you deliver
+  synthetic inbound messages that flow through the real receive pipeline.
+
   ## The QR code
 
   The `qr` in a `:connection_update` is a plain string — *you* turn it into a
@@ -185,6 +191,14 @@ defmodule Amarula do
 
   Connection/protocol defaults are filled in (see `Amarula.Config`), so `config`
   need only carry `:profile` (+ `:auth` and any overrides).
+
+  ## Offline (sandbox) mode
+
+  `offline: true` runs the connection with no socket: it never reaches WhatsApp,
+  and every `send_*` short-circuits to `{:ok, msg_id}` without encrypting or
+  emitting a frame. Combined with `Amarula.Testing.deliver_*` (which feeds
+  synthetic inbound messages), this lets you run your bot end to end — receive a
+  message, reply to it — with no real-world effect. See `Amarula.Testing`.
   """
   @spec new(map()) :: Amarula.Conn.t()
   def new(config) when is_map(config) do

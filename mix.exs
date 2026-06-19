@@ -56,7 +56,9 @@ defmodule Amarula.MixProject do
         "docs/GOING_PROD.md",
         "docs/PARITY.md",
         "usage-rules.md",
-        "CHANGELOG.md"
+        "CHANGELOG.md",
+        "LICENSE",
+        "NOTICE"
       ],
       source_url: "https://github.com/tubedude/amarula"
     ]

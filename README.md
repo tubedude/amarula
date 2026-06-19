@@ -1,5 +1,8 @@
 # Amarula
 
+[![Elixir CI](https://github.com/tubedude/amarula/actions/workflows/elixir.yml/badge.svg)](https://github.com/tubedude/amarula/actions/workflows/elixir.yml)
+[![Hex.pm](https://img.shields.io/hexpm/v/amarula.svg)](https://hex.pm/packages/amarula)
+[![Hexdocs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/amarula)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 A **WhatsApp Web client for Elixir** — connect to WhatsApp the way the

@@ -15,6 +15,10 @@ jobs:
     name: Probe (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
     runs-on: ubuntu-latest
     continue-on-error: true
+    # Relax mix.exs's `elixir:` requirement so Mix actually runs on older
+    # versions — otherwise it refuses before we learn if the code/deps build.
+    env:
+      AMARULA_ELIXIR_REQ: ">= 1.14.0"
     strategy:
       fail-fast: false
       matrix:

@@ -12,7 +12,21 @@ defmodule Amarula.MixProject do
       aliases: aliases(),
       description: "A WhatsApp Web client for Elixir — an idiomatic OTP port of Baileys.",
       package: package(),
-      docs: docs()
+      docs: docs(),
+      test_coverage: test_coverage()
+    ]
+  end
+
+  # Coverage config. The generated `Proto.*` modules are compiled protobuf, not
+  # hand-written logic, so excluding them stops them from drowning the signal —
+  # they're either trivially 100% or unused-and-0%, neither of which tells us
+  # anything about test quality.
+  defp test_coverage do
+    [
+      # Realistic floor for hand-written code (protos excluded below). Raise it as
+      # coverage grows; keep it at/under the current number so `--cover` stays green.
+      summary: [threshold: 64],
+      ignore_modules: [~r/^Amarula\.Protocol\.Proto\./]
     ]
   end
 
@@ -103,9 +117,11 @@ defmodule Amarula.MixProject do
       # Development dependencies
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
 
       # Testing dependencies
+      # Plug powers Req.Test stubs (HTTP fakes for the media download path).
+      {:plug, "~> 1.16", only: :test}
     ]
   end
 

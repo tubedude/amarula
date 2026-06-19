@@ -1,5 +1,7 @@
 # Amarula
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 A **WhatsApp Web client for Elixir** — connect to WhatsApp the way the
 web/desktop app does: pair once by scanning a QR code with your phone, then send
 and receive messages from your own Elixir code.
@@ -10,8 +12,15 @@ protocol end to end: the Noise handshake, the Signal Protocol for end-to-end
 encryption, WhatsApp's binary message format, multi-device (LID), groups, and
 history sync.
 
-> **Note:** This is an unofficial library. It is not affiliated with or endorsed
-> by WhatsApp. Use it on accounts you control and in line with WhatsApp's terms.
+> **⚠️ Unofficial — use at your own risk.** Amarula is not affiliated with,
+> endorsed by, or sponsored by WhatsApp or Meta. WhatsApp does not support
+> third-party clients, and automating an account can violate
+> [WhatsApp's Terms of Service](https://www.whatsapp.com/legal/terms-of-service).
+> **WhatsApp may ban any number you use with it**, with no warning and no appeal.
+> Only use accounts you own and can afford to lose; never use it for spam, bulk
+> messaging, or anything against WhatsApp's terms. The maintainers provide this
+> software as-is (see [LICENSE](LICENSE)) and take no responsibility for banned
+> accounts or any other consequences of its use.
 
 ## Features
 

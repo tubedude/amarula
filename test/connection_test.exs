@@ -1,5 +1,9 @@
 defmodule Amarula.ConnectionTest do
-  use ExUnit.Case, async: true
+  # async: false — starts real connections on the shared, app-global
+  # ConnectionsSupervisor + ProfileRegistry. Running these concurrently with
+  # other real-connection tests (notably the crash-isolation suite) perturbs that
+  # shared OTP state and causes a rare cross-test flake. Serialize them.
+  use ExUnit.Case, async: false
 
   @moduletag :capture_log
 
@@ -11,7 +15,7 @@ defmodule Amarula.ConnectionTest do
     config = %{
       wa_websocket_url: "wss://test.example.com/ws",
       connect_timeout_ms: 5000,
-      keep_alive_interval_ms: 30000,
+      keep_alive_interval_ms: 30_000,
       max_retries: 3,
       retry_delay: 1000,
       headers: %{"User-Agent" => "TestClient"},

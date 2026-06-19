@@ -259,27 +259,27 @@ defmodule Amarula.Protocol.Binary.JID do
   # Constants
   @doc "Returns the S_WHATSAPP_NET constant"
   @spec s_whatsapp_net() :: binary()
-  def s_whatsapp_net(), do: @s_whatsapp_net
+  def s_whatsapp_net, do: @s_whatsapp_net
 
   @doc "Returns the OFFICIAL_BIZ_JID constant"
   @spec official_biz_jid() :: binary()
-  def official_biz_jid(), do: @official_biz_jid
+  def official_biz_jid, do: @official_biz_jid
 
   @doc "Returns the SERVER_JID constant"
   @spec server_jid() :: binary()
-  def server_jid(), do: @server_jid
+  def server_jid, do: @server_jid
 
   @doc "Returns the PSA_WID constant"
   @spec psa_wid() :: binary()
-  def psa_wid(), do: @psa_wid
+  def psa_wid, do: @psa_wid
 
   @doc "Returns the STORIES_JID constant"
   @spec stories_jid() :: binary()
-  def stories_jid(), do: @stories_jid
+  def stories_jid, do: @stories_jid
 
   @doc "Returns the META_AI_JID constant"
   @spec meta_ai_jid() :: binary()
-  def meta_ai_jid(), do: @meta_ai_jid
+  def meta_ai_jid, do: @meta_ai_jid
 
   # Private functions
 

@@ -162,8 +162,9 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
           |> Enum.map(fn
             # Two rows - use half blocks
             [top_row, bottom_row] ->
-              Enum.zip(top_row, bottom_row)
-              |> Enum.map(fn
+              top_row
+              |> Enum.zip(bottom_row)
+              |> Enum.map_join("", fn
                 # Both pixels filled
                 {1, 1} -> "█"
                 # Top pixel filled
@@ -173,16 +174,13 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
                 # Both pixels empty
                 {0, 0} -> " "
               end)
-              |> Enum.join("")
 
             # Single row (odd number of rows) - use top half block
             [single_row] ->
-              single_row
-              |> Enum.map(fn
+              Enum.map_join(single_row, "", fn
                 1 -> "▀"
                 0 -> " "
               end)
-              |> Enum.join("")
           end)
           |> Enum.join("\n")
 
@@ -228,8 +226,7 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
 
         # Format each QR line with borders
         formatted_qr_lines =
-          qr_lines
-          |> Enum.map(fn line ->
+          Enum.map_join(qr_lines, "\n", fn line ->
             padding_needed = border_width - String.length(line) - 4
             left_pad = div(padding_needed, 2)
             right_pad = padding_needed - left_pad
@@ -237,7 +234,6 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
             "║  " <>
               String.duplicate(" ", left_pad) <> line <> String.duplicate(" ", right_pad) <> "  ║"
           end)
-          |> Enum.join("\n")
 
         # Instructions line
         instructions = "Scan this QR code with your phone to connect"

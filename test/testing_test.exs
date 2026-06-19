@@ -4,7 +4,10 @@ defmodule Amarula.TestingTest do
   that `start_offline/1` + `deliver_*` push a synthetic inbound message all the way
   to the consumer's `parent_pid` as a real `%Amarula.Msg{}`, with no network.
   """
-  use ExUnit.Case, async: true
+  # async: false — starts real (offline) connections on the shared, app-global
+  # ConnectionsSupervisor + ProfileRegistry; see Amarula.ConnectionTest. Running
+  # concurrently with other real-connection tests causes a rare cross-test flake.
+  use ExUnit.Case, async: false
 
   alias Amarula.Protocol.Proto
 

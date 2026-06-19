@@ -206,7 +206,7 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
       platformType: browser_to_platform_type(Enum.at(config.browser, 1)),
       requireFullSync: config.sync_full_history,
       historySyncConfig: %Proto.DeviceProps.HistorySyncConfig{
-        storageQuotaMb: 10240,
+        storageQuotaMb: 10_240,
         inlineInitialPayloadInE2EeMsg: true,
         supportCallLogHistory: false,
         supportBotUserAgentChatHistory: true,

@@ -94,9 +94,8 @@ defmodule Amarula.Protocol.Binary.NodeUtils do
   @spec binary_node_to_string(Node.t()) :: String.t()
   def binary_node_to_string(%Node{tag: tag, attrs: attrs, content: content}) do
     attrs_str =
-      attrs
-      |> Enum.map(fn {k, v} -> "#{k}=\"#{v}\"" end)
-      |> Enum.join(" ")
+      (attrs || %{})
+      |> Enum.map_join(" ", fn {k, v} -> "#{k}=\"#{v}\"" end)
 
     attrs_str = if attrs_str == "", do: "", else: " #{attrs_str}"
 
@@ -106,9 +105,7 @@ defmodule Amarula.Protocol.Binary.NodeUtils do
           ""
 
         content when is_list(content) ->
-          content
-          |> Enum.map(&binary_node_to_string/1)
-          |> Enum.join("")
+          Enum.map_join(content, "", &binary_node_to_string/1)
 
         content when is_binary(content) ->
           content

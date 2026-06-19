@@ -72,7 +72,7 @@ defmodule Amarula.Protocol.Binary.Encoder do
     push_byte(size, buffer)
   end
 
-  defp write_list_start(size, buffer) when size < 65536 do
+  defp write_list_start(size, buffer) when size < 65_536 do
     buffer = push_byte(Constants.tag(:list_16), buffer)
     push_int16(size, buffer)
   end

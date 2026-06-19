@@ -55,12 +55,17 @@ defmodule Amarula.Protocol.Messages.Media do
     media_key = media_key(ref)
     url = download_url(ref)
 
-    case Req.get(url, decode_body: false) do
+    case Req.get(url, [decode_body: false] ++ req_options()) do
       {:ok, %{status: 200, body: enc}} when is_binary(enc) -> decrypt(enc, media_key, type)
       {:ok, %{status: status}} -> {:error, {:http, status}}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # Extra Req options merged into every request. Empty in prod; tests set
+  #   config :amarula, :req_options, plug: {Req.Test, Amarula.Protocol.Messages.Media}
+  # to route HTTP through a Req.Test stub instead of the network.
+  defp req_options, do: Application.get_env(:amarula, :req_options, [])
 
   defp media_key(ref), do: Map.get(ref, :media_key) || Map.get(ref, :mediaKey)
 

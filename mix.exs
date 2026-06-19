@@ -111,9 +111,6 @@ defmodule Amarula.MixProject do
       # Binary manipulation
       {:binary, "~> 0.0.5"},
 
-      # Image processing (optional)
-      {:ex_image_info, "~> 0.2.4"},
-
       # QR code generation
       {:qr_code, "~> 3.2.0"},
 

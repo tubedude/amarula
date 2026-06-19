@@ -18,7 +18,7 @@ defmodule Amarula.Config do
   | `:retry_cache` | ETS (see `Amarula.RetryCache`) | sent-message cache backend |
   | `:registry` | `Amarula.ProfileRegistry` (local) | `{module, name}` or bare `name` for the profile→connection registry; swap for `Horde.Registry` to enforce one-conn-per-profile cluster-wide (default: per node). See `Amarula.ProfileRegistry` |
   | `:auth` | loaded from storage | explicit creds (advanced; normally Amarula loads/persists these itself) |
-  | `:version` | `#{inspect(@wa_version)}` | WhatsApp Web version — MUST track the pinned Baileys version (`src/Defaults/index.ts`) or the handshake is rejected |
+  | `:version` | `#{inspect(@wa_version)}` | WhatsApp Web *protocol* version — MUST track `src/Defaults/index.ts` or the handshake is rejected. (Distinct from Baileys *source* parity — see `Amarula.Baileys` / `docs/PARITY.md`.) |
   | `:browser` | `["Mac OS", "Chrome", "14.4.1"]` | browser triple shown as the linked device |
   | `:max_retries` | `5` | reconnect attempts |
   | `:retry_delay` | `1000` | base reconnect backoff (ms) |

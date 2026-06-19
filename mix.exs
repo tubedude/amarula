@@ -52,6 +52,7 @@ defmodule Amarula.MixProject do
         "README.md",
         "docs/INFRASTRUCTURE.md",
         "docs/GOING_PROD.md",
+        "docs/PARITY.md",
         "usage-rules.md",
         "CHANGELOG.md"
       ],

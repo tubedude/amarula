@@ -20,13 +20,13 @@ defmodule Amarula do
       # 2. On the first run you get a QR code to scan with your phone:
       #    WhatsApp → Settings → Linked Devices → Link a device.
       receive do
-        {:whatsapp, :connection_update, %{qr: qr}} when is_binary(qr) ->
+        {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
           IO.puts(qr)   # render this string as a QR code
       end
 
       # 3. Once linked you get an :open update — now you can send.
       receive do
-        {:whatsapp, :connection_update, %{connection: :open}} -> :ready
+        {:amarula, :connection_update, %{connection: :open}} -> :ready
       end
 
       Amarula.send_text(conn, "5511999999999@s.whatsapp.net", "hello from Elixir!")
@@ -67,12 +67,12 @@ defmodule Amarula do
   `Result`-tuple based — `create/1` returns `{:ok, qr}` and `render/2` takes that
   tuple, so you pipe straight through):
 
-      {:whatsapp, :connection_update, %{qr: qr}} when is_binary(qr) ->
+      {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
         qr |> QRCode.create() |> QRCode.render(:png) |> QRCode.save("qr.png")
 
   ## Addressing
 
-  A send target is a wire jid string — `"<number>@s.whatsapp.net"` for a person,
+  A send target is a jid string — `"<number>@s.whatsapp.net"` for a person,
   `"<id>@g.us"` for a group — or an `Amarula.Address` (use `Amarula.Address.pn/1`
   to build one from a bare number).
 
@@ -81,7 +81,7 @@ defmodule Amarula do
   All sends return `{:ok, msg_id}` or `{:error, reason}`:
 
       Amarula.send_text(conn, jid, "hello")
-      Amarula.send_media(conn, :image, jid, image_bytes, caption: "hi")
+      Amarula.send_media(conn, jid, :image, image_bytes, caption: "hi")
       Amarula.send_reaction(conn, message_key, "👍")   # "" removes the reaction
       Amarula.send_edit(conn, message_key, "fixed typo")
       Amarula.send_revoke(conn, message_key)            # delete for everyone
@@ -91,7 +91,7 @@ defmodule Amarula do
 
   ## Receiving
 
-  Incoming events arrive at `parent_pid` as `{:whatsapp, type, data}` tuples (the
+  Incoming events arrive at `parent_pid` as `{:amarula, type, data}` tuples (the
   full list is in `t:event/0`). The main one is `:messages_upsert`, whose `data`
   carries `[%Amarula.Msg{}]` — the consumer-friendly message view (`type` +
   `content`), never the raw protobuf. Match on `msg.type`; for media, fetch the
@@ -114,9 +114,6 @@ defmodule Amarula do
 
   alias Amarula.Connection
   alias Amarula.ProfileRegistry
-  alias Amarula.Protocol.Binary.Node
-  alias Amarula.Protocol.Binary.NodeUtils
-  alias Amarula.Protocol.Groups.Metadata
   alias Amarula.Protocol.Messages.Media
   alias Amarula.Protocol.Proto
 
@@ -129,7 +126,7 @@ defmodule Amarula do
   @typedoc "A connection's profile name (its identity + storage scope)."
   @type profile :: atom() | String.t()
 
-  @typedoc ~S|A send target: an `Amarula.Address` or a wire jid string (`"<n>@s.whatsapp.net"` / `"<id>@g.us"`).|
+  @typedoc ~S|A send target: an `Amarula.Address` or a jid string (`"<n>@s.whatsapp.net"` / `"<id>@g.us"`).|
   @type jid :: String.t() | Amarula.Address.t()
 
   @typedoc "The key of a specific message (for reactions/edits/deletes)."
@@ -142,7 +139,7 @@ defmodule Amarula do
   @type media_type :: :image | :video | :audio | :document | :sticker
 
   @typedoc """
-  Events delivered to `parent_pid` as `{:whatsapp, type, data}`:
+  Events delivered to `parent_pid` as `{:amarula, type, data}`:
 
     * `:connection_update` — `%{connection: state, qr: qr | nil, ...}` (partial map)
     * `:messages_upsert`   — `%{from: jid, id: id, messages: [%Amarula.Msg{}]}`
@@ -214,13 +211,27 @@ defmodule Amarula do
 
       {:ok, pid} = Amarula.new(config) |> Amarula.connect()
 
+  > #### The returned pid is not restart-safe {: .warning}
+  >
+  > If the connection crashes, its supervision tree restarts it under a **new
+  > pid** — the pid returned here then points at a dead process. For anything
+  > you hold across time (a GenServer state field, a long-lived process), store
+  > the **profile** and address the connection with `via/1` instead:
+  >
+  >     conn = Amarula.via(profile)          # always resolves to the current pid
+  >     Amarula.send_text(conn, jid, "hi")
+  >
+  > `via/1`/`whereis/1` resolve through `Amarula.ProfileRegistry`, which the
+  > connection re-registers on every restart. The raw pid is fine for a quick,
+  > short-lived script that won't outlive a crash.
+
   Only one connection per profile may run at a time (within the registry's reach —
   one per node by default; see `Amarula.ProfileRegistry`). Connecting a profile
   that's already live returns `{:error, {:already_running, pid}}` — use `whereis/1`
   to get the existing one.
 
   `opts`:
-    * `:parent_pid` — process to receive `{:whatsapp, ..}` events (default: caller)
+    * `:parent_pid` — process to receive `{:amarula, ..}` events (default: caller)
     * `:name`       — optional registered name for the connection
   """
   @spec connect(Amarula.Conn.t(), keyword()) ::
@@ -359,32 +370,15 @@ defmodule Amarula do
   @spec connection_state(conn()) :: atom()
   defdelegate connection_state(conn), to: Connection, as: :get_connection_state
 
-  @doc """
-  Canonicalize `jid` to its phone-number identity.
-
-  WhatsApp's multi-device addresses a contact by either a LID (`<n>@lid`) or a
-  phone number (`<n>@s.whatsapp.net`); the same person can appear under both.
-  Amarula tracks the mapping internally — this is the public way to read it.
-
-  If `jid` is a LID with a known PN mapping, returns the equivalent
-  `<pn>@s.whatsapp.net` (preserving any device suffix). Any other jid — an
-  already-canonical PN, a group, or a LID we have no mapping for — is returned
-  unchanged, so it's safe to call on every inbound jid.
-
-      Amarula.canonical_jid(conn, "111111111111111@lid")
-      #=> "5511999999999@s.whatsapp.net"   # if mapped
-  """
-  @spec canonical_jid(conn(), String.t()) :: String.t()
-  defdelegate canonical_jid(conn, jid), to: Connection
-
   ## Identity -----------------------------------------------------------------
 
   @doc """
   This connection's own identity as an `Amarula.Address` — our phone-number address,
   carrying our companion **device** id (`creds.me.id`).
 
-  Total: before login (no identity yet) it returns `Amarula.Address.empty/0`, so you
-  never have to nil-guard. `own_address(conn).device` is `nil` for the primary
+  Always returns an `Address`: before login (no identity yet) it returns
+  `Amarula.Address.empty/0`, so you never have to nil-check. `own_address(conn).device`
+  is `nil` for the primary
   device / phone, or the linked-device number (e.g. `29`) for a companion like this app.
 
   Use it to detect messages this app/device itself sent — e.g. to ignore the agent's
@@ -435,8 +429,8 @@ defmodule Amarula do
   defdelegate send_chatstate(conn, jid, type), to: Connection
 
   @doc "Subscribe to a contact's presence updates."
-  @spec presence_subscribe(conn(), jid()) :: :ok
-  defdelegate presence_subscribe(conn, jid), to: Connection
+  @spec subscribe_presence(conn(), jid()) :: :ok
+  defdelegate subscribe_presence(conn, jid), to: Connection, as: :presence_subscribe
 
   @doc """
   Request a link-code (phone-number) pairing code for `phone` (E.164 digits;
@@ -460,13 +454,8 @@ defmodule Amarula do
   Send a read receipt for `message_ids` in chat `jid` (pass `participant` for a
   group sender). Marks those messages read on the sender's side.
   """
-  @spec mark_read(conn(), [String.t(), ...], jid(), jid() | nil) :: :ok
-  def mark_read(conn, message_ids, jid, participant \\ nil),
-    do: Connection.mark_read(conn, message_ids, jid, participant)
-
-  @doc "Send a pre-built `%Proto.Message{}` to `jid`."
-  @spec send_message(conn(), jid(), Proto.Message.t()) :: send_result()
-  defdelegate send_message(conn, jid, message), to: Connection
+  @spec mark_read(conn(), jid(), [String.t(), ...], jid() | nil) :: :ok
+  defdelegate mark_read(conn, jid, message_ids, participant \\ nil), to: Connection
 
   @doc """
   Send a poll to `jid`. Returns `{:ok, msg_id, message_secret}` — keep the
@@ -491,213 +480,12 @@ defmodule Amarula do
   def send_location(conn, jid, lat, lng, opts \\ []),
     do: Connection.send_location(conn, jid, lat, lng, opts)
 
-  @doc "Fetch a group's metadata (`%Amarula.Group{}`). `group` is an `Address` or jid."
-  @spec group_metadata(conn(), jid()) :: {:ok, Amarula.Group.t()} | {:error, term()}
-  defdelegate group_metadata(conn, group), to: Connection
-
-  @doc "List all groups we participate in (`[%Amarula.Group{}]`)."
-  @spec list_groups(conn()) :: {:ok, [Amarula.Group.t()]} | {:error, term()}
-  defdelegate list_groups(conn), to: Connection
-
-  ## Group management ----------------------------------------------------------
-  #
-  # `group` is a `@g.us` jid string (e.g. from group metadata). These build a
-  # `w:g2` IQ via `Amarula.Protocol.Groups.Ops` and parse the reply.
-
-  alias Amarula.Protocol.Groups.Ops, as: GroupOps
-
-  @typedoc "Affected participant in a group op: `%{jid, status}` (status \"200\" = ok)."
-  @type affected :: %{jid: String.t() | nil, status: String.t()}
-
-  @doc """
-  Create a group named `subject` with the given participant jids. Returns the new
-  group's metadata.
-  """
-  @spec group_create(conn(), String.t(), [String.t()]) ::
-          {:ok, Amarula.Group.t()} | {:error, term()}
-  def group_create(conn, subject, participants) do
-    Connection.group_op(conn, GroupOps.create(subject, participants), &group_meta_result/1)
-  end
-
-  @doc "Leave a group."
-  @spec group_leave(conn(), String.t()) :: :ok | {:error, term()}
-  def group_leave(conn, group) do
-    Connection.group_op(conn, GroupOps.leave(group), &ok_result/1)
-  end
-
-  @doc "Change a group's subject (title)."
-  @spec group_update_subject(conn(), String.t(), String.t()) :: :ok | {:error, term()}
-  def group_update_subject(conn, group, subject) do
-    Connection.group_op(conn, GroupOps.update_subject(group, subject), &ok_result/1)
-  end
-
-  @doc "Set (or clear, with `nil`/`\"\"`) a group's description."
-  @spec group_update_description(conn(), String.t(), String.t() | nil) :: :ok | {:error, term()}
-  def group_update_description(conn, group, description) do
-    Connection.group_op(conn, GroupOps.update_description(group, description), &ok_result/1)
-  end
-
-  @doc """
-  Add/remove/promote/demote participants. `action` is `:add`/`:remove`/`:promote`/
-  `:demote`. Returns the affected participants with per-jid status.
-  """
-  @spec group_participants(conn(), String.t(), [String.t()], GroupOps.action()) ::
-          {:ok, [affected()]} | {:error, term()}
-  def group_participants(conn, group, participants, action) do
-    Connection.group_op(conn, GroupOps.participants_update(group, participants, action), fn r ->
-      r |> reply_node() |> GroupOps.parse_participants(action) |> reply_or_error(r)
-    end)
-  end
-
-  @doc """
-  Change a group setting: `:announcement`/`:not_announcement` (only admins post),
-  `:locked`/`:unlocked` (only admins edit info).
-  """
-  @spec group_setting(conn(), String.t(), GroupOps.setting()) :: :ok | {:error, term()}
-  def group_setting(conn, group, setting) do
-    Connection.group_op(conn, GroupOps.setting_update(group, setting), &ok_result/1)
-  end
-
-  @doc "Who may add members: `:admin_add` (admins only) or `:all_member_add`."
-  @spec group_member_add_mode(conn(), String.t(), :admin_add | :all_member_add) ::
-          :ok | {:error, term()}
-  def group_member_add_mode(conn, group, mode) do
-    Connection.group_op(conn, GroupOps.member_add_mode(group, mode), &ok_result/1)
-  end
-
-  @doc "Turn join-approval (admin approves joiners) `:on`/`:off`."
-  @spec group_join_approval_mode(conn(), String.t(), :on | :off) :: :ok | {:error, term()}
-  def group_join_approval_mode(conn, group, mode) do
-    Connection.group_op(conn, GroupOps.join_approval_mode(group, mode), &ok_result/1)
-  end
-
-  @doc "Toggle disappearing messages. `0` = off; otherwise seconds of expiration."
-  @spec group_ephemeral(conn(), String.t(), non_neg_integer()) :: :ok | {:error, term()}
-  def group_ephemeral(conn, group, expiration) do
-    Connection.group_op(conn, GroupOps.toggle_ephemeral(group, expiration), &ok_result/1)
-  end
-
-  @doc "Fetch the group's invite code."
-  @spec group_invite_code(conn(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def group_invite_code(conn, group) do
-    Connection.group_op(conn, GroupOps.invite_code(group), fn r ->
-      r |> reply_node() |> GroupOps.parse_invite_code() |> reply_or_error(r)
-    end)
-  end
-
-  @doc "Revoke + regenerate the group's invite code. Returns the new code."
-  @spec group_revoke_invite(conn(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def group_revoke_invite(conn, group) do
-    Connection.group_op(conn, GroupOps.revoke_invite(group), fn r ->
-      r |> reply_node() |> GroupOps.parse_invite_code() |> reply_or_error(r)
-    end)
-  end
-
-  @doc "Join a group by invite `code`. Returns the joined group's jid."
-  @spec group_accept_invite(conn(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def group_accept_invite(conn, code) do
-    Connection.group_op(conn, GroupOps.accept_invite(code), fn r ->
-      r |> reply_node() |> GroupOps.parse_accepted_jid() |> reply_or_error(r)
-    end)
-  end
-
-  @doc "Look up group metadata from an invite `code` without joining."
-  @spec group_invite_info(conn(), String.t()) :: {:ok, Amarula.Group.t()} | {:error, term()}
-  def group_invite_info(conn, code) do
-    Connection.group_op(conn, GroupOps.invite_info(code), &group_meta_result/1)
-  end
-
-  @doc "List pending join-approval requests (a list of attr maps)."
-  @spec group_requests(conn(), String.t()) :: {:ok, [map()]} | {:error, term()}
-  def group_requests(conn, group) do
-    Connection.group_op(conn, GroupOps.request_list(group), fn r ->
-      r |> reply_node() |> GroupOps.parse_request_list() |> reply_or_error(r)
-    end)
-  end
-
-  @doc "Approve/reject pending join requests for `participants`. `action` is `:approve`/`:reject`."
-  @spec group_request_update(conn(), String.t(), [String.t()], :approve | :reject) ::
-          {:ok, [affected()]} | {:error, term()}
-  def group_request_update(conn, group, participants, action) do
-    Connection.group_op(conn, GroupOps.request_update(group, participants, action), fn r ->
-      r |> reply_node() |> GroupOps.parse_request_update(action) |> reply_or_error(r)
-    end)
-  end
-
-  ## Contacts & profile --------------------------------------------------------
-  #
-  # These live in focused submodules (`Amarula.Contacts`, `Amarula.Profile`) to
-  # keep the facade thin; they are re-exported here so the flat `Amarula.*` call
-  # style keeps working. See those modules for the full docs.
-
-  @doc "Check which phone numbers are on WhatsApp. See `Amarula.Contacts.on_whatsapp/2`."
-  defdelegate on_whatsapp(conn, phones), to: Amarula.Contacts
-
-  @doc "Fetch users' status/bio text. See `Amarula.Contacts.fetch_status/2`."
-  defdelegate fetch_status(conn, jids), to: Amarula.Contacts
-
-  @doc "Resolve + persist a contact's LID↔PN mapping. See `Amarula.Contacts.resolve_lid/2`."
-  defdelegate resolve_lid(conn, phones), to: Amarula.Contacts
-
-  @doc "Fetch a profile-picture URL. See `Amarula.Profile.picture_url/3`."
-  defdelegate profile_picture_url(conn, jid, type \\ :preview),
-    to: Amarula.Profile,
-    as: :picture_url
-
-  @doc "Set your profile status/bio. See `Amarula.Profile.update_status/2`."
-  defdelegate update_profile_status(conn, status), to: Amarula.Profile, as: :update_status
-
-  @doc "Set a profile picture from JPEG bytes. See `Amarula.Profile.update_picture/3`."
-  defdelegate update_profile_picture(conn, jid, jpeg_bytes),
-    to: Amarula.Profile,
-    as: :update_picture
-
-  @doc "Remove a profile picture. See `Amarula.Profile.remove_picture/2`."
-  defdelegate remove_profile_picture(conn, jid), to: Amarula.Profile, as: :remove_picture
-
-  # --- group reply transforms (run in the connection process) ---
-
-  # A reply is {:ok, node} | {:error, node}; pull the node (parsers take a node).
-  defp reply_node({:ok, node}), do: node
-  defp reply_node({:error, node}), do: node
-
-  # Pass a parser's {:ok,_}/{:error,_} through, but if the IQ itself errored,
-  # surface the {:group_op_failed, code, text} from the <error> node instead.
-  defp reply_or_error(_parsed, {:error, node}), do: {:error, iq_error(node)}
-  defp reply_or_error(parsed, {:ok, _node}), do: parsed
-
-  defp ok_result({:ok, _node}), do: :ok
-  defp ok_result({:error, node}), do: {:error, iq_error(node)}
-
-  defp group_meta_result({:ok, node}) do
-    with {:ok, meta} <- Metadata.parse(node),
-         do: {:ok, Amarula.Group.from_metadata(meta)}
-  end
-
-  defp group_meta_result({:error, node}), do: {:error, iq_error(node)}
-
-  # Extract {:group_op_failed, code, text} from an error IQ's <error> child.
-  defp iq_error(%Node{} = node) do
-    case NodeUtils.get_binary_node_child(node, "error") do
-      %Node{} = err ->
-        {:group_op_failed, NodeUtils.get_attr(err, "code"), NodeUtils.get_attr(err, "text")}
-
-      _ ->
-        {:error, node}
-    end
-  end
-
-  defp iq_error(other), do: other
+  # Contacts, profile and groups live in their own modules:
+  #   * `Amarula.Contacts` — on_whatsapp/2, fetch_status/2, resolve_lid/2
+  #   * `Amarula.Profile`  — picture_url/3, update_picture/3, remove_picture/2, update_status/2
+  #   * `Amarula.Group`    — create/3, leave/2, metadata/2, list/1, invites, requests, …
 
   ## Replies / quoted messages -----------------------------------------------
-
-  @doc """
-  Ask the phone to re-deliver a message by key (a PEER_DATA_OPERATION
-  placeholder-resend). The message arrives **asynchronously** later via the normal
-  `:messages_upsert` event. Returns `{:ok, request_msg_id}`.
-  """
-  @spec request_resend(conn(), message_key()) :: send_result()
-  defdelegate request_resend(conn, message_key), to: Connection
 
   @doc """
   Ask the phone for older history of a chat (a PEER_DATA_OPERATION on-demand
@@ -734,12 +522,12 @@ defmodule Amarula do
 
   def resolve_quoted(conn, %Amarula.Msg{quoted: q} = msg) do
     key = %Proto.MessageKey{
-      remoteJid: Amarula.Address.to_wire!(q.channel || msg.channel),
+      remoteJid: Amarula.Address.to_jid!(q.channel || msg.channel),
       id: q.id,
-      participant: q.from && Amarula.Address.to_wire!(q.from)
+      participant: q.from && Amarula.Address.to_jid!(q.from)
     }
 
-    case request_resend(conn, key) do
+    case Connection.request_resend(conn, key) do
       {:ok, request_id} -> {:requested, request_id}
       {:error, _} = err -> err
     end
@@ -759,11 +547,19 @@ defmodule Amarula do
 
   @doc """
   Send media of `type` (`:image`/`:video`/`:audio`/`:document`/`:sticker`).
-  `opts` may carry `:mimetype`, `:caption`, `:width`, `:height`, `:seconds`,
-  `:ptt`, `:file_name`, `:title`.
+
+  `data` is the **raw file bytes** — not a path, not base64. Read the file
+  yourself first:
+
+      bytes = File.read!("photo.jpg")
+      Amarula.send_media(conn, jid, :image, bytes, caption: "hi")
+
+  Amarula encrypts and uploads the bytes for you. `opts` may carry `:mimetype`
+  (auto-detected per type if omitted), `:caption`, `:width`, `:height`,
+  `:seconds`, `:ptt` (voice note), `:file_name`, `:title`.
   """
-  @spec send_media(conn(), media_type(), jid(), binary(), keyword()) :: send_result()
-  defdelegate send_media(conn, type, jid, data, opts \\ []), to: Connection
+  @spec send_media(conn(), jid(), media_type(), binary(), keyword()) :: send_result()
+  defdelegate send_media(conn, jid, type, data, opts \\ []), to: Connection
 
   ## Receiving -----------------------------------------------------------------
   #

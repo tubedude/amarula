@@ -8,8 +8,7 @@ defmodule Amarula.Contacts do
   and turn the reply into friendly maps carrying `Amarula.Address` values — never
   raw jid strings, matching `Amarula.Msg`/`Amarula.Group`.
 
-  These are re-exported from the `Amarula` facade (`Amarula.on_whatsapp/2`,
-  `Amarula.fetch_status/2`, `Amarula.resolve_lid/2`).
+  Call them on this module: `on_whatsapp/2`, `fetch_status/2`, `resolve_lid/2`.
   """
 
   alias Amarula.Address
@@ -69,7 +68,7 @@ defmodule Amarula.Contacts do
   @spec fetch_status(conn(), [String.t() | Address.t()] | String.t() | Address.t()) ::
           {:ok, [status()]} | {:error, term()}
   def fetch_status(conn, jids) do
-    jids = jids |> List.wrap() |> Enum.map(&Address.to_wire!/1)
+    jids = jids |> List.wrap() |> Enum.map(&Address.to_jid!/1)
 
     query =
       USync.new()
@@ -86,7 +85,7 @@ defmodule Amarula.Contacts do
 
   @doc """
   Resolve each phone number to its privacy **LID** (`<n>@lid`) and persist the
-  LID↔PN mapping, so `Amarula.canonical_jid/2` (and the Signal addressing the send
+  LID↔PN mapping, so the LID/PN mapping (and the Signal addressing the send
   pipeline uses) resolve that contact afterwards.
 
   `on_whatsapp/2` returns only the PN, so it can't establish a mapping; this runs

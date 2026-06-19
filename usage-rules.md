@@ -15,6 +15,10 @@ agents writing consumer code against the library, not for working on the library
 - **A `conn` is a pid, a registered name, or a `:via` tuple.** Get one from
   `connect/2`; resolve a profile back to a live handle with `Amarula.whereis/1` or get a
   restart-safe handle with `Amarula.via/1`.
+- **Don't store the raw pid from `connect/2` long-term.** On a crash the connection
+  restarts under a new pid and the old one is dead. For anything held across time
+  (GenServer state, a long-lived process), store the **profile** and use
+  `Amarula.via(profile)` — it always resolves to the current pid.
 - **A `:profile` is the account's identity + storage scope.** Naming a profile is what
   lets the next run reconnect without a fresh QR. Pass `%{profile: :name}` to `new/1`.
 - **Amarula is NOT a message store.** It keeps only what the protocol needs (creds,
@@ -48,11 +52,11 @@ List stored accounts without connecting via `Amarula.list_profiles/1` /
 
 ## Pairing (first run)
 
-Events arrive as `{:whatsapp, type, data}`. On first run you receive a QR code to render:
+Events arrive as `{:amarula, type, data}`. On first run you receive a QR code to render:
 
 ```elixir
 receive do
-  {:whatsapp, :connection_update, %{qr: qr}} when is_binary(qr) ->
+  {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
     qr |> QRCode.create() |> QRCode.render(:png) |> QRCode.save("qr.png")
 end
 ```
@@ -77,9 +81,8 @@ A send target (`jid`) is either:
 - an **`Amarula.Address`** — build one from a bare number with `Amarula.Address.pn/1`.
 
 WhatsApp multi-device uses both **LID** (`<n>@lid`) and **phone-number**
-(`<n>@s.whatsapp.net`) addresses for the same person. Canonicalize an inbound jid to its
-phone-number form with `Amarula.canonical_jid(conn, jid)` (safe to call on any jid; it
-returns non-LID/unmapped jids unchanged).
+(`<n>@s.whatsapp.net`) addresses for the same person. Amarula tracks the mapping and
+resolves addressing for you on send, so you rarely need to convert by hand.
 
 ## Sending
 
@@ -89,7 +92,7 @@ recipients complete independently.
 
 ```elixir
 Amarula.send_text(conn, jid, "hello")
-Amarula.send_media(conn, :image, jid, image_bytes, caption: "hi")   # :image|:video|:audio|:document|:sticker
+Amarula.send_media(conn, jid, :image, File.read!("pic.jpg"), caption: "hi")   # raw bytes, not a path/base64; :image|:video|:audio|:document|:sticker
 Amarula.send_reaction(conn, message_key, "👍")   # "" removes the reaction
 Amarula.send_edit(conn, message_key, "fixed typo")
 Amarula.send_revoke(conn, message_key)            # delete for everyone
@@ -104,17 +107,17 @@ A `message_key` (for reactions/edits/deletes) is the **`key` field of a message 
 received** — that is how you point at a specific message.
 
 Presence/typing: `set_presence/2` (`:available`/`:unavailable`),
-`send_chatstate/3` (`:composing`/`:recording`/`:paused`), `presence_subscribe/2`,
-`mark_read/4`.
+`send_chatstate/3` (`:composing`/`:recording`/`:paused`), `subscribe_presence/2`,
+`mark_read/4` (`mark_read(conn, jid, message_ids, participant \\ nil)`).
 
 ## Receiving
 
-Incoming events arrive at `parent_pid` as `{:whatsapp, type, data}`. The main one is
+Incoming events arrive at `parent_pid` as `{:amarula, type, data}`. The main one is
 `:messages_upsert`, whose `data.messages` is `[%Amarula.Msg{}]` — the consumer-friendly
 view (`type` + `content`), **never the raw protobuf**. Match on `msg.type`.
 
 ```elixir
-def handle_info({:whatsapp, :messages_upsert, %{messages: messages}}, state) do
+def handle_info({:amarula, :messages_upsert, %{messages: messages}}, state) do
   for msg <- messages, do: handle_message(msg)
   {:noreply, state}
 end
@@ -164,21 +167,26 @@ demand with `Amarula.fetch_history(conn, oldest_key, oldest_ts, count)`; it arri
 
 ## Groups
 
-Read: `group_metadata(conn, group)`, `list_groups(conn)`. Group jids are `"<id>@g.us"`.
+All group operations live on **`Amarula.Group`**. Group jids are `"<id>@g.us"`.
+
+Read: `Amarula.Group.metadata(conn, group)`, `Amarula.Group.list(conn)`.
 
 Manage (all return `:ok`/`{:ok, ...}`/`{:error, {:group_op_failed, code, text}}`):
-`group_create/3`, `group_leave/2`, `group_update_subject/3`,
-`group_update_description/3`, `group_participants/4` (`:add`/`:remove`/`:promote`/
-`:demote`), `group_setting/3` (`:announcement`/`:locked` …), `group_member_add_mode/3`,
-`group_join_approval_mode/3`, `group_ephemeral/3`, `group_invite_code/2`,
-`group_revoke_invite/2`, `group_accept_invite/2`, `group_invite_info/2`,
-`group_requests/2`, `group_request_update/4`.
+`Group.create/3`, `Group.leave/2`, `Group.update_subject/3`,
+`Group.update_description/3`, `Group.participants/4` (`:add`/`:remove`/`:promote`/
+`:demote`), `Group.update_setting/3` (`:announcement`/`:locked` …),
+`Group.member_add_mode/3`, `Group.join_approval_mode/3`, `Group.toggle_ephemeral/3`,
+`Group.invite_code/2`, `Group.revoke_invite/2`, `Group.accept_invite/2`,
+`Group.invite_info/2`, `Group.requests/2`, `Group.request_update/4`.
 
 ## Contacts & profile
 
-`on_whatsapp(conn, phones)`, `fetch_status(conn, jids)`, `resolve_lid(conn, phones)`,
-`profile_picture_url(conn, jid, type)`, `update_profile_status/2`,
-`update_profile_picture/3`, `remove_profile_picture/2`.
+Contacts on **`Amarula.Contacts`**: `on_whatsapp(conn, phones)`,
+`fetch_status(conn, jids)`, `resolve_lid(conn, phones)`.
+
+Profile on **`Amarula.Profile`**: `picture_url(conn, jid, type)`,
+`update_status(conn, status)`, `update_picture(conn, jid, jpeg)`,
+`remove_picture(conn, jid)`.
 
 ## Testing your bot
 
@@ -197,7 +205,7 @@ Amarula.Testing.deliver_text(conn, from: "15551234567@s.whatsapp.net", text: "pi
 
 # Your bot receives :messages_upsert and replies. In sandbox mode the reply
 # returns {:ok, id} and sends nothing — no encrypt, no frame, no real message.
-assert_receive {:whatsapp, :messages_upsert, %{messages: [%Amarula.Msg{}]}}
+assert_receive {:amarula, :messages_upsert, %{messages: [%Amarula.Msg{}]}}
 ```
 
 - `start_offline/1` returns the same `conn` handle as `connect/2`; pass it to
@@ -217,5 +225,6 @@ assert_receive {:whatsapp, :messages_upsert, %{messages: [%Amarula.Msg{}]}}
 - Writing credential-persistence code — Amarula owns creds; just name a profile.
 - Reformatting the QR string, or expecting a built-in QR image — render the raw string yourself.
 - Reaching for a global/singleton connection — every call takes an explicit `conn`.
+- Stashing the raw pid from `connect/2` in long-lived state — it dies on a restart; store the profile and use `Amarula.via/1`.
 - Assuming inbound media includes bytes — call `download_media/1`.
 - Reaching for Mox to test your bot — use `Amarula.Testing` (offline sandbox) instead.

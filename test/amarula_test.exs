@@ -47,12 +47,6 @@ defmodule AmarulaTest do
     assert_received {:got, {:send_text, "x@s.whatsapp.net", "hi"}}
   end
 
-  test "send_message forwards the proto message", %{conn: conn} do
-    msg = %Proto.Message{conversation: "hi"}
-    assert {:ok, "MSGID"} = Amarula.send_message(conn, "x@s.whatsapp.net", msg)
-    assert_received {:got, {:send_message, "x@s.whatsapp.net", ^msg}}
-  end
-
   test "send_reaction builds a reaction and sends to the target's remoteJid", %{conn: conn} do
     key = %Proto.MessageKey{remoteJid: "x@s.whatsapp.net", id: "ABC"}
     assert {:ok, "MSGID"} = Amarula.send_reaction(conn, key, "👍")
@@ -72,11 +66,11 @@ defmodule AmarulaTest do
     assert rev.protocolMessage.type == :REVOKE
   end
 
-  test "send_media forwards {:send_media, type, jid, data, opts}", %{conn: conn} do
-    Amarula.send_media(conn, :document, "x@s.whatsapp.net", <<1, 2, 3>>, title: "t")
+  test "send_media forwards {:send_media, jid, type, data, opts}", %{conn: conn} do
+    Amarula.send_media(conn, "x@s.whatsapp.net", :document, <<1, 2, 3>>, title: "t")
 
     assert_received {:got,
-                     {:send_media, :document, "x@s.whatsapp.net", <<1, 2, 3>>, [title: "t"]}}
+                     {:send_media, "x@s.whatsapp.net", :document, <<1, 2, 3>>, [title: "t"]}}
   end
 
   test "connection_state and disconnect delegate", %{conn: conn} do
@@ -100,7 +94,7 @@ defmodule AmarulaTest do
 
   test "a failed group op surfaces {:group_op_failed, code, text}", %{conn: conn} do
     StubConn.set_group_reply(conn, error_iq("403", "forbidden"))
-    assert {:error, {:group_op_failed, "403", "forbidden"}} = Amarula.group_leave(conn, "g@g.us")
+    assert {:error, {:group_op_failed, "403", "forbidden"}} = Amarula.Group.leave(conn, "g@g.us")
     assert_received {:got, {:group_op, _iq}}
   end
 
@@ -114,7 +108,7 @@ defmodule AmarulaTest do
        }}
 
     StubConn.set_group_reply(conn, reply)
-    assert {:ok, "ABC123"} = Amarula.group_invite_code(conn, "g@g.us")
+    assert {:ok, "ABC123"} = Amarula.Group.invite_code(conn, "g@g.us")
   end
 
   test "group_create maps a result to an %Amarula.Group{}", %{conn: conn} do
@@ -133,7 +127,7 @@ defmodule AmarulaTest do
        }}
 
     StubConn.set_group_reply(conn, reply)
-    assert {:ok, %Amarula.Group{subject: "My Group"}} = Amarula.group_create(conn, "My Group", [])
+    assert {:ok, %Amarula.Group{subject: "My Group"}} = Amarula.Group.create(conn, "My Group", [])
   end
 
   test "a successful set-style group op returns :ok", %{conn: conn} do
@@ -142,7 +136,7 @@ defmodule AmarulaTest do
       {:ok, %Node{tag: "iq", attrs: %{"type" => "result"}, content: []}}
     )
 
-    assert :ok = Amarula.group_update_subject(conn, "g@g.us", "New Name")
+    assert :ok = Amarula.Group.update_subject(conn, "g@g.us", "New Name")
   end
 
   # --- download_media dispatch ---
@@ -166,7 +160,7 @@ defmodule AmarulaTest do
     assert_received {:got, :get_auth_creds}
   end
 
-  test "own_address/1 is total: empty Address when no creds / no suffix" do
+  test "own_address/1 always returns an Address: empty Address when no creds / no suffix" do
     # A stub whose creds vary, to exercise the no-suffix and pre-login branches.
     defmodule CredStub do
       use GenServer
@@ -191,10 +185,10 @@ defmodule AmarulaTest do
     Amarula.send_chatstate(conn, "x@s.whatsapp.net", :composing)
     assert_received {:got, {:send_chatstate, "x@s.whatsapp.net", :composing}}
 
-    Amarula.presence_subscribe(conn, "x@s.whatsapp.net")
+    Amarula.subscribe_presence(conn, "x@s.whatsapp.net")
     assert_received {:got, {:presence_subscribe, "x@s.whatsapp.net"}}
 
-    Amarula.mark_read(conn, ["ID1"], "x@s.whatsapp.net")
-    assert_received {:got, {:mark_read, ["ID1"], "x@s.whatsapp.net", nil}}
+    Amarula.mark_read(conn, "x@s.whatsapp.net", ["ID1"])
+    assert_received {:got, {:mark_read, "x@s.whatsapp.net", ["ID1"], nil}}
   end
 end

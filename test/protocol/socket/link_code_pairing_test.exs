@@ -63,7 +63,7 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
       assert code =~ ~r/^[123456789ABCDEFGHJKLMNPQRSTVWXYZ]{8}$/
 
       # Consumer is told the code.
-      assert_receive {:whatsapp, :pairing_code, %{code: ^code}}
+      assert_receive {:amarula, :pairing_code, %{code: ^code}}
 
       iq = recv_frame()
       assert iq.tag == "iq"
@@ -105,7 +105,7 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
       assert {:ok, "ABCD2345"} =
                Connection.request_pairing_code(pid, "15551234567", custom_code: "ABCD2345")
 
-      assert_receive {:whatsapp, :pairing_code, %{code: "ABCD2345"}}
+      assert_receive {:amarula, :pairing_code, %{code: "ABCD2345"}}
     end
 
     test "rejects a custom code that isn't exactly 8 chars", %{pid: pid} do
@@ -117,7 +117,7 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
   describe "link_code_companion_reg notification (finish)" do
     test "finishes pairing: companion_finish IQ, registered=true, adv re-keyed", %{pid: pid} do
       assert {:ok, code} = Connection.request_pairing_code(pid, "15551234567")
-      assert_receive {:whatsapp, :pairing_code, %{code: ^code}}
+      assert_receive {:amarula, :pairing_code, %{code: ^code}}
       _hello = recv_frame()
 
       before = Connection.get_auth_creds(pid)
@@ -158,7 +158,7 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
       after_creds = Connection.get_auth_creds(pid)
       assert after_creds.registered
       assert after_creds.adv_secret_key != before.adv_secret_key
-      assert_receive {:whatsapp, :pairing_success, %{via: :link_code}}
+      assert_receive {:amarula, :pairing_success, %{via: :link_code}}
     end
 
     test "a fieldless notification is skipped, not a crash (Baileys #2600)", %{pid: pid} do

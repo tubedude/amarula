@@ -10,6 +10,7 @@ defmodule Amarula.Protocol.Groups.Ops do
   `Connection` (via `send_waiter_iq`).
   """
 
+  alias Amarula.Address
   alias Amarula.Protocol.Binary.{Node, NodeUtils}
 
   @group_server "@g.us"
@@ -189,8 +190,11 @@ defmodule Amarula.Protocol.Groups.Ops do
     end
   end
 
-  @doc "Parse pending join requests into a list of attr maps."
-  @spec parse_request_list(Node.t()) :: {:ok, [map()]}
+  @doc """
+  Parse pending join requests into a list of clean maps:
+  `%{jid: Address, requested_at: integer | nil}` (the requester and when they asked).
+  """
+  @spec parse_request_list(Node.t()) :: {:ok, [%{jid: Address.t(), requested_at: integer | nil}]}
   def parse_request_list(reply) do
     requests =
       case NodeUtils.get_binary_node_child(reply, "membership_approval_requests") do
@@ -198,7 +202,23 @@ defmodule Amarula.Protocol.Groups.Ops do
         _ -> []
       end
 
-    {:ok, Enum.map(requests, & &1.attrs)}
+    {:ok, Enum.map(requests, &request_from_attrs/1)}
+  end
+
+  defp request_from_attrs(%Node{attrs: attrs}) do
+    %{
+      jid: attrs |> Map.get("jid", "") |> Address.parse(),
+      requested_at: parse_int(Map.get(attrs, "t"))
+    }
+  end
+
+  defp parse_int(nil), do: nil
+
+  defp parse_int(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, _} -> n
+      :error -> nil
+    end
   end
 
   @doc "Parse the affected participants from an approve/reject reply."

@@ -60,11 +60,11 @@ defmodule Amarula.Examples.E2E.Plugins do
       Plugin.on_recv(conn, fn ctx ->
         with {:text, _body} <- MessageContent.classify(ctx.message),
              true <- Address.same_account?(ctx.from, from) do
-          key = %Proto.MessageKey{remoteJid: Address.to_wire(ctx.from), id: ctx.id, fromMe: false}
+          key = %Proto.MessageKey{remoteJid: Address.to_jid(ctx.from), id: ctx.id, fromMe: false}
 
           Task.start(fn ->
             Connection.send_reaction(server, key, emoji)
-            Connection.mark_read(server, [ctx.id], ctx.from)
+            Connection.mark_read(server, ctx.from, [ctx.id])
           end)
         end
 

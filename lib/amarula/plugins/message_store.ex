@@ -5,7 +5,7 @@ defmodule Amarula.Plugins.MessageStore do
   Amarula is a library — it does not keep long-term message history itself. This
   optional plugin shows the intended pattern for a consumer-side store:
 
-    * subscribe to the socket's `{:whatsapp, :messages_upsert, ..}` events and
+    * subscribe to the socket's `{:amarula, :messages_upsert, ..}` events and
       persist incoming messages,
     * remember our own outgoing messages,
     * expose `get_message/2`, which the library calls (via the `:get_message`
@@ -24,7 +24,7 @@ defmodule Amarula.Plugins.MessageStore do
         |> Map.put(:get_message, Amarula.Plugins.MessageStore.get_message_fun(store))
 
       # Make the store the socket's parent_pid so it sees the events directly,
-      # or forward `{:whatsapp, :messages_upsert, ..}` to it from your own process.
+      # or forward `{:amarula, :messages_upsert, ..}` to it from your own process.
       {:ok, socket} = Amarula.new(config) |> Amarula.connect(parent_pid: store)
   """
 
@@ -95,7 +95,7 @@ defmodule Amarula.Plugins.MessageStore do
   # Persist incoming messages delivered as socket events (when used as parent_pid).
   @impl true
   def handle_info(
-        {:whatsapp, :messages_upsert, %{from: from, id: id, messages: messages}},
+        {:amarula, :messages_upsert, %{from: from, id: id, messages: messages}},
         %{table: table} = state
       ) do
     for message <- messages do

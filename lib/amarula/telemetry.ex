@@ -2,7 +2,7 @@ defmodule Amarula.Telemetry do
   @moduledoc """
   `:telemetry` events emitted by Amarula — the operational-observability surface.
 
-  This is **orthogonal** to the consumer event stream (`{:whatsapp, type, data}`
+  This is **orthogonal** to the consumer event stream (`{:amarula, type, data}`
   delivered to `parent_pid`): those are application callbacks carrying real
   content/JIDs; these are metrics for operators (counts, durations, kinds).
 

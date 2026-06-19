@@ -25,7 +25,7 @@ defmodule Amarula.TestingTest do
   test "deliver_text reaches the consumer as a text Msg", %{conn: conn} do
     Amarula.Testing.deliver_text(conn, from: @peer, text: "hello", id: "MSG1")
 
-    assert_receive {:whatsapp, :messages_upsert, %{id: "MSG1", messages: [msg]}}
+    assert_receive {:amarula, :messages_upsert, %{id: "MSG1", messages: [msg]}}
     assert %Amarula.Msg{type: :text, content: "hello"} = msg
     assert msg.channel.user == "10000000001"
   end
@@ -37,7 +37,7 @@ defmodule Amarula.TestingTest do
 
     Amarula.Testing.deliver(conn, proto, from: @peer)
 
-    assert_receive {:whatsapp, :messages_upsert, %{messages: [msg]}}
+    assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
     assert %Amarula.Msg{type: :media, content: %{kind: :image}} = msg
     assert msg.content.media.caption == "look"
   end
@@ -45,21 +45,21 @@ defmodule Amarula.TestingTest do
   test "pushname rides on the stanza notify attr", %{conn: conn} do
     Amarula.Testing.deliver_text(conn, from: @peer, text: "hi", notify: "Alice")
 
-    assert_receive {:whatsapp, :messages_upsert, %{messages: [%Amarula.Msg{pushname: "Alice"}]}}
+    assert_receive {:amarula, :messages_upsert, %{messages: [%Amarula.Msg{pushname: "Alice"}]}}
   end
 
   test "no network: outbound frames go to the sink, not a socket", %{conn: conn} do
     # The only outbound frame for an inbound message is the delivery receipt.
     Amarula.Testing.deliver_text(conn, from: @peer, text: "hi")
 
-    assert_receive {:whatsapp, :messages_upsert, _}
+    assert_receive {:amarula, :messages_upsert, _}
     assert_receive {:frame_out, %Amarula.Protocol.Binary.Node{tag: "receipt"}}
   end
 
   test "a random id is generated when none is given", %{conn: conn} do
     Amarula.Testing.deliver_text(conn, from: @peer, text: "hi")
 
-    assert_receive {:whatsapp, :messages_upsert, %{id: id}}
+    assert_receive {:amarula, :messages_upsert, %{id: id}}
     assert is_binary(id)
   end
 
@@ -76,7 +76,7 @@ defmodule Amarula.TestingTest do
   test "full receive -> reply loop runs against the sandbox", %{conn: conn} do
     Amarula.Testing.deliver_text(conn, from: @peer, text: "ping")
 
-    assert_receive {:whatsapp, :messages_upsert, %{messages: [%Amarula.Msg{channel: chan}]}}
+    assert_receive {:amarula, :messages_upsert, %{messages: [%Amarula.Msg{channel: chan}]}}
 
     assert {:ok, _id} = Amarula.send_text(conn, Amarula.Address.to_jid!(chan), "pong")
   end

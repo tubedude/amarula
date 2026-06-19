@@ -7,7 +7,7 @@ defmodule Amarula.Connection do
   It is also the **consumer's endpoint** — the pid `Amarula.connect/2` returns.
   Consumer calls (`connect`, `send_text`, `group_*`, …) land here directly, and
   consumer events go straight to the connection's `parent_pid` as
-  `{:whatsapp, type, data}` (no relay process, no subscriber registry).
+  `{:amarula, type, data}` (no relay process, no subscriber registry).
 
   Per-send work stays tiny: Connection only frames + writes + correlates (acks,
   IQ replies). The heavy USync/bundle waits and Signal encrypt run on the
@@ -153,7 +153,7 @@ defmodule Amarula.Connection do
 
   `opts`:
     * `:name`       — registered name (default `__MODULE__`)
-    * `:parent_pid` — process to receive `{:whatsapp, type, data}` events
+    * `:parent_pid` — process to receive `{:amarula, type, data}` events
   """
   def start_link(conn, opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -375,10 +375,10 @@ defmodule Amarula.Connection do
     do: GenServer.call(pid, {:presence_subscribe, jid})
 
   @doc "Send a read receipt for `message_ids` in chat `jid` (optional `participant`)."
-  @spec mark_read(GenServer.server(), [String.t(), ...], Amarula.jid(), Amarula.jid() | nil) ::
+  @spec mark_read(GenServer.server(), Amarula.jid(), [String.t(), ...], Amarula.jid() | nil) ::
           :ok
-  def mark_read(pid \\ __MODULE__, message_ids, jid, participant \\ nil),
-    do: GenServer.call(pid, {:mark_read, message_ids, jid, participant})
+  def mark_read(pid \\ __MODULE__, jid, message_ids, participant \\ nil),
+    do: GenServer.call(pid, {:mark_read, jid, message_ids, participant})
 
   @doc "Fetch one group's metadata. `group` is an `Address` or the `@g.us` jid string."
   @spec group_metadata(GenServer.server(), Amarula.jid()) ::
@@ -484,14 +484,14 @@ defmodule Amarula.Connection do
   `:document`/`:sticker`; `data` is the raw bytes. `opts` may carry `:mimetype`
   plus per-type extras. Encrypts + uploads + sends. `{:ok, msg_id}` or `{:error, _}`.
   """
-  def send_media(pid \\ __MODULE__, type, jid, data, opts \\ [])
+  def send_media(pid \\ __MODULE__, jid, type, data, opts \\ [])
       when type in [:image, :video, :audio, :document, :sticker] and is_binary(data) do
-    GenServer.call(pid, {:send_media, type, jid, data, opts}, @send_call_timeout)
+    GenServer.call(pid, {:send_media, jid, type, data, opts}, @send_call_timeout)
   end
 
-  @doc "Convenience: `send_media(:image, ...)`."
+  @doc "Convenience: `send_media(pid, jid, :image, ...)`."
   def send_image(pid \\ __MODULE__, jid, data, opts \\ []) when is_binary(data) do
-    send_media(pid, :image, jid, data, opts)
+    send_media(pid, jid, :image, data, opts)
   end
 
   @doc """
@@ -513,7 +513,7 @@ defmodule Amarula.Connection do
     # Accept a built %Conn{} (the normal path) or a bare config map (tests start
     # Connection directly). Either way, carry the conn (for steps/scopes)
     # and config (for protocol settings via state.config.*). `parent_pid` is the
-    # consumer's event sink — `{:whatsapp, type, data}` go straight there;
+    # consumer's event sink — `{:amarula, type, data}` go straight there;
     # `instance_id` addresses the per-connection Registry + sender supervisor.
     conn = normalize_conn(arg)
     config = conn.config
@@ -657,7 +657,7 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:group_metadata, group}, from, state) do
-    group_jid = Amarula.Address.to_wire!(group)
+    group_jid = Amarula.Address.to_jid!(group)
     iq = Metadata.query_iq(group_jid)
 
     transform = fn
@@ -703,7 +703,7 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:send_chatstate, jid, type}, _from, state) do
-    node = Presence.chatstate(type, Amarula.Address.to_wire!(jid), me(state))
+    node = Presence.chatstate(type, Amarula.Address.to_jid!(jid), me(state))
     {:reply, :ok, send_binary_node(state, node)}
   end
 
@@ -723,7 +723,7 @@ defmodule Amarula.Connection do
   def handle_call({:presence_subscribe, jid}, _from, state) do
     node =
       Presence.subscribe(
-        Amarula.Address.to_wire!(jid),
+        Amarula.Address.to_jid!(jid),
         generate_message_tag(state)
       )
 
@@ -731,9 +731,9 @@ defmodule Amarula.Connection do
   end
 
   @impl GenServer
-  def handle_call({:mark_read, message_ids, jid, participant}, _from, state) do
-    jid = Amarula.Address.to_wire!(jid)
-    participant = participant && Amarula.Address.to_wire!(participant)
+  def handle_call({:mark_read, jid, message_ids, participant}, _from, state) do
+    jid = Amarula.Address.to_jid!(jid)
+    participant = participant && Amarula.Address.to_jid!(participant)
     node = Amarula.Protocol.Receipt.read(message_ids, jid, participant)
     {:reply, :ok, send_binary_node(state, node)}
   end
@@ -803,7 +803,7 @@ defmodule Amarula.Connection do
   end
 
   @impl GenServer
-  def handle_call({:send_media, type, jid, data, opts}, from, state) do
+  def handle_call({:send_media, jid, type, data, opts}, from, state) do
     mimetype = Keyword.get(opts, :mimetype, @media_default_mimetype[type])
     conn_pid = self()
 
@@ -1308,13 +1308,13 @@ defmodule Amarula.Connection do
   end
 
   # Deliver a consumer event straight to the connection's parent_pid as
-  # `{:whatsapp, type, data}`. No internal subscriber registry, no relay hop — the
+  # `{:amarula, type, data}`. No internal subscriber registry, no relay hop — the
   # parent_pid is the only sink. Nil parent (e.g. a test starting Connection
   # directly without a sink) drops the event.
   defp emit_event(%{parent_pid: nil}, _event_type, _data), do: :ok
 
   defp emit_event(%{parent_pid: parent}, event_type, data) do
-    send(parent, {:whatsapp, event_type, data})
+    send(parent, {:amarula, event_type, data})
     :ok
   end
 
@@ -1349,7 +1349,7 @@ defmodule Amarula.Connection do
   end
 
   defp deliver_async(state, target, payload, from, shape) do
-    jid = Amarula.Address.to_wire!(target)
+    jid = Amarula.Address.to_jid!(target)
     msg_id = Map.get(payload, :msg_id) || generate_message_id()
     instance_id = state.instance_id
 

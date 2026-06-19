@@ -26,7 +26,7 @@ defmodule Amarula.Plugins.MessageStoreTest do
 
     send(
       store,
-      {:whatsapp, :messages_upsert, %{from: "y@s.whatsapp.net", id: "IN1", messages: [msg]}}
+      {:amarula, :messages_upsert, %{from: "y@s.whatsapp.net", id: "IN1", messages: [msg]}}
     )
 
     # cast/info are async; wait for processing via a sync call

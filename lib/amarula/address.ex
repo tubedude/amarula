@@ -1,7 +1,8 @@
 defmodule Amarula.Address do
   @moduledoc """
   A WhatsApp address — the consumer-facing way to name *who/what* a message is
-  for or from. The boundary abstraction over the wire JID string.
+  for or from. A friendly value you can build, inspect, and pass to sends, instead
+  of juggling raw `"user@server"` jid strings.
 
   Three kinds, distinguished by `:kind`:
 
@@ -10,11 +11,12 @@ defmodule Amarula.Address do
       identity; the same person has both a PN and a LID.
     * `:group` — a group chat (`<id>@g.us`). A *container* of participants, not a
       person; its members are fetched separately (group metadata), not stored here.
-    * `:none`  — the **empty** address (`empty/0`): "no identity". A total value for
-      "we don't have one yet" (e.g. `Amarula.own_address/1` before login), so callers
-      never have to nil-guard. It names nothing: every `is_*?` is false, it is never
-      `same_account?` with anything, and rendering it to a wire jid is only allowed
-      via the bang (`to_jid!/1` raises; `to_jid/1` returns `{:error, :no_jid}`).
+    * `:none`  — the **empty** address (`empty/0`): "no identity". A stand-in for
+      "we don't have one yet" (e.g. `Amarula.own_address/1` before login) — returned
+      instead of `nil`, so you never have to nil-check. It names nothing: every
+      `is_*?` is false, it is never
+      `same_account?` with anything, and it has no jid string (`to_jid!/1` raises;
+      `to_jid/1` returns `{:error, :no_jid}`).
 
   `:device` is the device number (`nil` = account-level / primary). An address
   with `device: nil` names the whole account; with a device it names one client.
@@ -26,12 +28,12 @@ defmodule Amarula.Address do
   lists): those need connection state, are lazy, and can change, so they stay
   internal. Don't expect `Address.pn(...)` to "know" its LID.
 
-  ## Boundary
+  ## Strings in, strings out
 
-  `parse/1` (wire string → `Address`) and `to_jid/1` (`Address` → wire string)
-  are the border crossing, delegating to `Amarula.Protocol.Binary.JID`. Above the
-  border (public API, events) everything speaks `Address`; the wire/protocol layer
-  speaks JID strings. The public API also accepts a raw string and parses it, so
+  `parse/1` turns a jid string into an `Address`; `to_jid/1` turns an `Address`
+  back into its jid string (both via `Amarula.Protocol.Binary.JID`). The public
+  API and events speak `Address`; under the hood the protocol speaks jid strings.
+  The public API also accepts a raw string and parses it for you, so
   `Amarula.send_text(conn, "5511...@s.whatsapp.net", ...)` and
   `Amarula.send_text(conn, Address.pn("5511..."), ...)` both work.
   """
@@ -58,15 +60,15 @@ defmodule Amarula.Address do
   @spec group(String.t()) :: t()
   def group(id), do: %__MODULE__{user: user_of(id), kind: :group, device: nil}
 
-  @doc "The empty address — \"no identity\". A total stand-in (see the `:none` kind)."
+  @doc "The empty address — \"no identity\". Returned instead of `nil` (see the `:none` kind)."
   @spec empty() :: t()
   def empty, do: %__MODULE__{user: "", kind: :none, device: nil}
 
   @doc """
-  Parse a wire jid into an `Address` (via `JID.decode/1`). Accepts a string or an
-  already-parsed `Address` (passed through), so it's safe to call at the API boundary
-  on either. Returns `nil` for an unparseable/unknown-server string. Use `parse!/1`
-  when a bad jid should raise instead.
+  Parse a jid string into an `Address` (via `JID.decode/1`). An already-parsed
+  `Address` passes through unchanged, so it's safe to call anywhere a string *or*
+  an `Address` may arrive. Returns `nil` for an unparseable/unknown-server string;
+  use `parse!/1` when a bad jid should raise instead.
   """
   @spec parse(String.t() | t()) :: t() | nil
   def parse(%__MODULE__{} = address), do: address
@@ -85,39 +87,38 @@ defmodule Amarula.Address do
   def parse!(jid), do: parse(jid) || raise(ArgumentError, "bad jid: #{inspect(jid)}")
 
   @doc """
-  Render an `Address` to its wire jid string (via `JID.encode/1`). Total: the empty
-  address (`:none`) has no wire form and returns `{:error, :no_jid}`. Use `to_jid!/1`
-  when you have a real address and want the bare string.
+  Get the jid string for an `Address` (or pass a jid string straight through).
+
+  This is the function to use when you have a `msg.channel`/`from`/`to` (an
+  `Address`) and need the `"user@server"` string WhatsApp uses — e.g. to build a
+  `MessageKey`. A plain string passes through unchanged, so you can hand it
+  either form.
+
+  Returns `{:ok, jid}`, or `{:error, :no_jid}` for the empty address (`:none`),
+  which has no jid. Use `to_jid!/1` for the bare string.
+
+      iex> Amarula.Address.to_jid(Amarula.Address.pn("5511999999999"))
+      {:ok, "5511999999999@s.whatsapp.net"}
   """
-  @spec to_jid(t()) :: {:ok, String.t()} | {:error, :no_jid}
+  @spec to_jid(String.t() | t()) :: {:ok, String.t()} | {:error, :no_jid}
   def to_jid(%__MODULE__{kind: :none}), do: {:error, :no_jid}
 
   def to_jid(%__MODULE__{user: user, kind: kind, device: device}) do
     {:ok, JID.encode(%{user: user, server: Map.fetch!(@server, kind), device: device})}
   end
 
+  def to_jid(jid) when is_binary(jid), do: {:ok, jid}
+
   @doc "Like `to_jid/1` but returns the bare string, raising on the empty address."
-  @spec to_jid!(t()) :: String.t()
+  @spec to_jid!(String.t() | t()) :: String.t()
+  def to_jid!(jid) when is_binary(jid), do: jid
+
   def to_jid!(%__MODULE__{} = addr) do
     case to_jid(addr) do
       {:ok, jid} -> jid
-      {:error, :no_jid} -> raise ArgumentError, "address has no wire jid: #{inspect(addr)}"
+      {:error, :no_jid} -> raise ArgumentError, "address has no jid: #{inspect(addr)}"
     end
   end
-
-  @doc """
-  Coerce a string-or-`Address` to a wire jid string (boundary → wire). Total; mirrors
-  `to_jid/1` (a binary passes through as `{:ok, binary}`). Use `to_wire!/1` for the
-  bare string.
-  """
-  @spec to_wire(String.t() | t()) :: {:ok, String.t()} | {:error, :no_jid}
-  def to_wire(%__MODULE__{} = a), do: to_jid(a)
-  def to_wire(jid) when is_binary(jid), do: {:ok, jid}
-
-  @doc "Like `to_wire/1` but returns the bare string, raising on the empty address."
-  @spec to_wire!(String.t() | t()) :: String.t()
-  def to_wire!(%__MODULE__{} = a), do: to_jid!(a)
-  def to_wire!(jid) when is_binary(jid), do: jid
 
   @doc "The account-level address (device stripped)."
   @spec normalize(t()) :: t()

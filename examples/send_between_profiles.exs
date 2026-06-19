@@ -50,10 +50,10 @@ defmodule Wait do
   # Wait for a specific conn to report :open (events for both arrive at self()).
   def open(deadline) do
     receive do
-      {:whatsapp, :connection_update, %{connection: :open}} ->
+      {:amarula, :connection_update, %{connection: :open}} ->
         :ok
 
-      {:whatsapp, _t, _d} ->
+      {:amarula, _t, _d} ->
         open(deadline)
     after
       remaining(deadline) -> :timeout
@@ -64,13 +64,13 @@ defmodule Wait do
   # else, e.g. the sender's own :open or unrelated traffic).
   def delivery(text, deadline) do
     receive do
-      {:whatsapp, :messages_upsert, msgs} ->
+      {:amarula, :messages_upsert, msgs} ->
         case Enum.find(msgs, &match?(%Msg{type: :text, content: ^text}, &1)) do
           %Msg{} = m -> {:ok, m}
           nil -> delivery(text, deadline)
         end
 
-      {:whatsapp, _t, _d} ->
+      {:amarula, _t, _d} ->
         delivery(text, deadline)
     after
       remaining(deadline) -> :timeout

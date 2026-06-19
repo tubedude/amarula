@@ -59,7 +59,7 @@ defmodule Amarula.AddressTest do
     end
   end
 
-  describe "empty / total wire rendering" do
+  describe "empty / jid rendering" do
     test "empty/0 is the :none address; empty? only for it" do
       assert %Address{user: "", kind: :none, device: nil} = Address.empty()
       assert Address.empty?(Address.empty())
@@ -75,7 +75,7 @@ defmodule Amarula.AddressTest do
       refute Address.same_account?(Address.pn("5511"), Address.empty())
     end
 
-    test "to_jid/1 is total: {:ok, jid} for real, {:error, :no_jid} for empty" do
+    test "to_jid/1: {:ok, jid} for real, {:error, :no_jid} for empty" do
       assert {:ok, "5511@s.whatsapp.net"} = Address.to_jid(Address.pn("5511"))
       assert {:error, :no_jid} = Address.to_jid(Address.empty())
     end
@@ -85,16 +85,16 @@ defmodule Amarula.AddressTest do
       assert_raise ArgumentError, fn -> Address.to_jid!(empty()) end
     end
 
-    test "to_wire/1 total; string arm passes through as {:ok, _}" do
-      assert {:ok, "5511@s.whatsapp.net"} = Address.to_wire("5511@s.whatsapp.net")
-      assert {:ok, "5511@s.whatsapp.net"} = Address.to_wire(Address.pn("5511"))
-      assert {:error, :no_jid} = Address.to_wire(Address.empty())
+    test "to_jid/1: string passes through as {:ok, _}" do
+      assert {:ok, "5511@s.whatsapp.net"} = Address.to_jid("5511@s.whatsapp.net")
+      assert {:ok, "5511@s.whatsapp.net"} = Address.to_jid(Address.pn("5511"))
+      assert {:error, :no_jid} = Address.to_jid(Address.empty())
     end
 
-    test "to_wire!/1 bare string; raises on empty" do
-      assert Address.to_wire!("5511@s.whatsapp.net") == "5511@s.whatsapp.net"
-      assert Address.to_wire!(Address.pn("5511")) == "5511@s.whatsapp.net"
-      assert_raise ArgumentError, fn -> Address.to_wire!(empty()) end
+    test "to_jid!/1 bare string; raises on empty" do
+      assert Address.to_jid!("5511@s.whatsapp.net") == "5511@s.whatsapp.net"
+      assert Address.to_jid!(Address.pn("5511")) == "5511@s.whatsapp.net"
+      assert_raise ArgumentError, fn -> Address.to_jid!(empty()) end
     end
   end
 
@@ -117,13 +117,13 @@ defmodule Amarula.AddressTest do
       refute Address.same_account?(a, Address.pn("147"))
     end
 
-    test "parse!/parse / to_wire accept string or Address" do
+    test "parse!/parse / to_jid accept string or Address" do
       assert %Address{kind: :pn} = Address.parse!("5511@s.whatsapp.net")
       assert Address.parse!(Address.pn("5511")) == Address.pn("5511")
       assert Address.parse(Address.pn("5511")) == Address.pn("5511")
       assert_raise ArgumentError, fn -> Address.parse!("x@newsletter") end
-      assert Address.to_wire!("5511@s.whatsapp.net") == "5511@s.whatsapp.net"
-      assert Address.to_wire!(Address.pn("5511")) == "5511@s.whatsapp.net"
+      assert Address.to_jid!("5511@s.whatsapp.net") == "5511@s.whatsapp.net"
+      assert Address.to_jid!(Address.pn("5511")) == "5511@s.whatsapp.net"
     end
   end
 end

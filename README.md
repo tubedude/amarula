@@ -57,13 +57,13 @@ end
 # First run: you get a QR code. Scan it on your phone:
 #   WhatsApp → Settings → Linked Devices → Link a device
 receive do
-  {:whatsapp, :connection_update, %{qr: qr}} when is_binary(qr) ->
+  {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
     IO.puts(qr)   # render this as a QR code
 end
 
 # Once linked you get an :open update — now you can send.
 receive do
-  {:whatsapp, :connection_update, %{connection: :open}} -> :ready
+  {:amarula, :connection_update, %{connection: :open}} -> :ready
 end
 
 Amarula.send_text(conn, "5511999999999@s.whatsapp.net", "hello from Elixir!")
@@ -82,13 +82,13 @@ every ~20s (each rotation emits a fresh `:connection_update` — re-render on ea
 Render it as-is; don't reformat. Example with [`eqrcode`](https://hex.pm/packages/eqrcode):
 
 ```elixir
-{:whatsapp, :connection_update, %{qr: qr}} ->
+{:amarula, :connection_update, %{qr: qr}} ->
   qr |> EQRCode.encode() |> EQRCode.png() |> then(&File.write!("qr.png", &1))
 ```
 
 ## Events & connection flow
 
-Everything reaches you as `{:whatsapp, type, data}` messages at `parent_pid`. You
+Everything reaches you as `{:amarula, type, data}` messages at `parent_pid`. You
 never poll — you react to events. Here's what to expect, and when.
 
 ### First link (new device)
@@ -226,7 +226,7 @@ sequenceDiagram
 
 ## Try it
 
-Runnable examples live in [`examples/`](examples/):
+Runnable examples live in [`examples/`](https://github.com/tubedude/amarula/tree/main/examples):
 
 ```bash
 # Pair a device and listen (shows a QR, then prints incoming messages)
@@ -236,7 +236,7 @@ mix run examples/pair.exs my_profile
 mix run examples/send_message.exs 5511999999999 "hello from amarula"
 ```
 
-[`examples/connection.ex`](examples/connection.ex) is a small supervised
+[`examples/connection.ex`](https://github.com/tubedude/amarula/blob/main/examples/connection.ex) is a small supervised
 GenServer wrapper you can copy into a real app.
 
 ## Configuration
@@ -278,10 +278,10 @@ For production observability prefer [`Amarula.Telemetry`](lib/amarula/telemetry.
 ## Documentation
 
 - [`Amarula`](lib/amarula.ex) — the public API and entry point
-- [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md) — process model, supervision
+- [`docs/INFRASTRUCTURE.md`](https://github.com/tubedude/amarula/blob/main/docs/INFRASTRUCTURE.md) — process model, supervision
   tree, and send/ack/crash semantics (the living architecture reference)
-- [`docs/`](docs/) — design/port plans (point-in-time)
-- [`AGENTS.md`](AGENTS.md) — Elixir coding guidelines for this codebase
+- [`docs/`](https://github.com/tubedude/amarula/tree/main/docs) — design/port plans (point-in-time)
+- [`AGENTS.md`](https://github.com/tubedude/amarula/blob/main/AGENTS.md) — Elixir coding guidelines for this codebase
 
 ## Development
 

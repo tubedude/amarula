@@ -72,10 +72,13 @@ lib/amarula/protocol/
 ### Key Components
 
 **Public API**:
-- `Amarula` (`lib/amarula.ex`): the facade consumers call. `new/1` builds a
-  `%Amarula.Conn{}`, `connect/2` starts it; `send_*`, `group_*`, `download_media`,
+- `Amarula` (`lib/amarula.ex`): the core facade consumers call. `new/1` builds a
+  `%Amarula.Conn{}`, `connect/2` starts it; `send_*`, `download_media`,
   presence/read helpers delegate to `Amarula.Connection`. Events reach the
-  consumer's `parent_pid` as `{:whatsapp, type, data}` (see `t:event/0`).
+  consumer's `parent_pid` as `{:amarula, type, data}` (see `t:event/0`).
+- Family operations live on their own modules, not the flat facade:
+  `Amarula.Group` (create/leave/metadata/invites/requests/…),
+  `Amarula.Profile` (picture/status), `Amarula.Contacts` (on_whatsapp/status/lid).
 - Consumer structs: `Amarula.Msg` (a received message — `type` + `content`, never
   the raw proto), `Amarula.Address` (PN/LID/group boundary type), `Amarula.Chat`,
   `Amarula.Contact`, `Amarula.Group`, `Amarula.Conn`.

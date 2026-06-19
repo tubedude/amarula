@@ -7,7 +7,7 @@ defmodule Amarula.Examples.Connection do
   The process:
 
     * starts a connection with itself as `parent_pid`, so every
-      `{:whatsapp, event, data}` arrives as a `handle_info/2`;
+      `{:amarula, event, data}` arrives as a `handle_info/2`;
     * renders the QR on first pairing (Amarula persists credentials itself,
       scoped to `:profile`, so the next boot skips QR pairing — no creds handling);
     * surfaces incoming messages (here: just logs them — a real app would route
@@ -105,7 +105,7 @@ defmodule Amarula.Examples.Connection do
     config = config(opts)
     profile = config.profile
 
-    # parent_pid: self() routes every {:whatsapp, _, _} event to handle_info/2.
+    # parent_pid: self() routes every {:amarula, _, _} event to handle_info/2.
     # Attach any plugins (Req-style) before connecting; a plugin's opts get this
     # GenServer pid as :server so it can respond through us.
     {:ok, socket} =
@@ -143,7 +143,7 @@ defmodule Amarula.Examples.Connection do
   end
 
   def handle_call({:mark_read, ids, from}, _from, state) do
-    {:reply, Amarula.mark_read(state.socket, ids, from), state}
+    {:reply, Amarula.mark_read(state.socket, from, ids), state}
   end
 
   def handle_call({:start_poll, jid, name, options}, _from, state) do
@@ -174,7 +174,7 @@ defmodule Amarula.Examples.Connection do
   # Phone-number pairing: on the first QR (while unregistered), request a
   # link-code instead of rendering the QR. Guard so QR rotations don't re-request.
   def handle_info(
-        {:whatsapp, :connection_update, %{qr: qr}},
+        {:amarula, :connection_update, %{qr: qr}},
         %{pairing: {:phone, number}, pairing_requested: false} = state
       )
       when not is_nil(qr) do
@@ -192,35 +192,35 @@ defmodule Amarula.Examples.Connection do
 
   # Already requested a code (or pairing by phone) — ignore QR rotations.
   def handle_info(
-        {:whatsapp, :connection_update, %{qr: qr}},
+        {:amarula, :connection_update, %{qr: qr}},
         %{pairing: {:phone, _}} = state
       )
       when not is_nil(qr) do
     {:noreply, state}
   end
 
-  def handle_info({:whatsapp, :connection_update, %{qr: qr}}, state) when not is_nil(qr) do
+  def handle_info({:amarula, :connection_update, %{qr: qr}}, state) when not is_nil(qr) do
     render_qr(qr)
     {:noreply, state}
   end
 
-  def handle_info({:whatsapp, :pairing_code, %{code: code}}, state) do
+  def handle_info({:amarula, :pairing_code, %{code: code}}, state) do
     Logger.info("🔢 Pairing code: #{code}")
     {:noreply, state}
   end
 
-  def handle_info({:whatsapp, :connection_update, %{connection: :open} = up}, state) do
+  def handle_info({:amarula, :connection_update, %{connection: :open} = up}, state) do
     Logger.info("Connection OPEN")
     {:noreply, %{state | connection: Map.get(up, :connection, state.connection)}}
   end
 
-  def handle_info({:whatsapp, :connection_update, up}, state) do
+  def handle_info({:amarula, :connection_update, up}, state) do
     Logger.info("Connection update: #{inspect(Map.get(up, :connection) || up)}")
     {:noreply, %{state | connection: Map.get(up, :connection, state.connection)}}
   end
 
   # History sync (first link / incremental): the chat list + contacts arrive here.
-  def handle_info({:whatsapp, :history_sync, result}, state) do
+  def handle_info({:amarula, :history_sync, result}, state) do
     Logger.info(
       "📜 history sync #{inspect(result.sync_type)}: " <>
         "#{length(result.chats)} chats, #{length(result.contacts)} contacts"
@@ -229,31 +229,31 @@ defmodule Amarula.Examples.Connection do
     {:noreply, %{state | synced: true}}
   end
 
-  def handle_info({:whatsapp, :chats_update, chats}, state) do
+  def handle_info({:amarula, :chats_update, chats}, state) do
     Logger.info("chats_update: #{length(chats)}")
     {:noreply, state}
   end
 
-  def handle_info({:whatsapp, :contacts_update, contacts}, state) do
+  def handle_info({:amarula, :contacts_update, contacts}, state) do
     Logger.info("contacts_update: #{length(contacts)}")
     {:noreply, state}
   end
 
   # A group's membership/metadata changed (someone added/removed, subject edited,
   # announce toggled, ...). The action is a tagged tuple — match what you care for.
-  def handle_info({:whatsapp, :group_update, %{group: group, action: action}}, state) do
+  def handle_info({:amarula, :group_update, %{group: group, action: action}}, state) do
     Logger.info("group_update in #{group.user}: #{inspect(action)}")
     {:noreply, state}
   end
 
   # A message we sent was delivered/read/played. Use this to track delivery state.
-  def handle_info({:whatsapp, :receipt_update, %{status: status, message_ids: ids}}, state) do
+  def handle_info({:amarula, :receipt_update, %{status: status, message_ids: ids}}, state) do
     Logger.info("receipt: #{status} for #{inspect(ids)}")
     {:noreply, state}
   end
 
   # Someone was blocked/unblocked.
-  def handle_info({:whatsapp, :blocklist_update, items}, state) do
+  def handle_info({:amarula, :blocklist_update, items}, state) do
     Logger.info("blocklist_update: #{inspect(items)}")
     {:noreply, state}
   end
@@ -261,7 +261,7 @@ defmodule Amarula.Examples.Connection do
   # No creds handling: Amarula persists credentials itself (scoped to :profile),
   # so the next boot reconnects without a QR automatically.
 
-  def handle_info({:whatsapp, :messages_upsert, %{from: from, id: id, messages: messages}}, state) do
+  def handle_info({:amarula, :messages_upsert, %{from: from, id: id, messages: messages}}, state) do
     # `from` is an %Amarula.Address{}; each `msg` is an %Amarula.Msg{}.
     for %Amarula.Msg{} = msg <- messages do
       Logger.info("#{inspect(from)} (#{id}): #{msg.type} #{inspect(msg.content)}")
@@ -271,20 +271,20 @@ defmodule Amarula.Examples.Connection do
 
     # Demo: with auto_read, send a read receipt for each incoming message.
     if state.auto_read do
-      Logger.info("auto read #{id} → #{inspect(Amarula.mark_read(state.socket, [id], from))}")
+      Logger.info("auto read #{id} → #{inspect(Amarula.mark_read(state.socket, from, [id]))}")
     end
 
     {:noreply, state}
   end
 
-  def handle_info({:whatsapp, :pairing_success, _data}, state) do
+  def handle_info({:amarula, :pairing_success, _data}, state) do
     # Pairing done, but login isn't: WA sends stream-error 515, we reconnect and
     # log in, then the connection goes :open. Nothing to do but wait.
     Logger.info("Paired — completing login…")
     {:noreply, state}
   end
 
-  def handle_info({:whatsapp, :error, error}, state) do
+  def handle_info({:amarula, :error, error}, state) do
     Logger.error("Connection error: #{inspect(error)}")
     {:noreply, state}
   end
@@ -315,7 +315,7 @@ defmodule Amarula.Examples.Connection do
       message_secret: poll.secret,
       poll_msg_id: ck.id,
       poll_creator_jid: JID.jid_normalized_user(ck.remoteJid),
-      voter_jid: from |> Amarula.Address.to_wire() |> JID.jid_normalized_user()
+      voter_jid: from |> Amarula.Address.to_jid() |> JID.jid_normalized_user()
     }
 
     case PollCrypto.decrypt_vote(pum.vote, ctx) do

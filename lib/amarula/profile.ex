@@ -6,9 +6,8 @@ defmodule Amarula.Profile do
   `updateProfileStatus`.
 
   Each function builds an IQ via `Amarula.Protocol.Profile.Ops`, sends it through
-  `Amarula.Connection.query_iq/3`, and parses the reply. Re-exported from the
-  `Amarula` facade (`Amarula.profile_picture_url/3`, `Amarula.update_profile_status/2`,
-  `Amarula.update_profile_picture/3`, `Amarula.remove_profile_picture/2`).
+  `Amarula.Connection.query_iq/3`, and parses the reply. Call them on this module:
+  `picture_url/3`, `update_picture/3`, `remove_picture/2`, `update_status/2`.
 
   > #### Picture URL privacy token {: .info}
   > `picture_url/3` implements the common path. WhatsApp can require a per-contact
@@ -31,7 +30,7 @@ defmodule Amarula.Profile do
   @spec picture_url(conn(), String.t() | Address.t(), Ops.pic_type()) ::
           {:ok, String.t() | nil} | {:error, term()}
   def picture_url(conn, jid, type \\ :preview) do
-    target = Address.to_wire!(jid)
+    target = Address.to_jid!(jid)
 
     with {:ok, reply} <- Connection.query_iq(conn, Ops.picture_url_query(target, type)) do
       {:ok, Ops.parse_url(reply)}

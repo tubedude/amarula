@@ -56,7 +56,7 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStoreTest do
   end
 
   describe "canonical_jid building blocks" do
-    # `Amarula.Connection.canonical_jid/2` (public facade `Amarula.canonical_jid/2`)
+    # `Amarula.Connection.canonical_jid/2` (internal: LID->PN mapping)
     # is built on `pn_for_lid/2` + `JID`. These guard the pieces it depends on so
     # the facade helper keeps producing `<pn>@s.whatsapp.net` from a mapped LID.
     test "a mapped LID resolves to its PN user, ready to re-encode as a PN jid", %{conn: conn} do

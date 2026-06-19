@@ -24,11 +24,11 @@ defmodule Loop do
   # Phase 1: wait until :open.
   def await_open(deadline) do
     receive do
-      {:whatsapp, :connection_update, %{connection: :open}} ->
+      {:amarula, :connection_update, %{connection: :open}} ->
         Logger.info("connection OPEN")
         :ok
 
-      {:whatsapp, _t, _d} ->
+      {:amarula, _t, _d} ->
         await_open(deadline)
     after
       timeout(deadline) -> :timeout
@@ -39,13 +39,13 @@ defmodule Loop do
   # chat + id + timestamp are a valid oldest-message anchor.
   def first_dm_anchor(deadline) do
     receive do
-      {:whatsapp, :messages_upsert, msgs} ->
+      {:amarula, :messages_upsert, msgs} ->
         case Enum.find(msgs, &dm_anchor?/1) do
           %Msg{} = m -> {:ok, m}
           nil -> first_dm_anchor(deadline)
         end
 
-      {:whatsapp, _t, _d} ->
+      {:amarula, _t, _d} ->
         first_dm_anchor(deadline)
     after
       timeout(deadline) -> :timeout
@@ -55,7 +55,7 @@ defmodule Loop do
   # Phase 3: after firing the request, wait for the ON_DEMAND :history_sync reply.
   def await_on_demand(deadline) do
     receive do
-      {:whatsapp, :history_sync, %{sync_type: st} = r} ->
+      {:amarula, :history_sync, %{sync_type: st} = r} ->
         Logger.info(
           "📜 history sync #{inspect(st)}: #{length(r.chats)} chats, " <>
             "#{length(r.contacts)} contacts"
@@ -67,7 +67,7 @@ defmodule Loop do
           await_on_demand(deadline)
         end
 
-      {:whatsapp, _t, _d} ->
+      {:amarula, _t, _d} ->
         await_on_demand(deadline)
     after
       timeout(deadline) -> :timeout
@@ -89,7 +89,7 @@ result =
   with :ok <- Loop.await_open(System.monotonic_time(:millisecond) + 40_000),
        {:ok, %Msg{} = anchor} <-
          Loop.first_dm_anchor(System.monotonic_time(:millisecond) + 60_000) do
-    chat_jid = Address.to_wire(anchor.chat)
+    chat_jid = Address.to_jid(anchor.chat)
 
     key = %Proto.MessageKey{
       remoteJid: chat_jid,

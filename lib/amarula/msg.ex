@@ -1,7 +1,7 @@
 defmodule Amarula.Msg do
   @moduledoc """
   A received message, in consumer terms — the friendly view of a decrypted
-  `%Proto.Message{}`. This is what `{:whatsapp, :messages_upsert, %{messages:
+  `%Proto.Message{}`. This is what `{:amarula, :messages_upsert, %{messages:
   [%Msg{}]}}` carries, so a consumer never has to pattern-match the (large) WA
   protobuf.
 
@@ -72,8 +72,9 @@ defmodule Amarula.Msg do
   they're different devices — there, dedupe cross-connection by the `msg_id` you got from
   the send.)
 
-  `channel`/`from`/`to` are typed `Address.t() | nil` because `from_proto/2` is total
-  (it copies `meta` verbatim, which a directly-constructed `%Msg{}` may leave nil). In
+  `channel`/`from`/`to` are typed `Address.t() | nil` because `from_proto/2` never
+  fails on a missing field — it copies `meta` verbatim, which a directly-constructed
+  `%Msg{}` may leave nil. In
   practice every top-level `%Msg{}` emitted on `:messages_upsert` has a non-nil
   `channel`, `from`, and `to` — the receive path derives them from the stanza and our
   creds. The one exception is a **nested quoted message** (`quoted.message`): it carries

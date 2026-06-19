@@ -5,7 +5,7 @@ defmodule Amarula.Chat do
   other fields are the change carried by the mutation (nil = unchanged).
 
   Produced by `Amarula.Protocol.AppState.SyncAction.decode/1` and surfaced to the
-  consumer as `{:whatsapp, :chats_update, [%Chat{}]}`.
+  consumer as `{:amarula, :chats_update, [%Chat{}]}`.
   """
 
   alias Amarula.Address

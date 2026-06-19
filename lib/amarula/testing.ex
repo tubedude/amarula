@@ -3,7 +3,7 @@ defmodule Amarula.Testing do
   Test support for **consumers** of Amarula — drive your bot with synthetic
   inbound messages, with no WhatsApp connection.
 
-  A bot built on Amarula receives messages as `{:whatsapp, :messages_upsert,
+  A bot built on Amarula receives messages as `{:amarula, :messages_upsert,
   %{from, id, messages: [%Amarula.Msg{}]}}` delivered to its `parent_pid`, and
   replies with `Amarula.send_text/3` and friends. To exercise that — "when a
   message like X arrives, does my bot reply with Y?" — you need a connection you
@@ -18,7 +18,7 @@ defmodule Amarula.Testing do
       {:ok, conn} = Amarula.Testing.start_offline(profile: :test)
 
       # The bot under test: replies "pong" to "ping".
-      defp handle({:whatsapp, :messages_upsert, %{messages: msgs}}, conn) do
+      defp handle({:amarula, :messages_upsert, %{messages: msgs}}, conn) do
         for %Amarula.Msg{type: :text, content: "ping", channel: chan} <- msgs do
           Amarula.send_text(conn, Amarula.Address.to_jid!(chan), "pong")
         end
@@ -26,7 +26,7 @@ defmodule Amarula.Testing do
 
       # Drive it: deliver an inbound message, let the bot react.
       Amarula.Testing.deliver_text(conn, from: "15551234567@s.whatsapp.net", text: "ping")
-      assert_receive {:whatsapp, :messages_upsert, %{messages: [_]}} = event
+      assert_receive {:amarula, :messages_upsert, %{messages: [_]}} = event
       handle(event, conn)
       # The reply `Amarula.send_text(conn, ..., "pong")` returns `{:ok, id}` and
       # does nothing else — no real message is sent.
@@ -62,7 +62,7 @@ defmodule Amarula.Testing do
 
     * `:profile` — required; the connection profile (e.g. `:test`). One connection
       per profile, so use a unique profile per test to run them async.
-    * `:parent_pid` — process that receives `{:whatsapp, _, _}` events. Defaults to
+    * `:parent_pid` — process that receives `{:amarula, _, _}` events. Defaults to
       the caller, so `assert_receive` in your test just works.
     * `:frame_sink` — pid that receives `{:frame_out, %Node{}}` for every outbound
       frame (e.g. the delivery receipt Amarula sends for each inbound message, or
@@ -112,7 +112,7 @@ defmodule Amarula.Testing do
     * `:participant`, `:recipient`, `:from_me`, `:notify` — stanza attributes for
       group / self-chat / `from_me` scenarios (see `deliver/2`).
 
-  The bot's `parent_pid` receives `{:whatsapp, :messages_upsert, %{messages:
+  The bot's `parent_pid` receives `{:amarula, :messages_upsert, %{messages:
   [%Amarula.Msg{type: :text, content: text}]}}`.
   """
   @spec deliver_text(conn(), keyword()) :: :ok

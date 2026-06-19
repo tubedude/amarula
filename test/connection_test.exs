@@ -236,7 +236,7 @@ defmodule Amarula.ConnectionTest do
   end
 
   describe "consumer event delivery (direct to parent_pid)" do
-    test "emits {:whatsapp, type, data} straight to the parent_pid", %{config: config} do
+    test "emits {:amarula, type, data} straight to the parent_pid", %{config: config} do
       # No internal subscriber registry anymore — Connection sends consumer events
       # directly to the parent_pid it was started with. Injecting a stream-end
       # close drives an emit through the same path the consumer sees.
@@ -244,7 +244,7 @@ defmodule Amarula.ConnectionTest do
 
       send(pid, {:ws_event, nil, {:close, :test}})
 
-      assert_receive {:whatsapp, :connection_update, %{connection: :disconnected}}
+      assert_receive {:amarula, :connection_update, %{connection: :disconnected}}
       GenServer.stop(pid)
     end
   end

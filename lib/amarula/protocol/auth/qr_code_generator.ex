@@ -74,8 +74,8 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
   @doc """
   Checks if a QR code has expired based on its generation time.
   """
-  @spec is_qr_expired?(integer(), integer()) :: boolean()
-  def is_qr_expired?(generation_time, timeout_ms) do
+  @spec qr_expired?(integer(), integer()) :: boolean()
+  def qr_expired?(generation_time, timeout_ms) do
     current_time = System.monotonic_time(:millisecond)
     current_time - generation_time >= timeout_ms
   end

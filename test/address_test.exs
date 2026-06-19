@@ -60,13 +60,13 @@ defmodule Amarula.AddressTest do
   end
 
   describe "empty / total wire rendering" do
-    test "empty/0 is the :none address; is_empty? only for it" do
+    test "empty/0 is the :none address; empty? only for it" do
       assert %Address{user: "", kind: :none, device: nil} = Address.empty()
-      assert Address.is_empty?(Address.empty())
-      refute Address.is_empty?(Address.pn("5511"))
-      refute Address.is_pn?(Address.empty())
-      refute Address.is_lid?(Address.empty())
-      refute Address.is_group?(Address.empty())
+      assert Address.empty?(Address.empty())
+      refute Address.empty?(Address.pn("5511"))
+      refute Address.pn?(Address.empty())
+      refute Address.lid?(Address.empty())
+      refute Address.group?(Address.empty())
     end
 
     test "empty is never same_account? with anything (incl. another empty)" do
@@ -99,11 +99,11 @@ defmodule Amarula.AddressTest do
   end
 
   describe "predicates + helpers" do
-    test "is_pn?/is_lid?/is_group?" do
-      assert Address.is_pn?(Address.pn("5511"))
-      assert Address.is_lid?(Address.lid("147@lid"))
-      assert Address.is_group?(Address.group("g@g.us"))
-      refute Address.is_pn?(Address.lid("147@lid"))
+    test "pn?/lid?/group?" do
+      assert Address.pn?(Address.pn("5511"))
+      assert Address.lid?(Address.lid("147@lid"))
+      assert Address.group?(Address.group("g@g.us"))
+      refute Address.pn?(Address.lid("147@lid"))
     end
 
     test "normalize strips device" do

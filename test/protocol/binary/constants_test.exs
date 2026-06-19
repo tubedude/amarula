@@ -153,39 +153,39 @@ defmodule Amarula.Protocol.Binary.ConstantsTest do
     end
   end
 
-  describe "is_single_byte_token?/1" do
+  describe "single_byte_token?/1" do
     test "identifies single byte tokens" do
-      assert Constants.is_single_byte_token?("") == true
-      assert Constants.is_single_byte_token?("xmlstreamstart") == true
-      assert Constants.is_single_byte_token?("iq") == true
+      assert Constants.single_byte_token?("") == true
+      assert Constants.single_byte_token?("xmlstreamstart") == true
+      assert Constants.single_byte_token?("iq") == true
     end
 
     test "identifies double byte tokens as false" do
-      assert Constants.is_single_byte_token?("read-self") == false
-      assert Constants.is_single_byte_token?("active") == false
+      assert Constants.single_byte_token?("read-self") == false
+      assert Constants.single_byte_token?("active") == false
     end
 
     test "returns false for unknown tokens" do
       # "unknown" is now a valid token in the list, so test with a truly unknown string
-      assert Constants.is_single_byte_token?("this_is_not_a_token_12345") == false
+      assert Constants.single_byte_token?("this_is_not_a_token_12345") == false
     end
   end
 
-  describe "is_double_byte_token?/1" do
+  describe "double_byte_token?/1" do
     test "identifies double byte tokens" do
-      assert Constants.is_double_byte_token?("read-self") == true
-      assert Constants.is_double_byte_token?("active") == true
-      assert Constants.is_double_byte_token?("fbns") == true
+      assert Constants.double_byte_token?("read-self") == true
+      assert Constants.double_byte_token?("active") == true
+      assert Constants.double_byte_token?("fbns") == true
     end
 
     test "identifies single byte tokens as false" do
-      assert Constants.is_double_byte_token?("") == false
-      assert Constants.is_double_byte_token?("xmlstreamstart") == false
-      assert Constants.is_double_byte_token?("iq") == false
+      assert Constants.double_byte_token?("") == false
+      assert Constants.double_byte_token?("xmlstreamstart") == false
+      assert Constants.double_byte_token?("iq") == false
     end
 
     test "returns false for unknown tokens" do
-      assert Constants.is_double_byte_token?("unknown") == false
+      assert Constants.double_byte_token?("unknown") == false
     end
   end
 end

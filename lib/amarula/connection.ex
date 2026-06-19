@@ -25,6 +25,9 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Socket.{IQ, Login, Router}
   alias Amarula.Protocol.Binary.{Decoder, JID, NodeUtils, Encoder, Node}
   alias Amarula.Protocol.Messages.{ConversationSender, Media, MessageEncoder}
+  alias Amarula.Protocol.Messages.{HistorySync, MessageDecryptor}
+  alias Amarula.Protocol.Groups.Metadata
+  alias Amarula.Protocol.Presence
 
   # A send blocks the caller until the per-recipient sender finishes (up to three
   # IQ round-trips for a new recipient). The client-side call timeout must exceed
@@ -217,7 +220,7 @@ defmodule Amarula.Connection do
 
   # LID → PN canonicalization. Non-LID jids and unmapped LIDs pass through.
   defp do_canonical_jid(conn, jid) do
-    with true <- JID.is_lid_user?(jid),
+    with true <- JID.lid_user?(jid),
          pn_user when is_binary(pn_user) <- LidMappingFileStore.pn_for_lid(conn, jid),
          %{} = decoded <- JID.decode(jid) do
       device = Map.get(decoded, :device, 0) || 0
@@ -655,11 +658,11 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call({:group_metadata, group}, from, state) do
     group_jid = Amarula.Address.to_wire!(group)
-    iq = Amarula.Protocol.Groups.Metadata.query_iq(group_jid)
+    iq = Metadata.query_iq(group_jid)
 
     transform = fn
       {:ok, node} ->
-        with {:ok, meta} <- Amarula.Protocol.Groups.Metadata.parse(node),
+        with {:ok, meta} <- Metadata.parse(node),
              do: {:ok, Amarula.Group.from_metadata(meta)}
 
       {:error, node} ->
@@ -671,11 +674,11 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call(:list_groups, from, state) do
-    iq = Amarula.Protocol.Groups.Metadata.query_all_iq()
+    iq = Metadata.query_all_iq()
 
     transform = fn
       {:ok, node} ->
-        {:ok, metas} = Amarula.Protocol.Groups.Metadata.parse_all(node)
+        {:ok, metas} = Metadata.parse_all(node)
         {:ok, Enum.map(metas, &Amarula.Group.from_metadata/1)}
 
       {:error, node} ->
@@ -692,7 +695,7 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:set_presence, type}, _from, state) do
-    case Amarula.Protocol.Presence.presence(type, me(state)) do
+    case Presence.presence(type, me(state)) do
       {:ok, node} -> {:reply, :ok, send_binary_node(state, node)}
       {:error, _} = err -> {:reply, err, state}
     end
@@ -700,7 +703,7 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:send_chatstate, jid, type}, _from, state) do
-    node = Amarula.Protocol.Presence.chatstate(type, Amarula.Address.to_wire!(jid), me(state))
+    node = Presence.chatstate(type, Amarula.Address.to_wire!(jid), me(state))
     {:reply, :ok, send_binary_node(state, node)}
   end
 
@@ -719,7 +722,7 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call({:presence_subscribe, jid}, _from, state) do
     node =
-      Amarula.Protocol.Presence.subscribe(
+      Presence.subscribe(
         Amarula.Address.to_wire!(jid),
         generate_message_tag(state)
       )
@@ -1726,7 +1729,7 @@ defmodule Amarula.Connection do
   # unsolicited (no ack), so just parse and surface as :presence_update. jid +
   # participant are converted to %Amarula.Address{} (consistent with receipts).
   defp handle_presence(state, node) do
-    case Amarula.Protocol.Presence.parse_update(node) do
+    case Presence.parse_update(node) do
       {:ok, update} ->
         data = %{
           jid: Amarula.Address.parse(update.jid),
@@ -2945,7 +2948,7 @@ defmodule Amarula.Connection do
   # media_bytes is the sender's declared fileLength (no eager download). Privacy:
   # counts/kinds/booleans only.
   defp emit_message_telemetry(state, msgs, node, from) do
-    group? = JID.is_jid_group?(from)
+    group? = JID.jid_group?(from)
     offline? = NodeUtils.get_attr(node, "offline") not in [nil, ""]
 
     Enum.each(msgs, fn msg ->
@@ -2995,10 +2998,10 @@ defmodule Amarula.Connection do
     msg_id = NodeUtils.get_attr(node, "from") && NodeUtils.get_attr(node, "id")
     from = NodeUtils.get_attr(node, "from")
 
-    store = Amarula.Protocol.Signal.SessionStore.build(state.auth_creds)
+    store = SessionStore.build(state.auth_creds)
 
     {:ok, messages, used_pre_key_ids, errors} =
-      Amarula.Protocol.Messages.MessageDecryptor.decrypt_node(node,
+      MessageDecryptor.decrypt_node(node,
         store: store,
         conn: conn(state)
       )
@@ -3157,7 +3160,7 @@ defmodule Amarula.Connection do
 
     for hsn <- notifications do
       Task.start(fn ->
-        case Amarula.Protocol.Messages.HistorySync.fetch(hsn) do
+        case HistorySync.fetch(hsn) do
           {:ok, result} ->
             send(parent, {:history_sync_result, result})
 

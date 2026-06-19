@@ -82,7 +82,7 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   """
   @spec signal_address(Conn.t(), String.t()) :: String.t()
   def signal_address(conn, jid) do
-    with true <- JID.is_jid_user?(jid) and not JID.is_lid_user?(jid),
+    with true <- JID.jid_user?(jid) and not JID.lid_user?(jid),
          lid_user when is_binary(lid_user) <- lid_for_pn(conn, jid),
          %{} = decoded <- JID.decode(jid) do
       device = Map.get(decoded, :device, 0) || 0
@@ -100,7 +100,7 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   """
   @spec wire_jid(Conn.t(), String.t()) :: String.t()
   def wire_jid(conn, jid) do
-    with true <- JID.is_jid_user?(jid) and not JID.is_lid_user?(jid),
+    with true <- JID.jid_user?(jid) and not JID.lid_user?(jid),
          lid_user when is_binary(lid_user) <- lid_for_pn(conn, jid),
          %{} = decoded <- JID.decode(jid) do
       device = Map.get(decoded, :device, 0) || 0
@@ -150,8 +150,8 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   # Sort the pair into {pn_user, lid_user}; accept either argument order.
   defp normalize_pair({a, b}) do
     cond do
-      JID.is_lid_user?(a) and pn?(b) -> with_users(b, a)
-      JID.is_lid_user?(b) and pn?(a) -> with_users(a, b)
+      JID.lid_user?(a) and pn?(b) -> with_users(b, a)
+      JID.lid_user?(b) and pn?(a) -> with_users(a, b)
       true -> :skip
     end
   end
@@ -167,7 +167,7 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   end
 
   # A PN user is a normal s.whatsapp.net user (not a LID/group/etc.).
-  defp pn?(jid), do: JID.is_jid_user?(jid) and not JID.is_lid_user?(jid)
+  defp pn?(jid), do: JID.jid_user?(jid) and not JID.lid_user?(jid)
 
   defp user_of(jid) do
     case JID.decode(jid) do

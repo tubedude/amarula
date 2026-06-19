@@ -25,24 +25,24 @@ defmodule Amarula.Protocol.Signal.LIDMapping do
   @doc """
   Checks if a JID is a phone number user.
   """
-  @spec is_pn_user?(String.t()) :: boolean()
-  def is_pn_user?(jid) do
+  @spec pn_user?(String.t()) :: boolean()
+  def pn_user?(jid) do
     String.ends_with?(jid, "@s.whatsapp.net") or String.ends_with?(jid, "@hosted")
   end
 
   @doc """
   Checks if a JID is a hosted phone number user.
   """
-  @spec is_hosted_pn_user?(String.t()) :: boolean()
-  def is_hosted_pn_user?(jid) do
+  @spec hosted_pn_user?(String.t()) :: boolean()
+  def hosted_pn_user?(jid) do
     String.ends_with?(jid, "@hosted")
   end
 
   @doc """
   Checks if a JID is a LID user.
   """
-  @spec is_lid_user?(String.t()) :: boolean()
-  def is_lid_user?(jid) do
+  @spec lid_user?(String.t()) :: boolean()
+  def lid_user?(jid) do
     String.ends_with?(jid, "@lid") or String.ends_with?(jid, "@hosted.lid")
   end
 

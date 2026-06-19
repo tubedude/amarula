@@ -125,32 +125,32 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   Checks if the WebSocket is open.
   """
   @impl Types
-  def is_open?(pid \\ __MODULE__) do
-    GenServer.call(pid, :is_open?)
+  def open?(pid \\ __MODULE__) do
+    GenServer.call(pid, :open?)
   end
 
   @doc """
   Checks if the WebSocket is closed.
   """
   @impl Types
-  def is_closed?(pid \\ __MODULE__) do
-    GenServer.call(pid, :is_closed?)
+  def closed?(pid \\ __MODULE__) do
+    GenServer.call(pid, :closed?)
   end
 
   @doc """
   Checks if the WebSocket is connecting.
   """
   @impl Types
-  def is_connecting?(pid \\ __MODULE__) do
-    GenServer.call(pid, :is_connecting?)
+  def connecting?(pid \\ __MODULE__) do
+    GenServer.call(pid, :connecting?)
   end
 
   @doc """
   Checks if the WebSocket is closing.
   """
   @impl Types
-  def is_closing?(pid \\ __MODULE__) do
-    GenServer.call(pid, :is_closing?)
+  def closing?(pid \\ __MODULE__) do
+    GenServer.call(pid, :closing?)
   end
 
   # WebSockex callbacks
@@ -256,28 +256,28 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   end
 
   @impl WebSockex
-  def handle_info({:"$gen_call", from, :is_open?}, state) do
+  def handle_info({:"$gen_call", from, :open?}, state) do
     is_open = state.connection_state == :connected
     GenServer.reply(from, is_open)
     {:ok, state}
   end
 
   @impl WebSockex
-  def handle_info({:"$gen_call", from, :is_closed?}, state) do
+  def handle_info({:"$gen_call", from, :closed?}, state) do
     is_closed = state.connection_state == :disconnected or state.connection_state == :closed
     GenServer.reply(from, is_closed)
     {:ok, state}
   end
 
   @impl WebSockex
-  def handle_info({:"$gen_call", from, :is_connecting?}, state) do
+  def handle_info({:"$gen_call", from, :connecting?}, state) do
     is_connecting = state.connection_state == :connecting
     GenServer.reply(from, is_connecting)
     {:ok, state}
   end
 
   @impl WebSockex
-  def handle_info({:"$gen_call", from, :is_closing?}, state) do
+  def handle_info({:"$gen_call", from, :closing?}, state) do
     is_closing = state.connection_state == :reconnecting
     GenServer.reply(from, is_closing)
     {:ok, state}

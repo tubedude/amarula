@@ -38,7 +38,7 @@ defmodule Amarula.Protocol.Presence do
   """
   @spec chatstate(chatstate(), String.t(), map()) :: Node.t()
   def chatstate(type, to_jid, me) when type in [:composing, :recording, :paused] do
-    from = if JID.is_lid_user?(to_jid), do: me.lid, else: me.id
+    from = if JID.lid_user?(to_jid), do: me.lid, else: me.id
     {tag, child_attrs} = child(type)
 
     %Node{

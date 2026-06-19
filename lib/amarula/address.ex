@@ -134,22 +134,22 @@ defmodule Amarula.Address do
   def same_account?(%__MODULE__{user: u, kind: k}, %__MODULE__{user: u, kind: k}), do: true
   def same_account?(_a, _b), do: false
 
-  @spec is_pn?(t()) :: boolean()
-  def is_pn?(%__MODULE__{kind: :pn}), do: true
-  def is_pn?(_), do: false
+  @spec pn?(t()) :: boolean()
+  def pn?(%__MODULE__{kind: :pn}), do: true
+  def pn?(_), do: false
 
-  @spec is_lid?(t()) :: boolean()
-  def is_lid?(%__MODULE__{kind: :lid}), do: true
-  def is_lid?(_), do: false
+  @spec lid?(t()) :: boolean()
+  def lid?(%__MODULE__{kind: :lid}), do: true
+  def lid?(_), do: false
 
-  @spec is_group?(t()) :: boolean()
-  def is_group?(%__MODULE__{kind: :group}), do: true
-  def is_group?(_), do: false
+  @spec group?(t()) :: boolean()
+  def group?(%__MODULE__{kind: :group}), do: true
+  def group?(_), do: false
 
   @doc "Whether this is the empty address (`empty/0`, kind `:none`)."
-  @spec is_empty?(t()) :: boolean()
-  def is_empty?(%__MODULE__{kind: :none}), do: true
-  def is_empty?(_), do: false
+  @spec empty?(t()) :: boolean()
+  def empty?(%__MODULE__{kind: :none}), do: true
+  def empty?(_), do: false
 
   # --- internals ---
 

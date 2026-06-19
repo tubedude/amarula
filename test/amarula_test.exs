@@ -179,7 +179,7 @@ defmodule AmarulaTest do
     assert %Amarula.Address{device: nil, kind: :pn} = Amarula.own_address(primary)
 
     {:ok, pre_login} = CredStub.start_link(%{})
-    assert Amarula.Address.is_empty?(Amarula.own_address(pre_login))
+    assert Amarula.Address.empty?(Amarula.own_address(pre_login))
   end
 
   # --- convenience delegations forward the right tuple ---

@@ -169,6 +169,6 @@ defmodule Amarula.Protocol.Groups.Metadata do
     end
   end
 
-  defp pn_user?(jid), do: is_binary(jid) and JID.is_jid_user?(jid) and not JID.is_lid_user?(jid)
-  defp lid_user?(jid), do: is_binary(jid) and JID.is_lid_user?(jid)
+  defp pn_user?(jid), do: is_binary(jid) and JID.jid_user?(jid) and not JID.lid_user?(jid)
+  defp lid_user?(jid), do: is_binary(jid) and JID.lid_user?(jid)
 end

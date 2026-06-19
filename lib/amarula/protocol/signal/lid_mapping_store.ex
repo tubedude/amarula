@@ -172,8 +172,8 @@ defmodule Amarula.Protocol.Signal.LIDMappingStore do
 
   @spec valid_mapping?(String.t(), String.t()) :: boolean()
   defp valid_mapping?(pn, lid) do
-    (LIDMapping.is_pn_user?(pn) and LIDMapping.is_lid_user?(lid)) or
-      (LIDMapping.is_pn_user?(lid) and LIDMapping.is_lid_user?(pn))
+    (LIDMapping.pn_user?(pn) and LIDMapping.lid_user?(lid)) or
+      (LIDMapping.pn_user?(lid) and LIDMapping.lid_user?(pn))
   end
 
   @spec store_mappings_in_key_store(module(), map()) :: :ok | {:error, String.t()}
@@ -215,7 +215,7 @@ defmodule Amarula.Protocol.Signal.LIDMappingStore do
   defp process_pns_for_lids(pns, state) do
     {successful_pairs, usync_fetch} =
       Enum.reduce(pns, {%{}, %{}}, fn pn, {pairs, usync} ->
-        if LIDMapping.is_pn_user?(pn) or LIDMapping.is_hosted_pn_user?(pn) do
+        if LIDMapping.pn_user?(pn) or LIDMapping.hosted_pn_user?(pn) do
           case LIDMapping.decode_jid(pn) do
             {:ok, decoded} ->
               pn_user = decoded.user
@@ -305,7 +305,7 @@ defmodule Amarula.Protocol.Signal.LIDMappingStore do
 
   @spec process_lid_for_pn(String.t(), t()) :: {:ok, String.t()} | {:error, String.t()}
   defp process_lid_for_pn(lid, state) do
-    if not LIDMapping.is_lid_user?(lid) do
+    if not LIDMapping.lid_user?(lid) do
       {:error, "Invalid LID format: #{lid}"}
     else
       case LIDMapping.decode_jid(lid) do

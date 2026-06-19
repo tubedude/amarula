@@ -192,7 +192,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   defp run_send(%{msg_id: msg_id} = msg, state) do
     jid = state.recipient_jid
-    kind = if JID.is_jid_group?(jid), do: :group, else: :dm
+    kind = if JID.jid_group?(jid), do: :group, else: :dm
     Logger.debug("Sending #{msg_id} to #{jid} (#{kind})")
 
     # Run the send plugin pipeline (before encrypt): steps may transform the
@@ -407,7 +407,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   defp participant_lid_pn(%{id: id, lid: lid, phone_number: pn}) do
     cond do
-      JID.is_lid_user?(id) -> {id, pn}
+      JID.lid_user?(id) -> {id, pn}
       is_binary(lid) -> {lid, id}
       true -> {nil, nil}
     end

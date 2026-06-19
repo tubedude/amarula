@@ -92,9 +92,9 @@ defmodule Amarula.Protocol.Binary.Node do
   @doc """
   Checks if the node has no content.
   """
-  @spec is_empty?(t()) :: boolean()
-  def is_empty?(%__MODULE__{content: nil}), do: true
-  def is_empty?(%__MODULE__{content: ""}), do: true
-  def is_empty?(%__MODULE__{content: []}), do: true
-  def is_empty?(_), do: false
+  @spec empty?(t()) :: boolean()
+  def empty?(%__MODULE__{content: nil}), do: true
+  def empty?(%__MODULE__{content: ""}), do: true
+  def empty?(%__MODULE__{content: []}), do: true
+  def empty?(_), do: false
 end

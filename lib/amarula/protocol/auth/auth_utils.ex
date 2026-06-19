@@ -185,7 +185,7 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
   @spec create_web_info(socket_config()) :: Proto.ClientPayload.WebInfo.t()
   def create_web_info(config) do
     web_sub_platform =
-      if config.sync_full_history and is_desktop_browser(config.browser) do
+      if config.sync_full_history and desktop_browser?(config.browser) do
         platform_to_web_sub_platform(Enum.at(config.browser, 0))
       else
         :WEB_BROWSER
@@ -267,7 +267,7 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
     end
   end
 
-  defp is_desktop_browser(browser) do
+  defp desktop_browser?(browser) do
     browser && Enum.at(browser, 1) == "Desktop"
   end
 

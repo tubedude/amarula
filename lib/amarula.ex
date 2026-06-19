@@ -114,6 +114,9 @@ defmodule Amarula do
 
   alias Amarula.Connection
   alias Amarula.ProfileRegistry
+  alias Amarula.Protocol.Binary.Node
+  alias Amarula.Protocol.Binary.NodeUtils
+  alias Amarula.Protocol.Groups.Metadata
   alias Amarula.Protocol.Messages.Media
   alias Amarula.Protocol.Proto
 
@@ -667,18 +670,17 @@ defmodule Amarula do
   defp ok_result({:error, node}), do: {:error, iq_error(node)}
 
   defp group_meta_result({:ok, node}) do
-    with {:ok, meta} <- Amarula.Protocol.Groups.Metadata.parse(node),
+    with {:ok, meta} <- Metadata.parse(node),
          do: {:ok, Amarula.Group.from_metadata(meta)}
   end
 
   defp group_meta_result({:error, node}), do: {:error, iq_error(node)}
 
   # Extract {:group_op_failed, code, text} from an error IQ's <error> child.
-  defp iq_error(%Amarula.Protocol.Binary.Node{} = node) do
-    case Amarula.Protocol.Binary.NodeUtils.get_binary_node_child(node, "error") do
-      %Amarula.Protocol.Binary.Node{} = err ->
-        {:group_op_failed, Amarula.Protocol.Binary.NodeUtils.get_attr(err, "code"),
-         Amarula.Protocol.Binary.NodeUtils.get_attr(err, "text")}
+  defp iq_error(%Node{} = node) do
+    case NodeUtils.get_binary_node_child(node, "error") do
+      %Node{} = err ->
+        {:group_op_failed, NodeUtils.get_attr(err, "code"), NodeUtils.get_attr(err, "text")}
 
       _ ->
         {:error, node}

@@ -283,36 +283,36 @@ defmodule Amarula.Protocol.Binary.NodeTest do
     end
   end
 
-  describe "Node.is_empty?/1" do
+  describe "Node.empty?/1" do
     test "returns true for node with nil content" do
       node = Node.new("empty", %{}, nil)
 
-      assert Node.is_empty?(node) == true
+      assert Node.empty?(node) == true
     end
 
     test "returns true for node with empty string content" do
       node = Node.new("empty", %{}, "")
 
-      assert Node.is_empty?(node) == true
+      assert Node.empty?(node) == true
     end
 
     test "returns true for node with empty children list" do
       node = Node.new("empty", %{}, [])
 
-      assert Node.is_empty?(node) == true
+      assert Node.empty?(node) == true
     end
 
     test "returns false for node with string content" do
       node = Node.new("text", %{}, "some text")
 
-      assert Node.is_empty?(node) == false
+      assert Node.empty?(node) == false
     end
 
     test "returns false for node with children" do
       child = Node.new("child", %{}, nil)
       parent = Node.new("parent", %{}, [child])
 
-      assert Node.is_empty?(parent) == false
+      assert Node.empty?(parent) == false
     end
   end
 end

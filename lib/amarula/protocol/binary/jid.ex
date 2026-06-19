@@ -121,49 +121,49 @@ defmodule Amarula.Protocol.Binary.JID do
   @doc """
   Checks if a JID represents a user (PN user).
   """
-  @spec is_jid_user?(binary() | nil) :: boolean()
-  def is_jid_user?(jid) when is_binary(jid) do
+  @spec jid_user?(binary() | nil) :: boolean()
+  def jid_user?(jid) when is_binary(jid) do
     String.ends_with?(jid, "@s.whatsapp.net") or
       String.ends_with?(jid, "@lid") or
       String.ends_with?(jid, "@hosted") or
       String.ends_with?(jid, "@hosted.lid")
   end
 
-  def is_jid_user?(_), do: false
+  def jid_user?(_), do: false
 
   @doc """
   Checks if a JID represents a group.
   """
-  @spec is_jid_group?(binary() | nil) :: boolean()
-  def is_jid_group?(jid) when is_binary(jid), do: String.ends_with?(jid, "@g.us")
-  def is_jid_group?(_), do: false
+  @spec jid_group?(binary() | nil) :: boolean()
+  def jid_group?(jid) when is_binary(jid), do: String.ends_with?(jid, "@g.us")
+  def jid_group?(_), do: false
 
   @doc """
   Checks if a JID represents a group.
-  This is an alias for is_jid_group?/1 for compatibility with the messages module.
+  This is an alias for jid_group?/1 for compatibility with the messages module.
   """
   @spec group?(binary() | nil) :: boolean()
-  def group?(jid), do: is_jid_group?(jid)
+  def group?(jid), do: jid_group?(jid)
 
   @doc """
   Checks if a JID represents a LID user.
   """
-  @spec is_lid_user?(binary() | nil) :: boolean()
-  def is_lid_user?(jid) when is_binary(jid), do: String.ends_with?(jid, "@lid")
-  def is_lid_user?(_), do: false
+  @spec lid_user?(binary() | nil) :: boolean()
+  def lid_user?(jid) when is_binary(jid), do: String.ends_with?(jid, "@lid")
+  def lid_user?(_), do: false
 
   @doc """
   Checks if a JID represents a broadcast.
   """
-  @spec is_jid_broadcast?(binary() | nil) :: boolean()
-  def is_jid_broadcast?(jid) when is_binary(jid), do: String.ends_with?(jid, "@broadcast")
-  def is_jid_broadcast?(_), do: false
+  @spec jid_broadcast?(binary() | nil) :: boolean()
+  def jid_broadcast?(jid) when is_binary(jid), do: String.ends_with?(jid, "@broadcast")
+  def jid_broadcast?(_), do: false
 
   @doc """
   Checks if a JID represents a bot.
   """
-  @spec is_jid_bot?(binary() | nil) :: boolean()
-  def is_jid_bot?(jid) when is_binary(jid) do
+  @spec jid_bot?(binary() | nil) :: boolean()
+  def jid_bot?(jid) when is_binary(jid) do
     with [user, _] <- String.split(jid, "@", parts: 2),
          true <- Regex.match?(@bot_regex, user),
          true <- String.ends_with?(jid, "@c.us") do
@@ -173,41 +173,41 @@ defmodule Amarula.Protocol.Binary.JID do
     end
   end
 
-  def is_jid_bot?(_), do: false
+  def jid_bot?(_), do: false
 
   @doc """
   Checks if a JID represents a newsletter.
   """
-  @spec is_jid_newsletter?(binary() | nil) :: boolean()
-  def is_jid_newsletter?(jid) when is_binary(jid), do: String.ends_with?(jid, "@newsletter")
-  def is_jid_newsletter?(_), do: false
+  @spec jid_newsletter?(binary() | nil) :: boolean()
+  def jid_newsletter?(jid) when is_binary(jid), do: String.ends_with?(jid, "@newsletter")
+  def jid_newsletter?(_), do: false
 
   @doc """
   Checks if a JID represents a hosted PN user.
   """
-  @spec is_hosted_pn_user?(binary() | nil) :: boolean()
-  def is_hosted_pn_user?(jid) when is_binary(jid), do: String.ends_with?(jid, "@hosted")
-  def is_hosted_pn_user?(_), do: false
+  @spec hosted_pn_user?(binary() | nil) :: boolean()
+  def hosted_pn_user?(jid) when is_binary(jid), do: String.ends_with?(jid, "@hosted")
+  def hosted_pn_user?(_), do: false
 
   @doc """
   Checks if a JID represents a hosted LID user.
   """
-  @spec is_hosted_lid_user?(binary() | nil) :: boolean()
-  def is_hosted_lid_user?(jid) when is_binary(jid), do: String.ends_with?(jid, "@hosted.lid")
-  def is_hosted_lid_user?(_), do: false
+  @spec hosted_lid_user?(binary() | nil) :: boolean()
+  def hosted_lid_user?(jid) when is_binary(jid), do: String.ends_with?(jid, "@hosted.lid")
+  def hosted_lid_user?(_), do: false
 
   @doc """
   Checks if a JID is the status broadcast.
   """
-  @spec is_jid_status_broadcast?(binary()) :: boolean()
-  def is_jid_status_broadcast?(jid), do: jid == "status@broadcast"
+  @spec jid_status_broadcast?(binary()) :: boolean()
+  def jid_status_broadcast?(jid), do: jid == "status@broadcast"
 
   @doc """
   Checks if a JID represents Meta AI.
   """
-  @spec is_jid_meta_ai?(binary() | nil) :: boolean()
-  def is_jid_meta_ai?(jid) when is_binary(jid), do: String.ends_with?(jid, "@bot")
-  def is_jid_meta_ai?(_), do: false
+  @spec jid_meta_ai?(binary() | nil) :: boolean()
+  def jid_meta_ai?(jid) when is_binary(jid), do: String.ends_with?(jid, "@bot")
+  def jid_meta_ai?(_), do: false
 
   @doc """
   Normalizes a JID to user format, converting c.us to s.whatsapp.net.

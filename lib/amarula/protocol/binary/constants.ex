@@ -1395,14 +1395,14 @@ defmodule Amarula.Protocol.Binary.Constants do
   end
 
   @doc "Check if string is a single byte token"
-  @spec is_single_byte_token?(binary()) :: boolean()
-  def is_single_byte_token?(string) do
+  @spec single_byte_token?(binary()) :: boolean()
+  def single_byte_token?(string) do
     Map.has_key?(@single_byte_token_map, string)
   end
 
   @doc "Check if string is a double byte token"
-  @spec is_double_byte_token?(binary()) :: boolean()
-  def is_double_byte_token?(string) do
+  @spec double_byte_token?(binary()) :: boolean()
+  def double_byte_token?(string) do
     Map.has_key?(@double_byte_token_map, string)
   end
 end

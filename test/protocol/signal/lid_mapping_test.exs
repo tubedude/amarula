@@ -14,42 +14,42 @@ defmodule Amarula.Protocol.Signal.LIDMappingTest do
     end
   end
 
-  describe "is_pn_user?/1" do
+  describe "pn_user?/1" do
     test "returns true for phone number users" do
-      assert LIDMapping.is_pn_user?("1234567890@s.whatsapp.net")
-      assert LIDMapping.is_pn_user?("1234567890:1@s.whatsapp.net")
-      assert LIDMapping.is_pn_user?("1234567890@hosted")
+      assert LIDMapping.pn_user?("1234567890@s.whatsapp.net")
+      assert LIDMapping.pn_user?("1234567890:1@s.whatsapp.net")
+      assert LIDMapping.pn_user?("1234567890@hosted")
     end
 
     test "returns false for non-phone number users" do
-      refute LIDMapping.is_pn_user?("lid123@lid")
-      refute LIDMapping.is_pn_user?("group123@g.us")
-      refute LIDMapping.is_pn_user?("invalid")
+      refute LIDMapping.pn_user?("lid123@lid")
+      refute LIDMapping.pn_user?("group123@g.us")
+      refute LIDMapping.pn_user?("invalid")
     end
   end
 
-  describe "is_hosted_pn_user?/1" do
+  describe "hosted_pn_user?/1" do
     test "returns true for hosted phone number users" do
-      assert LIDMapping.is_hosted_pn_user?("1234567890@hosted")
-      assert LIDMapping.is_hosted_pn_user?("1234567890:1@hosted")
+      assert LIDMapping.hosted_pn_user?("1234567890@hosted")
+      assert LIDMapping.hosted_pn_user?("1234567890:1@hosted")
     end
 
     test "returns false for non-hosted users" do
-      refute LIDMapping.is_hosted_pn_user?("1234567890@s.whatsapp.net")
-      refute LIDMapping.is_hosted_pn_user?("lid123@lid")
+      refute LIDMapping.hosted_pn_user?("1234567890@s.whatsapp.net")
+      refute LIDMapping.hosted_pn_user?("lid123@lid")
     end
   end
 
-  describe "is_lid_user?/1" do
+  describe "lid_user?/1" do
     test "returns true for LID users" do
-      assert LIDMapping.is_lid_user?("lid123@lid")
-      assert LIDMapping.is_lid_user?("lid123:1@lid")
-      assert LIDMapping.is_lid_user?("lid123@hosted.lid")
+      assert LIDMapping.lid_user?("lid123@lid")
+      assert LIDMapping.lid_user?("lid123:1@lid")
+      assert LIDMapping.lid_user?("lid123@hosted.lid")
     end
 
     test "returns false for non-LID users" do
-      refute LIDMapping.is_lid_user?("1234567890@s.whatsapp.net")
-      refute LIDMapping.is_lid_user?("group123@g.us")
+      refute LIDMapping.lid_user?("1234567890@s.whatsapp.net")
+      refute LIDMapping.lid_user?("group123@g.us")
     end
   end
 

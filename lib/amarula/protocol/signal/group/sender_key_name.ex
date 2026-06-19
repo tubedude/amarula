@@ -6,6 +6,8 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyName do
   It consists of a group ID and sender information (JID + device ID).
   """
 
+  alias Amarula.Protocol.Binary.JID
+
   @type sender :: %{
           id: String.t(),
           device_id: non_neg_integer()
@@ -42,7 +44,7 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyName do
   """
   @spec from_jids(String.t(), String.t()) :: t()
   def from_jids(group_jid, author_jid) do
-    case Amarula.Protocol.Binary.JID.decode(author_jid) do
+    case JID.decode(author_jid) do
       %{user: user} = decoded ->
         dt = Map.get(decoded, :domain_type, @whatsapp_domain)
         device = Map.get(decoded, :device, 0) || 0

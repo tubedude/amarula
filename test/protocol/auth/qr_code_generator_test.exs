@@ -146,7 +146,7 @@ defmodule Amarula.Protocol.Auth.QRCodeGeneratorTest do
       # 1 second timeout
       timeout_ms = 1000
 
-      assert QRCodeGenerator.is_qr_expired?(generation_time, timeout_ms) == true
+      assert QRCodeGenerator.qr_expired?(generation_time, timeout_ms) == true
     end
 
     test "detects non-expired QR codes" do
@@ -155,7 +155,7 @@ defmodule Amarula.Protocol.Auth.QRCodeGeneratorTest do
       # 1 second timeout
       timeout_ms = 1000
 
-      assert QRCodeGenerator.is_qr_expired?(generation_time, timeout_ms) == false
+      assert QRCodeGenerator.qr_expired?(generation_time, timeout_ms) == false
     end
 
     test "handles edge case at expiration boundary" do
@@ -164,7 +164,7 @@ defmodule Amarula.Protocol.Auth.QRCodeGeneratorTest do
       timeout_ms = 1000
 
       # Should be considered expired (>= timeout)
-      assert QRCodeGenerator.is_qr_expired?(generation_time, timeout_ms) == true
+      assert QRCodeGenerator.qr_expired?(generation_time, timeout_ms) == true
     end
   end
 

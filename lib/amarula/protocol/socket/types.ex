@@ -49,8 +49,8 @@ defmodule Amarula.Protocol.Socket.Types do
   @callback connect() :: :ok | {:error, term()}
   @callback close() :: :ok | {:error, term()}
   @callback send_data(data :: binary() | iodata()) :: :ok | {:error, term()}
-  @callback is_open?() :: boolean()
-  @callback is_closed?() :: boolean()
-  @callback is_connecting?() :: boolean()
-  @callback is_closing?() :: boolean()
+  @callback open?() :: boolean()
+  @callback closed?() :: boolean()
+  @callback connecting?() :: boolean()
+  @callback closing?() :: boolean()
 end

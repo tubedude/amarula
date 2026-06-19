@@ -15,10 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Cover the full declared support range (mix.exs: elixir ~> 1.18) across
+      # distinct OTP versions. The newest pair is the dev/.tool-versions one;
+      # format + warnings-as-errors run only there (older Elixir formats
+      # differently and may warn on newer stdlib) — see the step `if`s below.
       matrix:
         include:
+          - elixir: "1.18"
+            otp: "27"
+          - elixir: "1.19"
+            otp: "28"
           - elixir: "1.20"
             otp: "29"
+            primary: true
     steps:
       - uses: actions/checkout@v4
 
@@ -41,16 +50,26 @@ jobs:
       - name: Install dependencies
         run: mix deps.get
 
+      # Formatting can differ between Elixir versions — check only on primary.
       - name: Check formatting
+        if: matrix.primary
         run: mix format --check-formatted
 
+      # warnings-as-errors only on primary: older Elixir may emit deprecation
+      # warnings on newer-stdlib calls that aren't real problems.
       - name: Compile (warnings as errors)
+        if: matrix.primary
         run: mix compile --warnings-as-errors
+
+      - name: Compile
+        if: ${{ !matrix.primary }}
+        run: mix compile
 
       # Informational — surfaces style/refactor suggestions without failing the
       # build on the existing backlog. Tighten to a blocking `mix credo` (or
       # `--strict`) once that backlog is cleared.
       - name: Credo (non-blocking)
+        if: matrix.primary
         run: mix credo --mute-exit-status
 
       - name: Run tests

@@ -113,8 +113,13 @@ defmodule Amarula.Storage.File do
 
   # --- internals ---
 
+  # `[:safe]` refuses to mint new atoms or instantiate funs/refs/external terms from
+  # the payload — so a tampered .term file can't exhaust the atom table or smuggle in
+  # an unsafe term. Legitimate values only use atoms already loaded by our structs, so
+  # they decode fine; a rejected (or genuinely corrupt) file raises and is treated as a
+  # miss, same as before.
   defp decode(bin, path) do
-    {:ok, :erlang.binary_to_term(bin)}
+    {:ok, :erlang.binary_to_term(bin, [:safe])}
   rescue
     _ ->
       Logger.warning("Storage.File: corrupt entry at #{path} — treating as miss")
@@ -122,7 +127,27 @@ defmodule Amarula.Storage.File do
   end
 
   # Per-connection directory: <root>/<profile>.
-  defp dir(root, profile), do: Path.join(root, to_string(profile))
+  #
+  # The profile becomes a path segment, so it must not escape the root. A consumer
+  # that wires untrusted input into `profile` (e.g. a multi-tenant bot) could
+  # otherwise pass "../../etc" and have us read/write/`rm_rf` outside the store.
+  # We require the profile to be a single, literal path segment and raise on
+  # anything else — a traversal attempt is abuse, not an expected miss, so failing
+  # loud beats a fail-soft `:error` that would look like a cache miss.
+  defp dir(root, profile), do: Path.join(root, safe_segment(profile))
+
+  defp safe_segment(profile) do
+    str = to_string(profile)
+
+    if str != "" and str not in [".", ".."] and Path.basename(str) == str and
+         not String.contains?(str, ["/", "\\", <<0>>]) do
+      str
+    else
+      raise ArgumentError,
+            "unsafe storage profile #{inspect(profile)}: must be a single path segment " <>
+              "(no path separators, no traversal)"
+    end
+  end
 
   # The singleton creds file is "<dir>/creds.term"; everything else is
   # "<dir>/<prefix><base64url(key)>.term".

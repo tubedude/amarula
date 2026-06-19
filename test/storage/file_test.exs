@@ -55,6 +55,17 @@ defmodule Amarula.Storage.FileTest do
     assert {:ok, :for_b} = Storage.get(s, :b, :session, "k")
   end
 
+  test "a traversal profile is rejected, never joined into the path", %{scope: s, root: root} do
+    for evil <- ["../../etc/passwd", "..", ".", "a/b", "a\\b", ""] do
+      assert_raise ArgumentError, fn -> Storage.put(s, evil, :session, "k", :x) end
+      assert_raise ArgumentError, fn -> Storage.get(s, evil, :session, "k") end
+      assert_raise ArgumentError, fn -> Storage.clear(s, evil) end
+    end
+
+    # No write escaped (or even created) the root.
+    assert File.ls(root) in [{:ok, []}, {:error, :enoent}]
+  end
+
   test "creds is a singleton at :self → <root>/<profile>/creds.term", %{scope: s, root: root} do
     creds = %{me: %{id: "x"}, registration_id: 7}
     assert :ok = Storage.put(s, @profile, :creds, :self, creds)

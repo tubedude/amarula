@@ -64,7 +64,7 @@ defmodule Amarula.Storage.DETS do
     table = open(root, profile)
     :dets.delete_all_objects(table)
     :dets.close(table)
-    File.rm_rf!(Path.join([root, to_string(profile)]))
+    File.rm_rf!(dir(root, profile))
     :ok
   end
 
@@ -93,7 +93,7 @@ defmodule Amarula.Storage.DETS do
   # Open (idempotently) the per-profile DETS table, named by {root, profile} so
   # repeated opens return the same table.
   defp open(root, profile) do
-    dir = Path.join(root, to_string(profile))
+    dir = dir(root, profile)
     File.mkdir_p!(dir)
     path = dir |> Path.join("storage.dets") |> String.to_charlist()
     name = :"amarula_storage_#{:erlang.phash2({root, profile})}"
@@ -101,6 +101,25 @@ defmodule Amarula.Storage.DETS do
     case :dets.open_file(name, file: path, type: :set) do
       {:ok, table} -> table
       {:error, reason} -> raise "could not open storage DETS at #{path}: #{inspect(reason)}"
+    end
+  end
+
+  # Per-profile directory: <root>/<profile>. The profile becomes a path segment, so
+  # it must not escape the root — a consumer wiring untrusted input into `profile`
+  # could otherwise pass "../../etc" and have us `rm_rf` / open a DETS file outside
+  # the store. Require a single literal segment and raise on anything else.
+  defp dir(root, profile), do: Path.join(root, safe_segment(profile))
+
+  defp safe_segment(profile) do
+    str = to_string(profile)
+
+    if str != "" and str not in [".", ".."] and Path.basename(str) == str and
+         not String.contains?(str, ["/", "\\", <<0>>]) do
+      str
+    else
+      raise ArgumentError,
+            "unsafe storage profile #{inspect(profile)}: must be a single path segment " <>
+              "(no path separators, no traversal)"
     end
   end
 end

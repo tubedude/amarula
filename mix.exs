@@ -11,7 +11,8 @@ defmodule Amarula.MixProject do
       deps: deps(),
       aliases: aliases(),
       description: "A WhatsApp Web client for Elixir — an idiomatic OTP port of Baileys.",
-      package: package()
+      package: package(),
+      docs: docs()
     ]
   end
 
@@ -25,6 +26,22 @@ defmodule Amarula.MixProject do
         "GitHub" => "https://github.com/tubedude/amarula",
         "Baileys (upstream)" => "https://github.com/WhiskeySockets/Baileys"
       }
+    ]
+  end
+
+  # ExDoc config. `mix docs` builds the HTML/epub reference; the architecture and
+  # usage guides ride along as extras so they're published, not just in-repo.
+  defp docs do
+    [
+      main: "readme",
+      extras: [
+        "README.md",
+        "docs/INFRASTRUCTURE.md",
+        "docs/GOING_PROD.md",
+        "usage-rules.md",
+        "CHANGELOG.md"
+      ],
+      source_url: "https://github.com/tubedude/amarula"
     ]
   end
 

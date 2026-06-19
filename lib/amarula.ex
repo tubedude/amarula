@@ -307,7 +307,7 @@ defmodule Amarula do
   storage spec (the same value `new/1` accepts as `:storage`). Returns the profile
   names that have a `:creds` entry — what you'd pass as `:profile` to reconnect.
 
-      Amarula.list_profiles(storage: "./auth")
+      Amarula.list_profiles(root: "./amarula_data")
       #=> {:ok, [:primary, "work"]}
 
   `{:error, :not_supported}` if the storage adapter can't enumerate profiles.
@@ -329,7 +329,7 @@ defmodule Amarula do
   Like `list_profiles/1`, but each entry carries the logged-in identity read from
   that profile's stored creds — for building a friendlier account picker:
 
-      Amarula.list_profiles_with_metadata(storage: "./auth")
+      Amarula.list_profiles_with_metadata(root: "./amarula_data")
       #=> {:ok, [%{profile: :primary, jid: "5511...@s.whatsapp.net",
       #           lid: "12345@lid", name: "Alice"}]}
 

@@ -24,6 +24,15 @@ defmodule Amarula.Connection.SendOpsTest do
       assert target == "g@g.us"
       assert payload == %{message: msg}
     end
+
+    test "media wraps a ready message with the default shape" do
+      msg = %Proto.Message{conversation: "img"}
+      {target, payload, shape} = SendOps.media("123@s.whatsapp.net", msg)
+
+      assert target == "123@s.whatsapp.net"
+      assert payload == %{message: msg}
+      assert shape.(:ok, "MID") == {:ok, "MID"}
+    end
   end
 
   describe "poll/4" do

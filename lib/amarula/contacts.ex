@@ -110,6 +110,14 @@ defmodule Amarula.Contacts do
 
       Amarula.Contacts.pn_for_lid(conn, "12345@lid")
       #=> %Amarula.Address{kind: :pn, ...} | nil
+
+  > #### Replying to a LID-addressed message {: .tip}
+  >
+  > You do **not** need the PN to *reply* — `msg.channel` (a `@lid` address) is a
+  > valid send target; the send pipeline resolves the LID on the wire. Use this
+  > lookup only when your logic needs to *identify* the sender by phone number
+  > (Baileys #2205). For an inbound DM whose mapping isn't cached yet, run
+  > `resolve_lid/2` once to populate it.
   """
   @spec pn_for_lid(conn(), String.t() | Address.t()) :: Address.t() | nil
   def pn_for_lid(conn, lid) do

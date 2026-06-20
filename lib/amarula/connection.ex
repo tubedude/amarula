@@ -26,7 +26,6 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Binary.{Decoder, JID, NodeUtils, Encoder, Node}
   alias Amarula.Protocol.Messages.{ConversationSender, Media, MessageEncoder}
   alias Amarula.Protocol.Messages.{HistorySync, MessageDecryptor}
-  alias Amarula.Protocol.Groups.Metadata
   alias Amarula.Protocol.Presence
 
   # A send blocks the caller until the per-recipient sender finishes (up to three
@@ -65,7 +64,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Signal.LidMappingFileStore
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
-  alias Amarula.Connection.SendOps
+  alias Amarula.Connection.{SendOps, GroupOps}
 
   defstruct [
     :websocket_client,
@@ -658,34 +657,13 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:group_metadata, group}, from, state) do
-    group_jid = Amarula.Address.to_jid!(group)
-    iq = Metadata.query_iq(group_jid)
-
-    transform = fn
-      {:ok, node} ->
-        with {:ok, meta} <- Metadata.parse(node),
-             do: {:ok, Amarula.Group.from_metadata(meta)}
-
-      {:error, node} ->
-        {:error, node}
-    end
-
+    {iq, transform} = GroupOps.metadata(Amarula.Address.to_jid!(group))
     {:noreply, send_waiter_iq(state, iq, from, transform)}
   end
 
   @impl GenServer
   def handle_call(:list_groups, from, state) do
-    iq = Metadata.query_all_iq()
-
-    transform = fn
-      {:ok, node} ->
-        {:ok, metas} = Metadata.parse_all(node)
-        {:ok, Enum.map(metas, &Amarula.Group.from_metadata/1)}
-
-      {:error, node} ->
-        {:error, node}
-    end
-
+    {iq, transform} = GroupOps.list()
     {:noreply, send_waiter_iq(state, iq, from, transform)}
   end
 

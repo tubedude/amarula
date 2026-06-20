@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Android browser mode** (Baileys #2201). Setting a `:browser` whose client
+  element contains `"Android"` (e.g. `["MyApp", "Android", ""]`) registers as an
+  Android client instead of WhatsApp Web: `userAgent.platform = :ANDROID`, no
+  `webInfo`, `DeviceProps.platformType = :ANDROID_PHONE`. Lets a session receive
+  view-once media. Experimental, and shows as a phone in Linked Devices — see the
+  impact note in `Amarula.Config`. Non-Android browsers are unaffected.
+
 ## [0.2.2] - 2026-06-20
 
 A bug-fix plus new outgoing/incoming message types (Tier 1 + Tier 2 of the proto

@@ -64,7 +64,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Signal.LidMappingFileStore
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
-  alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps}
+  alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing}
 
   defstruct [
     :websocket_client,
@@ -2254,34 +2254,19 @@ defmodule Amarula.Connection do
     # We're still waiting for the user to scan the QR code and pair-success to arrive.
     # The pair-device IQ is just sending us QR codes, not completing authentication.
 
-    # Send IQ acknowledgment - use list for attribute order: to, type, id
+    # Send IQ acknowledgment.
     msg_id = NodeUtils.get_attr(node, "id")
-
-    ack_node = %Node{
-      tag: "iq",
-      attrs: [
-        {"to", "@s.whatsapp.net"},
-        {"type", "result"},
-        {"id", msg_id}
-      ],
-      # No content (matches Baileys)
-      content: nil
-    }
-
     Logger.debug("Sending pair-device IQ ack (id=#{msg_id})")
-    state = send_binary_node(state, ack_node)
+    state = send_binary_node(state, Pairing.pair_device_ack_node(msg_id))
 
     # Extract ref nodes and start cycling QR codes (matches Baileys genPairQR loop)
-    with pair_device_node when not is_nil(pair_device_node) <-
-           NodeUtils.get_binary_node_child(node, "pair-device"),
-         [_ | _] = ref_nodes <-
-           NodeUtils.get_binary_node_children(pair_device_node, "ref") do
-      refs = Enum.map(ref_nodes, & &1.content)
-      emit_next_qr(%{state | qr_refs: refs})
-    else
-      _ ->
+    case Pairing.qr_refs(node) do
+      [] ->
         Logger.warning("pair-device IQ had no ref nodes")
         state
+
+      refs ->
+        emit_next_qr(%{state | qr_refs: refs})
     end
   end
 
@@ -2357,7 +2342,7 @@ defmodule Amarula.Connection do
       account_enc = DeviceIdentity.encode(verified_account, false)
 
       # Build and send reply
-      reply_node = build_pair_device_sign_reply(msg_id, device_identity.keyIndex, account_enc)
+      reply_node = Pairing.pair_device_sign_reply(msg_id, device_identity.keyIndex, account_enc)
 
       Logger.debug(
         "Sending pair-device-sign reply: msg_id=#{msg_id}, key_index=#{device_identity.keyIndex}"
@@ -2367,7 +2352,7 @@ defmodule Amarula.Connection do
 
       # Update credentials
       updated_creds =
-        update_credentials_after_pairing(
+        Pairing.update_credentials_after_pairing(
           state.auth_creds,
           verified_account,
           jid,
@@ -2406,52 +2391,8 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Device-identity pairing crypto extracted to Auth.DeviceIdentity (pure).
-
-  defp build_pair_device_sign_reply(msg_id, key_index, account_enc) do
-    %Node{
-      tag: "iq",
-      attrs: %{
-        "to" => Constants.s_whatsapp_net(),
-        "type" => "result",
-        "id" => msg_id
-      },
-      content: [
-        %Node{
-          tag: "pair-device-sign",
-          attrs: %{},
-          content: [
-            %Node{
-              tag: "device-identity",
-              attrs: %{"key-index" => to_string(key_index)},
-              content: account_enc
-            }
-          ]
-        }
-      ]
-    }
-  end
-
-  defp update_credentials_after_pairing(
-         creds,
-         account,
-         jid,
-         lid,
-         biz_name,
-         platform,
-         signal_identity
-       ) do
-    creds
-    |> Map.put(:account, account)
-    # Default name to "~" (Baileys) when there's no business name — a personal
-    # account has no <biz>, and presence-available (which marks the companion
-    # ACTIVE on the phone, clearing "Paused") requires a non-nil me.name.
-    |> Map.put(:me, %{id: jid, name: biz_name || "~", lid: lid})
-    |> Map.put(:platform, platform)
-    |> Map.update(:signal_identities, [signal_identity], fn identities ->
-      [signal_identity | identities || []]
-    end)
-  end
+  # Device-identity pairing crypto extracted to Auth.DeviceIdentity (pure);
+  # pairing node/creds builders extracted to Connection.Pairing (pure).
 
   # Full-frame tap for protocol diffing against Baileys. Off unless AMARULA_FRAME_TAP
   # is set. Dumps every in/out node as one-line XML so two clients' post-login frame

@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.3] - 2026-06-20
 
-New message/group capabilities (Tier 1 + Tier 2 of the proto coverage review,
-plus several from upstream issue triage), an optional Android client mode, and
-three protocol fixes. No breaking changes.
+A big batch of new message and group capabilities — replies, mentions, poll
+votes, pins, view-once, albums, events, group invites, member tags, and LID↔PN
+resolution — plus an optional Android client mode and three protocol fixes. No
+breaking changes.
 
 ### Fixed
 
@@ -54,9 +55,8 @@ three protocol fixes. No breaking changes.
 
 ## [0.2.2] - 2026-06-20
 
-A bug-fix plus new outgoing/incoming message types (Tier 1 + Tier 2 of the proto
-coverage review). One small breaking change to how you reference an existing
-message (see **Changed (breaking)**).
+A bug-fix plus new outgoing/incoming message types. One small breaking change to
+how you reference an existing message (see **Changed (breaking)**).
 
 ### Fixed
 

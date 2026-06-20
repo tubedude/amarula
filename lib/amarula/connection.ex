@@ -64,7 +64,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Signal.LidMappingFileStore
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
-  alias Amarula.Connection.{SendOps, GroupOps}
+  alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps}
 
   defstruct [
     :websocket_client,
@@ -3668,17 +3668,7 @@ defmodule Amarula.Connection do
 
   # Ask the server how many of our one-time prekeys it still holds.
   defp request_pre_key_count(state) do
-    count_iq = %Node{
-      tag: "iq",
-      attrs: [
-        {"xmlns", "encrypt"},
-        {"type", "get"},
-        {"to", Constants.s_whatsapp_net()}
-      ],
-      content: [%Node{tag: "count", attrs: %{}, content: nil}]
-    }
-
-    send_tracked_iq(state, count_iq, :prekey_count)
+    send_tracked_iq(state, PreKeyOps.count_query_node(), :prekey_count)
   end
 
   defp handle_tracked_iq(:app_state_sync, {:ok, node}, state) do
@@ -3692,23 +3682,12 @@ defmodule Amarula.Connection do
   end
 
   defp handle_tracked_iq(:prekey_count, {:ok, node}, state) do
-    server_count =
-      case NodeUtils.get_binary_node_child(node, "count") do
-        nil -> 0
-        count_node -> String.to_integer(NodeUtils.get_attr(count_node, "value") || "0")
-      end
-
-    # If the server has none we send the big initial batch, otherwise top up.
-    target =
-      if server_count == 0,
-        do: PreKeys.initial_pre_key_count(),
-        else: PreKeys.min_pre_key_count()
+    server_count = PreKeyOps.server_count(node)
+    target = PreKeyOps.upload_target(server_count)
 
     Logger.debug("#{server_count} pre-keys found on server")
 
-    # Baileys also re-uploads when the most recently generated prekey is gone
-    # from local storage (verifyCurrentPreKeyExists).
-    if server_count <= target or missing_current_pre_key?(state.auth_creds) do
+    if PreKeyOps.upload_needed?(server_count, target, state.auth_creds) do
       upload_pre_keys(state, target)
     else
       finish_login(state)
@@ -3819,11 +3798,6 @@ defmodule Amarula.Connection do
 
     Logger.debug("Sending presence available (name: #{name})")
     send_binary_node(state, node)
-  end
-
-  defp missing_current_pre_key?(creds) do
-    current_id = Map.get(creds, :next_pre_key_id, 1) - 1
-    current_id > 0 and not Map.has_key?(Map.get(creds, :pre_keys, %{}), current_id)
   end
 
   defp upload_pre_keys(state, count, kind \\ :prekey_upload) do

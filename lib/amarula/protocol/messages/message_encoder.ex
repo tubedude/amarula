@@ -347,6 +347,44 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
   end
 
   @doc """
+  Build an event message. `name` is the event title. `opts`:
+
+    * `:description` — free text.
+    * `:location` — `{lat, lng}` floats, or a keyword with `:name`/`:address`.
+    * `:join_link` — a call/meeting URL.
+    * `:start_time` / `:end_time` — unix seconds.
+    * `:extra_guests_allowed` — boolean.
+  """
+  @spec event(String.t(), keyword()) :: Proto.Message.t()
+  def event(name, opts \\ []) when is_binary(name) do
+    %Proto.Message{
+      eventMessage: %Proto.Message.EventMessage{
+        name: name,
+        description: opts[:description],
+        location: event_location(opts[:location]),
+        joinLink: opts[:join_link],
+        startTime: opts[:start_time],
+        endTime: opts[:end_time],
+        extraGuestsAllowed: opts[:extra_guests_allowed]
+      }
+    }
+  end
+
+  defp event_location(nil), do: nil
+
+  defp event_location({lat, lng}) when is_float(lat) and is_float(lng),
+    do: %Proto.Message.LocationMessage{degreesLatitude: lat, degreesLongitude: lng}
+
+  defp event_location(opts) when is_list(opts) do
+    %Proto.Message.LocationMessage{
+      degreesLatitude: opts[:lat],
+      degreesLongitude: opts[:lng],
+      name: opts[:name],
+      address: opts[:address]
+    }
+  end
+
+  @doc """
   Build a group-invite message — a sendable chat card that lets the recipient
   join `group_jid` via `code` (from `Amarula.Group.invite_code/2`). `opts`:
   `:group_name`, `:caption`, `:expiration` (unix ms when the code expires).

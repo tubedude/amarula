@@ -81,6 +81,13 @@ defmodule AmarulaTest do
     assert rev.protocolMessage.type == :REVOKE
   end
 
+  test "send_event builds an eventMessage to the target jid", %{conn: conn} do
+    Amarula.send_event(conn, "g@g.us", "Launch", description: "v1")
+    assert_received {:got, {:send_message, "g@g.us", msg}}
+    assert msg.eventMessage.name == "Launch"
+    assert msg.eventMessage.description == "v1"
+  end
+
   test "send_group_invite builds a groupInviteMessage to the target jid", %{conn: conn} do
     Amarula.send_group_invite(conn, "x@s.whatsapp.net", "123@g.us", "CODE", group_name: "T")
     assert_received {:got, {:send_message, "x@s.whatsapp.net", msg}}

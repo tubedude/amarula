@@ -635,6 +635,18 @@ defmodule Amarula do
     send_built(conn, Amarula.Address.to_jid!(jid), MessageEncoder.group_invite(group_jid, code, opts))
   end
 
+  @doc """
+  Send an event to `jid` (a group or 1:1). `name` is the title. `opts`:
+  `:description`, `:location` (`{lat, lng}` or `[lat:, lng:, name:, address:]`),
+  `:join_link`, `:start_time` / `:end_time` (unix seconds), `:extra_guests_allowed`.
+
+  > Responding to an event (RSVP) is not yet supported — the response is an
+  > encrypted `EncEventResponseMessage`, a separate crypto seam (like poll votes).
+  """
+  @spec send_event(conn(), jid(), String.t(), keyword()) :: send_result()
+  def send_event(conn, jid, name, opts \\ []),
+    do: send_built(conn, Amarula.Address.to_jid!(jid), MessageEncoder.event(name, opts))
+
   @doc "Unpin a previously pinned message. `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
   @spec unpin_message(conn(), message_ref()) :: send_result()
   def unpin_message(conn, ref) do

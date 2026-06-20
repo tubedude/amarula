@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receive-only WhatsApp Business / interactive types (product, order, button /
   list / template / interactive responses). Surfaced on `%Amarula.Msg{}` via its
   `type` + `content`.
+- **Create events.** `Amarula.send_event/4` sends an event (name + optional
+  description, location, join link, start/end time, extra-guests flag).
+  Responding (RSVP) is not yet supported — it's an encrypted response, a separate
+  seam like poll votes.
 - **Send a group invite as a chat message.** `Amarula.send_group_invite/5` wraps
   a group's invite `code` (from `Amarula.Group.invite_code/2`) into a tap-to-join
   card sent to a chat. `opts`: `:group_name`, `:caption`, `:expiration`.

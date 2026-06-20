@@ -33,6 +33,47 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
   end
 
+  describe "event/2" do
+    test "builds an eventMessage with name + optional fields" do
+      msg =
+        MessageEncoder.event("Launch",
+          description: "v1.0",
+          join_link: "https://call",
+          start_time: 1_700_000_000,
+          end_time: 1_700_003_600,
+          extra_guests_allowed: true
+        )
+
+      ev = msg.eventMessage
+      assert ev.name == "Launch"
+      assert ev.description == "v1.0"
+      assert ev.joinLink == "https://call"
+      assert ev.startTime == 1_700_000_000
+      assert ev.endTime == 1_700_003_600
+      assert ev.extraGuestsAllowed == true
+    end
+
+    test "location as a {lat, lng} tuple builds a LocationMessage" do
+      msg = MessageEncoder.event("Picnic", location: {1.5, 2.5})
+      assert msg.eventMessage.location.degreesLatitude == 1.5
+      assert msg.eventMessage.location.degreesLongitude == 2.5
+    end
+
+    test "location as a keyword carries name/address" do
+      msg = MessageEncoder.event("Picnic", location: [lat: 1.0, lng: 2.0, name: "Park"])
+      assert msg.eventMessage.location.name == "Park"
+    end
+
+    test "no location → nil" do
+      assert MessageEncoder.event("Bare").eventMessage.location == nil
+    end
+
+    test "round-trips through classify as {:event, _}" do
+      assert {:event, %Proto.Message.EventMessage{name: "X"}} =
+               Amarula.Protocol.Messages.MessageContent.classify(MessageEncoder.event("X"))
+    end
+  end
+
   describe "group_invite/3" do
     test "builds a groupInviteMessage with code + optional fields" do
       msg =

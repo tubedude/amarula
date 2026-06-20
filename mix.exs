@@ -5,8 +5,6 @@ defmodule Amarula.MixProject do
     [
       app: :amarula,
       version: "0.2.2",
-      # 1.18 is the real floor: 1.17- compiles but the test suite uses the
-      # built-in JSON module (1.18+). Verified by CI (see .github elixir.yml).
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),

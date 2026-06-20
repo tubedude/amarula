@@ -27,11 +27,14 @@ history sync.
 
 ## Features
 
-- QR-code pairing, with credentials persisted per **profile** (reconnect without re-pairing)
+- QR-code (and phone-number) pairing, with credentials persisted per **profile** (reconnect without re-pairing)
 - Send/receive **text, media** (image/video/audio/document/sticker), **reactions, edits, deletes**
-- **1:1 and group** messaging
-- **Polls** (create + tally), **presence/typing/read** receipts, **contacts & location**
-- **History sync** (your existing chats load on link)
+- **Replies & mentions**, **view-once** media, **PTV** round video notes, **albums**
+- **1:1 and group** messaging; **group invites as messages**, **member tags**, **events**
+- **Polls** — create, **cast votes**, and tally
+- **Pin/unpin** and **keep-in-chat**, **presence/typing/read** receipts, **contacts & location**
+- **History sync** (your existing chats load on link); **LID↔PN resolution** + a `:lid_mapping_update` event
+- Optional **Android client** registration (receive view-once media)
 - A **pluggable storage** backend (file or DETS out of the box) and **send/receive plugins** (Req-style)
 - Many independent connections in one VM — no global state
 
@@ -40,7 +43,7 @@ history sync.
 ```elixir
 def deps do
   [
-    {:amarula, "~> 0.1.0"}
+    {:amarula, "~> 0.2"}
   ]
 end
 ```
@@ -221,8 +224,12 @@ sequenceDiagram
 | `:history_sync` | `%{chats, contacts, ...}` | initial + incremental history download |
 | `:chats_update` / `:contacts_update` | `[%Amarula.Chat{}]` / `[%Amarula.Contact{}]` | history / app-state sync |
 | `:group_update` | `%{group, author, action}` | a group's membership/metadata changed |
-| `:blocklist_update` | `[%{jid, action}]` | you blocked/unblocked someone |
+| `:presence_update` | `%{jid, participant, presence, last_seen}` | a contact's presence / typing state |
+| `:blocklist_update` | `[%{jid, action}]` | someone was blocked/unblocked |
+| `:lid_mapping_update` | `[%{lid: Address, pn: Address}]` | new LID↔PN mappings learned (see `Amarula.Contacts.pn_for_lid/2`) |
 | `:error` | a reason term | a connection error |
+
+> The full, authoritative event list is `t:Amarula.event/0`.
 
 ## Try it
 

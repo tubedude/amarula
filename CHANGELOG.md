@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-06-19
+### Fixed
+
+- **`Storage.File` no longer discards a valid `creds.term` as "corrupt" on a cold
+  start** (#1). Decoding used `:erlang.binary_to_term/2` with `[:safe]`, which
+  refuses to mint atoms that aren't loaded yet. A persisted creds term legitimately
+  carries generated proto-struct atoms (e.g.
+  `Amarula.Protocol.Proto.ADVSignedDeviceIdentity`); if creds were read before that
+  module loaded, `[:safe]` raised and the entry was swallowed as a miss — silently
+  logging the session out and forcing a re-pair, intermittently and load-order
+  dependent. Decode now falls back to an unsafe `binary_to_term/1` on the
+  `[:safe]`-specific rejection (these files are self-written and trusted), so a valid
+  creds file is always recovered; only a genuinely undecodable file is treated as a
+  miss.
 
 A consumer-API cleanup pass: leaner, more consistent `Amarula` facade with no
 protocol types leaked. **All breaking changes are mechanical** — rename the call

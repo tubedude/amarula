@@ -87,6 +87,29 @@ defmodule Amarula.Storage.FileTest do
     assert :error = Storage.get(s, @profile, :session, "bad")
   end
 
+  # Regression: a valid self-written term whose atom isn't loaded yet (e.g. a generated
+  # proto struct on a cold BEAM) must NOT be reported as a miss. `[:safe]` raises on it;
+  # we fall back to an unsafe decode of our own file instead of forcing a re-pair.
+  # See GitHub issue #1.
+  test "an unloaded-atom term is recovered, not treated as a miss", %{scope: s, root: root} do
+    # Hand-build the external representation of an atom that has never been minted,
+    # so `binary_to_term/2` `[:safe]` refuses it but plain `binary_to_term/1` accepts.
+    name = "amarula_unloaded_atom_#{System.unique_integer([:positive])}"
+    bytes = :erlang.iolist_to_binary(name)
+    atom_term = <<131, 119, byte_size(bytes)::8, bytes::binary>>
+
+    # Sanity: this really is the [:safe]-rejected / unsafe-accepted shape the bug hits.
+    assert_raise ArgumentError, fn -> :erlang.binary_to_term(atom_term, [:safe]) end
+
+    safe = Base.url_encode64("k", padding: false)
+    profile_dir = Path.join(root, to_string(@profile))
+    File.mkdir_p!(profile_dir)
+    File.write!(Path.join(profile_dir, "session-#{safe}.term"), atom_term)
+
+    assert {:ok, recovered} = Storage.get(s, @profile, :session, "k")
+    assert recovered == String.to_atom(name)
+  end
+
   test "scope/1 accepts a bare opts list (default adapter)", %{root: root} do
     s = Storage.scope(root: root)
     assert :ok = Storage.put(s, @profile, :creds, :self, %{ok: true})

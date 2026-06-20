@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Audio: thread `:waveform` and warn when `:seconds` is missing** (Baileys
+  #2646). `send_media(:audio, …)` now passes a `:waveform` opt through to the
+  proto, and logs a warning when `:seconds` is absent — without a duration, clips
+  longer than ~10s may fail to play on iPhone recipients. Amarula does no media
+  processing, so the caller must supply `:seconds`; this is now documented on
+  `send_media/5` and surfaced at send time.
 - **Pinned chat state is always a definite boolean** (Baileys #2328). A pin
   app-state action whose `pinned` flag the server omits (proto3-optional) left
   `%Amarula.Chat{}.pinned` as `nil` ("undefined for some conversations"). It now

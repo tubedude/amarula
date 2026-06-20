@@ -729,6 +729,14 @@ defmodule Amarula do
     * `:quoted` / `:mentions` — reply to / tag (see `send_text/4`).
     * `:view_once` — send as view-once (the recipient can open it once).
     * `:ptv` — for `:video`, send as a round video note (PTV).
+
+  > #### Audio needs `:seconds` {: .warning}
+  >
+  > Amarula does no media processing — it won't compute an audio clip's duration
+  > for you. **Pass `:seconds` (the clip length) for `:audio`.** Without it, clips
+  > longer than ~10s may fail to play on iPhone recipients (WhatsApp rejects the
+  > playback and asks the sender to resend — Baileys #2646). Voice notes (`:ptt`)
+  > can also carry a `:waveform` (bytes) for the amplitude preview.
   """
   @spec send_media(conn(), jid(), media_type(), binary(), keyword()) :: send_result()
   def send_media(conn, jid, type, data, opts \\ [])

@@ -349,9 +349,22 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
 
     test "each type maps to its own proto field" do
       assert MessageEncoder.media(:video, @info, seconds: 3).videoMessage.seconds == 3
-      assert MessageEncoder.media(:audio, @info, ptt: true).audioMessage.ptt == true
+      assert MessageEncoder.media(:audio, @info, seconds: 5, ptt: true).audioMessage.ptt == true
       assert MessageEncoder.media(:document, @info, title: "t").documentMessage.title == "t"
       assert MessageEncoder.media(:sticker, @info).stickerMessage.url == "https://x/y"
+    end
+
+    test "audio threads :seconds and :waveform (#2646)" do
+      audio = MessageEncoder.media(:audio, @info, seconds: 42, waveform: <<1, 2, 3>>).audioMessage
+      assert audio.seconds == 42
+      assert audio.waveform == <<1, 2, 3>>
+    end
+
+    test "audio without :seconds warns (iPhone playback risk, #2646)" do
+      import ExUnit.CaptureLog
+
+      log = capture_log(fn -> MessageEncoder.media(:audio, @info, ptt: true) end)
+      assert log =~ "audio sent without :seconds"
     end
 
     test "image/2 is media(:image, ...)" do

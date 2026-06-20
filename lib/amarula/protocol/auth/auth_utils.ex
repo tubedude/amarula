@@ -167,7 +167,7 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
         secondary: Enum.at(config.version, 1),
         tertiary: Enum.at(config.version, 2)
       },
-      platform: :WEB,
+      platform: if(android?(config.browser), do: :ANDROID, else: :WEB),
       releaseChannel: :RELEASE,
       osVersion: "0.1",
       device: "Desktop",
@@ -180,20 +180,24 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
   end
 
   @doc """
-  Create web info for ClientPayload.
+  Create web info for ClientPayload. An Android browser carries no `webInfo`
+  (it's a web-client field) — returns `nil`, mirroring Baileys.
   """
-  @spec create_web_info(socket_config()) :: Proto.ClientPayload.WebInfo.t()
+  @spec create_web_info(socket_config()) :: Proto.ClientPayload.WebInfo.t() | nil
   def create_web_info(config) do
-    web_sub_platform =
-      if config.sync_full_history and desktop_browser?(config.browser) do
-        platform_to_web_sub_platform(Enum.at(config.browser, 0))
-      else
-        :WEB_BROWSER
-      end
+    cond do
+      # Android registers as a phone client — no webInfo (a web-client field).
+      android?(config.browser) ->
+        nil
 
-    %Proto.ClientPayload.WebInfo{
-      webSubPlatform: web_sub_platform
-    }
+      config.sync_full_history and desktop_browser?(config.browser) ->
+        %Proto.ClientPayload.WebInfo{
+          webSubPlatform: platform_to_web_sub_platform(Enum.at(config.browser, 0))
+        }
+
+      true ->
+        %Proto.ClientPayload.WebInfo{webSubPlatform: :WEB_BROWSER}
+    end
   end
 
   @doc """
@@ -286,8 +290,18 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
       "SAFARI" -> :SAFARI
       "EDGE" -> :EDGE
       "DESKTOP" -> :DESKTOP
+      "ANDROID" -> :ANDROID_PHONE
       # Default
       _ -> :CHROME
     end
+  end
+
+  # An "android" browser (the second element of the browser triple contains
+  # "android", case-insensitive) opts the connection into Android-client
+  # registration instead of WhatsApp Web. Mirrors Baileys
+  # (`browser[1].toLocaleLowerCase().includes('android')`).
+  defp android?(browser) do
+    name = browser && Enum.at(browser, 1)
+    is_binary(name) and String.contains?(String.downcase(name), "android")
   end
 end

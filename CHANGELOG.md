@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cast a poll vote.** `Amarula.send_poll_vote/5` encrypts and sends a vote on an
   existing poll (the inverse of the tally/decrypt path). Pass the poll's
   `message_ref`, its `message_secret`, and the chosen option names.
+- **Pin / unpin and keep / unkeep messages.** `Amarula.pin_message/2`,
+  `unpin_message/2` (pin for everyone), `keep_message/2`, `unkeep_message/2`
+  (exempt a message from a disappearing chat). Each takes a `message_ref`.
 
 ### Changed (breaking)
 

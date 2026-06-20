@@ -81,6 +81,26 @@ defmodule AmarulaTest do
     assert rev.protocolMessage.type == :REVOKE
   end
 
+  test "pin/unpin and keep/unkeep build the right protocol message", %{conn: conn} do
+    ref = {"g@g.us", "ABC"}
+
+    Amarula.pin_message(conn, ref)
+    assert_received {:got, {:send_message, "g@g.us", pin}}
+    assert pin.pinInChatMessage.type == :PIN_FOR_ALL
+
+    Amarula.unpin_message(conn, ref)
+    assert_received {:got, {:send_message, "g@g.us", unpin}}
+    assert unpin.pinInChatMessage.type == :UNPIN_FOR_ALL
+
+    Amarula.keep_message(conn, ref)
+    assert_received {:got, {:send_message, "g@g.us", keep}}
+    assert keep.keepInChatMessage.keepType == :KEEP_FOR_ALL
+
+    Amarula.unkeep_message(conn, ref)
+    assert_received {:got, {:send_message, "g@g.us", unkeep}}
+    assert unkeep.keepInChatMessage.keepType == :UNDO_KEEP_FOR_ALL
+  end
+
   test "send_media forwards {:send_media, jid, type, data, opts}", %{conn: conn} do
     Amarula.send_media(conn, "x@s.whatsapp.net", :document, <<1, 2, 3>>, title: "t")
 

@@ -33,6 +33,28 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
   end
 
+  describe "pin/2 and keep/2" do
+    setup do
+      {:ok, key: %Proto.MessageKey{remoteJid: "g@g.us", id: "ABC"}}
+    end
+
+    test "pin → PIN_FOR_ALL with key + timestamp", %{key: key} do
+      msg = MessageEncoder.pin(key, true)
+      assert msg.pinInChatMessage.type == :PIN_FOR_ALL
+      assert msg.pinInChatMessage.key == key
+      assert is_integer(msg.pinInChatMessage.senderTimestampMs)
+    end
+
+    test "unpin → UNPIN_FOR_ALL", %{key: key} do
+      assert MessageEncoder.pin(key, false).pinInChatMessage.type == :UNPIN_FOR_ALL
+    end
+
+    test "keep → KEEP_FOR_ALL, undo → UNDO_KEEP_FOR_ALL", %{key: key} do
+      assert MessageEncoder.keep(key, true).keepInChatMessage.keepType == :KEEP_FOR_ALL
+      assert MessageEncoder.keep(key, false).keepInChatMessage.keepType == :UNDO_KEEP_FOR_ALL
+    end
+  end
+
   describe "context_info/1 (reply + mentions)" do
     test "no quoted/mentions → nil (message stays a plain conversation)" do
       assert MessageEncoder.context_info([]) == nil

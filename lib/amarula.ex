@@ -617,6 +617,37 @@ defmodule Amarula do
     send_built(conn, jid, MessageEncoder.revoke(key))
   end
 
+  @doc "Pin a message for everyone in the chat. `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
+  @spec pin_message(conn(), message_ref()) :: send_result()
+  def pin_message(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.pin(key, true))
+  end
+
+  @doc "Unpin a previously pinned message. `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
+  @spec unpin_message(conn(), message_ref()) :: send_result()
+  def unpin_message(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.pin(key, false))
+  end
+
+  @doc """
+  Keep a message in a disappearing chat (exempt it from auto-delete). `ref` is a
+  `%Amarula.Msg{}` or `{jid, msg_id}`.
+  """
+  @spec keep_message(conn(), message_ref()) :: send_result()
+  def keep_message(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.keep(key, true))
+  end
+
+  @doc "Undo a previous keep (let the message disappear again). `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
+  @spec unkeep_message(conn(), message_ref()) :: send_result()
+  def unkeep_message(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.keep(key, false))
+  end
+
   @doc """
   Send media of `type` (`:image`/`:video`/`:audio`/`:document`/`:sticker`).
 

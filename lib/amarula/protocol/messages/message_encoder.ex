@@ -321,6 +321,40 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
   end
 
   @doc """
+  Pin (`pin?: true`) or unpin (`false`) the message identified by `target_key`
+  for everyone in the chat (`PIN_FOR_ALL` / `UNPIN_FOR_ALL`).
+  """
+  @spec pin(Proto.MessageKey.t(), boolean()) :: Proto.Message.t()
+  def pin(%Proto.MessageKey{} = target_key, pin?) when is_boolean(pin?) do
+    type = if pin?, do: :PIN_FOR_ALL, else: :UNPIN_FOR_ALL
+
+    %Proto.Message{
+      pinInChatMessage: %Proto.Message.PinInChatMessage{
+        key: target_key,
+        type: type,
+        senderTimestampMs: System.system_time(:millisecond)
+      }
+    }
+  end
+
+  @doc """
+  Keep (`keep?: true`, `KEEP_FOR_ALL`) or undo-keep (`false`, `UNDO_KEEP_FOR_ALL`)
+  the message identified by `target_key` — for messages in a disappearing chat.
+  """
+  @spec keep(Proto.MessageKey.t(), boolean()) :: Proto.Message.t()
+  def keep(%Proto.MessageKey{} = target_key, keep?) when is_boolean(keep?) do
+    type = if keep?, do: :KEEP_FOR_ALL, else: :UNDO_KEEP_FOR_ALL
+
+    %Proto.Message{
+      keepInChatMessage: %Proto.Message.KeepInChatMessage{
+        key: target_key,
+        keepType: type,
+        timestampMs: System.system_time(:millisecond)
+      }
+    }
+  end
+
+  @doc """
   Build a delete-for-everyone (revoke) of the message identified by `target_key`.
   Sent to `target_key.remoteJid`; the recipient replaces the message with a
   "this message was deleted" tombstone.

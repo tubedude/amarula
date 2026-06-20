@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-20
+
+Internal refactor only — **no API changes.** Every public `Amarula` function
+keeps its exact signature, arity, defaults, and return shape (verified by diff);
+consumer event shapes are unchanged. No action needed to upgrade.
+
+### Changed (internal)
+
+- Decomposed the ~3.9k-line `Amarula.Connection` god-module: the pure bodies of
+  its callbacks moved into eight focused submodules under
+  `Amarula.Connection.*` — `SendOps`, `GroupOps`, `PreKeyOps`, `Pairing`,
+  `Notifications`, `Receive`, `AppStateOps`, and the shared `AckLifecycle` seam.
+  `Connection` remains the single per-connection process and dispatcher; anything
+  bound to the live socket, cipher, IQ correlation, or Storage stayed put. Each
+  new module has direct unit tests (100% line coverage).
+- The `Amarula` facade now calls the connection process directly
+  (`GenServer.call`) instead of `defdelegate`-ing through `Connection`'s client
+  wrappers, removing one indirection hop. Public signatures are untouched.
+
 ## [0.2.0] - 2026-06-19
 
 A consumer-API cleanup pass: leaner, more consistent `Amarula` facade with no

@@ -636,6 +636,43 @@ defmodule Amarula do
   end
 
   @doc """
+  Send an album (grouped media) to `jid`. `items` is a list of
+  `{type, data, opts}` (same shape as `send_media/5`), where `type` is `:image`
+  or `:video`. Sends the album parent first, then each item referencing it.
+
+  Returns `{:ok, parent_msg_id}` once the parent and all items are sent, or
+  `{:error, {:album_item, index, reason}}` if an item fails (the parent and
+  earlier items have already been sent).
+
+  > WhatsApp expects ≥2 items, all images/videos.
+  """
+  @spec send_album(conn(), jid(), [{:image | :video, binary(), keyword()}]) ::
+          {:ok, String.t()} | {:error, term()}
+  def send_album(conn, jid, items) when is_list(items) do
+    jid = Amarula.Address.to_jid!(jid)
+    images = Enum.count(items, fn {t, _, _} -> t == :image end)
+    videos = Enum.count(items, fn {t, _, _} -> t == :video end)
+
+    with {:ok, parent_id} <- send_built(conn, jid, MessageEncoder.album(images, videos)) do
+      parent_key = %Proto.MessageKey{remoteJid: jid, id: parent_id, fromMe: true}
+      send_album_items(conn, jid, items, parent_key, parent_id)
+    end
+  end
+
+  defp send_album_items(conn, jid, items, parent_key, parent_id) do
+    items
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, parent_id}, fn {{type, data, opts}, idx}, _acc ->
+      item_opts = Keyword.put(opts, :album_parent, parent_key)
+
+      case send_media(conn, jid, type, data, item_opts) do
+        {:ok, _id} -> {:cont, {:ok, parent_id}}
+        {:error, reason} -> {:halt, {:error, {:album_item, idx, reason}}}
+      end
+    end)
+  end
+
+  @doc """
   Send an event to `jid` (a group or 1:1). `name` is the title. `opts`:
   `:description`, `:location` (`{lat, lng}` or `[lat:, lng:, name:, address:]`),
   `:join_link`, `:start_time` / `:end_time` (unix seconds), `:extra_guests_allowed`.

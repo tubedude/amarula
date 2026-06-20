@@ -33,6 +33,33 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
   end
 
+  describe "album/2 and media album_parent" do
+    test "album parent carries expected image/video counts" do
+      msg = MessageEncoder.album(2, 1)
+      assert msg.albumMessage.expectedImageCount == 2
+      assert msg.albumMessage.expectedVideoCount == 1
+    end
+
+    test "round-trips through classify (no dedicated tag → {:other})" do
+      # albumMessage has no classify clause yet; it falls through to {:other}.
+      assert {:other, _} = Amarula.Protocol.Messages.MessageContent.classify(MessageEncoder.album(2, 0))
+    end
+
+    test "a child media references the album parent via messageContextInfo" do
+      parent = %Proto.MessageKey{remoteJid: "g@g.us", id: "PARENT", fromMe: true}
+      msg = MessageEncoder.media(:image, media_info(), album_parent: parent)
+
+      assoc = msg.messageContextInfo.messageAssociation
+      assert assoc.associationType == :MEDIA_ALBUM
+      assert assoc.parentMessageKey == parent
+    end
+
+    test "no album_parent → no messageContextInfo association" do
+      msg = MessageEncoder.media(:image, media_info(), [])
+      assert msg.messageContextInfo == nil
+    end
+  end
+
   describe "event/2" do
     test "builds an eventMessage with name + optional fields" do
       msg =

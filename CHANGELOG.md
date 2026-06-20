@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receive-only WhatsApp Business / interactive types (product, order, button /
   list / template / interactive responses). Surfaced on `%Amarula.Msg{}` via its
   `type` + `content`.
+- **Send albums (grouped media).** `Amarula.send_album/3` takes a list of
+  `{type, data, opts}` image/video items; it sends the album parent, then each
+  item referencing it (via `messageContextInfo.messageAssociation`, MEDIA_ALBUM).
 - **Create events.** `Amarula.send_event/4` sends an event (name + optional
   description, location, join link, start/end time, extra-guests flag).
   Responding (RSVP) is not yet supported — it's an encrypted response, a separate

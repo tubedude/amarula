@@ -232,6 +232,24 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
     |> put_media_context(media_field(type), context_info(opts))
     |> maybe_ptv(type, opts)
     |> maybe_view_once(opts)
+    |> maybe_album_child(opts[:album_parent])
+  end
+
+  # An album child references its parent album message via a top-level
+  # messageContextInfo.messageAssociation (MEDIA_ALBUM). The send path forwards
+  # messageContextInfo, so this rides along to the recipient.
+  defp maybe_album_child(message, nil), do: message
+
+  defp maybe_album_child(%Proto.Message{} = message, %Proto.MessageKey{} = parent_key) do
+    %{
+      message
+      | messageContextInfo: %Proto.MessageContextInfo{
+          messageAssociation: %Proto.MessageAssociation{
+            associationType: :MEDIA_ALBUM,
+            parentMessageKey: parent_key
+          }
+        }
+    }
   end
 
   # PTV (round video note): relocate the built videoMessage to the ptvMessage
@@ -342,6 +360,21 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
         type: :MESSAGE_EDIT,
         editedMessage: text(new_text),
         timestampMs: System.system_time(:millisecond)
+      }
+    }
+  end
+
+  @doc """
+  Build an album **parent** message announcing how many images/videos follow.
+  The children are sent afterwards, each referencing this message's key as their
+  album parent (see `media/3`'s `:album_parent` opt).
+  """
+  @spec album(non_neg_integer(), non_neg_integer()) :: Proto.Message.t()
+  def album(image_count, video_count) do
+    %Proto.Message{
+      albumMessage: %Proto.Message.AlbumMessage{
+        expectedImageCount: image_count,
+        expectedVideoCount: video_count
       }
     }
   end

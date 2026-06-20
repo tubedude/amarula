@@ -81,6 +81,24 @@ defmodule AmarulaTest do
     assert rev.protocolMessage.type == :REVOKE
   end
 
+  test "send_album sends the parent then each item referencing it", %{conn: conn} do
+    items = [{:image, <<1>>, [caption: "a"]}, {:video, <<2>>, []}]
+    assert {:ok, "MSGID"} = Amarula.send_album(conn, "g@g.us", items)
+
+    # Parent first: album with the right counts.
+    assert_received {:got, {:send_message, "g@g.us", parent}}
+    assert parent.albumMessage.expectedImageCount == 1
+    assert parent.albumMessage.expectedVideoCount == 1
+
+    # Then each item as a media send carrying :album_parent pointing at the parent.
+    assert_received {:got, {:send_media, "g@g.us", :image, <<1>>, img_opts}}
+    assert %Proto.MessageKey{id: "MSGID"} = img_opts[:album_parent]
+    assert img_opts[:caption] == "a"
+
+    assert_received {:got, {:send_media, "g@g.us", :video, <<2>>, vid_opts}}
+    assert %Proto.MessageKey{id: "MSGID"} = vid_opts[:album_parent]
+  end
+
   test "send_event builds an eventMessage to the target jid", %{conn: conn} do
     Amarula.send_event(conn, "g@g.us", "Launch", description: "v1")
     assert_received {:got, {:send_message, "g@g.us", msg}}

@@ -337,6 +337,14 @@ defmodule Amarula.Connection do
   def assert_lid_sessions(_pid, []), do: :ok
   def assert_lid_sessions(pid, lids), do: GenServer.cast(pid, {:assert_lid_sessions, lids})
 
+  @doc """
+  Cast newly-learned LID↔PN pairs so the consumer gets a `:lid_mapping_update`
+  event. `pairs` is `[{lid_jid, pn_jid}, ...]`.
+  """
+  @spec notify_lid_mappings(GenServer.server(), [{String.t(), String.t()}]) :: :ok
+  def notify_lid_mappings(_pid, []), do: :ok
+  def notify_lid_mappings(pid, pairs), do: GenServer.cast(pid, {:notify_lid_mappings, pairs})
+
   @doc "Send global presence (`:available`/`:unavailable`). Needs `me.name`."
   @spec set_presence(GenServer.server(), :available | :unavailable) :: :ok | {:error, term()}
   def set_presence(pid \\ __MODULE__, type), do: GenServer.call(pid, {:set_presence, type})
@@ -786,6 +794,17 @@ defmodule Amarula.Connection do
   def handle_cast({:assert_lid_sessions, lids}, state) do
     Logger.debug("Force-refreshing sessions for #{length(lids)} newly mapped LID(s)")
     {:noreply, force_refresh_sessions(state, lids)}
+  end
+
+  @impl GenServer
+  def handle_cast({:notify_lid_mappings, pairs}, state) do
+    mappings =
+      Enum.map(pairs, fn {lid, pn} ->
+        %{lid: Amarula.Address.parse(lid), pn: Amarula.Address.parse(pn)}
+      end)
+
+    emit_to_subscribers(state, :lid_mapping_update, mappings)
+    {:noreply, state}
   end
 
   @impl GenServer

@@ -171,6 +171,10 @@ defmodule Amarula do
       a contact/group member's presence (`:available`/`:unavailable`) or typing
       state (`:composing`/`:recording`) — `Amarula.Protocol.Presence`
     * `:blocklist_update`  — `[%{jid, action}]` block/unblock changes
+    * `:lid_mapping_update` — `[%{lid: Address, pn: Address}]` newly-learned LID↔PN
+      mappings (from the send pipeline / group metadata). React to these to map a
+      group member's LID back to a PN without a server query (see
+      `Amarula.Contacts.pn_for_lid/2`).
     * `:pairing_code`      — `%{code: code}` the 8-char link-code (phone-number)
       pairing code to display (from `request_pairing_code/3`)
     * `:pairing_success`   — `%{jid, lid, platform}` (QR) or `%{via: :link_code}`
@@ -192,6 +196,7 @@ defmodule Amarula do
           | :receipt_update
           | :presence_update
           | :blocklist_update
+          | :lid_mapping_update
           | :pairing_code
           | :pairing_success
           | :history_sync

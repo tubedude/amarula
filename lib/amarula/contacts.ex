@@ -98,6 +98,43 @@ defmodule Amarula.Contacts do
       #=> {:ok, [%{lid: %Amarula.Address{kind: :lid, ...},
       #           pn: %Amarula.Address{kind: :pn, ...}}]}
   """
+  @doc """
+  Look up a contact's **PN** from their **LID** in the local mapping store — a
+  cheap read, no server query. Returns an `Amarula.Address` (`:pn`) or `nil` when
+  the mapping isn't known yet.
+
+  Amarula auto-populates this store from group metadata, the send pipeline, and
+  `resolve_lid/2`. So after a `:messages_upsert` from a group member you can map
+  their LID back to a PN without hitting WhatsApp — call `resolve_lid/2` first if
+  the mapping is missing.
+
+      Amarula.Contacts.pn_for_lid(conn, "12345@lid")
+      #=> %Amarula.Address{kind: :pn, ...} | nil
+  """
+  @spec pn_for_lid(conn(), String.t() | Address.t()) :: Address.t() | nil
+  def pn_for_lid(conn, lid) do
+    # The store holds bare user strings; the result is a PN user → wrap as :pn.
+    conn
+    |> Connection.get_conn()
+    |> LidMappingFileStore.pn_for_lid(Address.to_jid!(lid))
+    |> maybe_address(&Address.pn/1)
+  end
+
+  @doc """
+  Look up a contact's **LID** from their **PN** in the local mapping store — the
+  inverse of `pn_for_lid/2`. A cheap read; `nil` when unmapped.
+  """
+  @spec lid_for_pn(conn(), String.t() | Address.t()) :: Address.t() | nil
+  def lid_for_pn(conn, pn) do
+    conn
+    |> Connection.get_conn()
+    |> LidMappingFileStore.lid_for_pn(Address.to_jid!(pn))
+    |> maybe_address(&Address.lid/1)
+  end
+
+  defp maybe_address(nil, _kind), do: nil
+  defp maybe_address(user, kind) when is_binary(user), do: kind.(user)
+
   @spec resolve_lid(conn(), [String.t()] | String.t()) :: {:ok, [lid_pair()]} | {:error, term()}
   def resolve_lid(conn, phones) do
     phones = List.wrap(phones)

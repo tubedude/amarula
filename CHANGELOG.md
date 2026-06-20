@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **LID↔PN mapping lookups + a `:lid_mapping_update` event** (Baileys #2263).
+  `Amarula.Contacts.pn_for_lid/2` and `lid_for_pn/2` read the local mapping store
+  (no server query) — resolve a group member's LID to a PN after a
+  `:messages_upsert`. And a new `:lid_mapping_update` consumer event fires with
+  `[%{lid: Address, pn: Address}]` whenever the send pipeline learns new mappings,
+  so consumers can persist them as they arrive instead of polling.
 - **Group member tags** (Baileys #2502). `Amarula.update_member_tag/3` sets (or
   clears, with `""`) your per-group self-label — capped at 30 chars, rejected with
   `{:error, :member_tag_too_long}` rather than silently truncated. Incoming tag

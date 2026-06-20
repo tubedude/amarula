@@ -261,6 +261,26 @@ defmodule Amarula.ConnectionTest do
       assert_receive {:amarula, :connection_update, %{connection: :disconnected}}
       GenServer.stop(pid)
     end
+
+    test "emits :lid_mapping_update with Address pairs (#2263)", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      Connection.notify_lid_mappings(pid, [{"111@lid", "15550001234@s.whatsapp.net"}])
+
+      assert_receive {:amarula, :lid_mapping_update, [%{lid: lid, pn: pn}]}
+      assert %Amarula.Address{kind: :lid, user: "111"} = lid
+      assert %Amarula.Address{kind: :pn, user: "15550001234"} = pn
+      GenServer.stop(pid)
+    end
+
+    test "notify_lid_mappings with [] emits nothing", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      Connection.notify_lid_mappings(pid, [])
+
+      refute_receive {:amarula, :lid_mapping_update, _}
+      GenServer.stop(pid)
+    end
   end
 
   describe "build_msg/6 — real recipient on own (fan-out) messages" do

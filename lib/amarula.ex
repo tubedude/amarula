@@ -213,10 +213,12 @@ defmodule Amarula do
 
   > #### The returned pid is not restart-safe {: .warning}
   >
-  > If the connection crashes, its supervision tree restarts it under a **new
-  > pid** — the pid returned here then points at a dead process. For anything
-  > you hold across time (a GenServer state field, a long-lived process), store
-  > the **profile** and address the connection with `via/1` instead:
+  > A raw pid is returned on purpose — you can `Process.monitor/1` it to detect a
+  > crash, or `Process.alive?/1` it. But if the connection crashes, its supervision
+  > tree restarts it under a **new pid**, and the one returned here then points at a
+  > dead process. So for anything you hold across time (a GenServer state field, a
+  > long-lived process), store the **profile** and address the connection with
+  > `via/1` instead:
   >
   >     conn = Amarula.via(profile)          # always resolves to the current pid
   >     Amarula.send_text(conn, jid, "hi")

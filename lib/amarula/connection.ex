@@ -65,6 +65,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Signal.LidMappingFileStore
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
+  alias Amarula.Connection.SendOps
 
   defstruct [
     :websocket_client,
@@ -742,64 +743,31 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:send_text, jid, text}, from, state) do
-    deliver_async(state, jid, %{text: text}, from)
+    dispatch_send(state, SendOps.text(jid, text), from)
   end
 
   @impl GenServer
   def handle_call({:send_message, jid, message}, from, state) do
-    deliver_async(state, jid, %{message: message}, from)
+    dispatch_send(state, SendOps.message(jid, message), from)
   end
 
   @impl GenServer
   def handle_call({:request_resend, message_key}, from, state) do
-    me_id = get_in(state.auth_creds, [:me, :id])
-
-    if me_id do
-      pdo = MessageEncoder.placeholder_resend_request(message_key)
-      # A PEER_DATA_OPERATION request is sent to OURSELVES (own devices) with the
-      # peer category + high push priority, so the phone re-delivers the original.
-      payload = %{
-        message: pdo,
-        stanza_attrs: %{"category" => "peer", "push_priority" => "high_force"}
-      }
-
-      deliver_async(state, me_id, payload, from)
-    else
-      {:reply, {:error, :not_authenticated}, state}
-    end
+    with_me_id(state, from, fn me_id ->
+      SendOps.request_resend(me_id, message_key)
+    end)
   end
 
   @impl GenServer
   def handle_call({:fetch_history, oldest_key, oldest_ts, count}, from, state) do
-    me_id = get_in(state.auth_creds, [:me, :id])
-
-    if me_id do
-      pdo = MessageEncoder.history_sync_on_demand_request(oldest_key, oldest_ts, count)
-      # An on-demand history request is a PEER_DATA_OPERATION sent to OURSELVES
-      # (own devices) with the peer category + high push priority; the phone
-      # replies later with an ON_DEMAND HistorySync notification.
-      payload = %{
-        message: pdo,
-        stanza_attrs: %{"category" => "peer", "push_priority" => "high_force"}
-      }
-
-      deliver_async(state, me_id, payload, from)
-    else
-      {:reply, {:error, :not_authenticated}, state}
-    end
+    with_me_id(state, from, fn me_id ->
+      SendOps.fetch_history(me_id, oldest_key, oldest_ts, count)
+    end)
   end
 
   @impl GenServer
   def handle_call({:send_poll, jid, name, options, opts}, from, state) do
-    {message, secret} = MessageEncoder.poll(name, options, opts)
-
-    # Poll's reply carries the secret: {:ok, id} → {:ok, id, secret}.
-    shape = fn
-      :ok, msg_id -> {:ok, msg_id, secret}
-      result, msg_id -> default_send_reply(result, msg_id)
-    end
-
-    deliver_async(state, jid, %{message: message}, from, shape)
+    dispatch_send(state, SendOps.poll(jid, name, options, opts), from)
   end
 
   @impl GenServer
@@ -1030,7 +998,7 @@ defmodule Amarula.Connection do
   # the recipient's ConversationSender, forwarding the original caller's `from`.
   @impl GenServer
   def handle_info({:send_media_ready, jid, message, from}, state) do
-    deliver_async(state, jid, %{message: message}, from)
+    dispatch_send(state, SendOps.media(jid, message), from)
   end
 
   @impl GenServer
@@ -1330,7 +1298,23 @@ defmodule Amarula.Connection do
   # `from` nil = fire-and-forget (a retry resend, no caller waiting) → nothing is
   # parked. `shape` maps a successful ack to the caller's reply (default:
   # `{:ok, msg_id}`; poll adds its secret).
-  defp deliver_async(state, target, payload, from, shape \\ &default_send_reply/2)
+  # Dispatch a `SendOps` build triple. Thin glue between the send-callback bodies
+  # (which now live in `SendOps`) and `deliver_async` (the ack-aware dispatcher,
+  # which stays here because it owns the ack lifecycle).
+  defp dispatch_send(state, {target, payload, shape}, from) do
+    deliver_async(state, target, payload, from, shape)
+  end
+
+  # Resend/history go to OUR own devices, so they need a logged-in `me.id`. Guard
+  # it once; on success run `build_fun.(me_id)` (a `SendOps` builder) and dispatch.
+  defp with_me_id(state, from, build_fun) do
+    case get_in(state.auth_creds, [:me, :id]) do
+      nil -> {:reply, {:error, :not_authenticated}, state}
+      me_id -> dispatch_send(state, build_fun.(me_id), from)
+    end
+  end
+
+  defp deliver_async(state, target, payload, from, shape \\ &SendOps.default_send_reply/2)
 
   # Sandbox (offline) mode: the connection has no socket and there is no peer to
   # reach, so a send must not run the real pipeline (USync/bundle fetch IQs would
@@ -1477,11 +1461,6 @@ defmodule Amarula.Connection do
 
     %{state | pending_acks: rest}
   end
-
-  @doc false
-  def default_send_reply(:ok, msg_id), do: {:ok, msg_id}
-  def default_send_reply({:error, reason}, _msg_id), do: {:error, reason}
-  def default_send_reply({:halted, reason}, _msg_id), do: {:error, {:halted, reason}}
 
   defp generate_message_id do
     "3EB0" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :upper))

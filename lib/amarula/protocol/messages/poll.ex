@@ -27,7 +27,7 @@ defmodule Amarula.Protocol.Messages.Poll do
     base =
       message
       |> options()
-      |> Enum.map(fn name -> {:crypto.hash(:sha256, name), %{name: name, voters: []}} end)
+      |> Enum.map(fn name -> {option_hash(name), %{name: name, voters: []}} end)
 
     by_hash = Map.new(base)
     order = Enum.map(base, fn {hash, _} -> hash end)
@@ -47,6 +47,10 @@ defmodule Amarula.Protocol.Messages.Poll do
 
     Enum.map(order, &Map.fetch!(by_hash, &1))
   end
+
+  @doc "The SHA-256 hash WhatsApp identifies a poll option by (the vote payload's `selectedOptions`)."
+  @spec option_hash(String.t()) :: binary()
+  def option_hash(name), do: :crypto.hash(:sha256, name)
 
   # The option names from whichever poll-creation variant is set.
   defp options(%Proto.Message{pollCreationMessage: %{options: o}}) when is_list(o), do: names(o)

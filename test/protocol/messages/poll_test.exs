@@ -81,6 +81,51 @@ defmodule Amarula.Protocol.Messages.PollTest do
     end
   end
 
+  describe "MessageEncoder.poll_vote/5 (send a vote)" do
+    test "builds a pollUpdateMessage whose vote our own decrypt + tally recovers" do
+      {poll_msg, secret} = MessageEncoder.poll("Best?", ["Cats", "Dogs"], selectable: 1)
+      poll_key = %Proto.MessageKey{remoteJid: "g@g.us", id: "POLL123", fromMe: true}
+      creator = "10000000001@s.whatsapp.net"
+      voter = "10000000009@s.whatsapp.net"
+
+      message = MessageEncoder.poll_vote(poll_key, creator, voter, secret, ["Dogs"])
+
+      update = message.pollUpdateMessage
+      assert update.pollCreationMessageKey == poll_key
+      assert is_integer(update.senderTimestampMs)
+
+      # Decrypt the vote we just built with the production receive path.
+      ctx = %{
+        message_secret: secret,
+        poll_msg_id: poll_key.id,
+        poll_creator_jid: creator,
+        voter_jid: voter
+      }
+
+      assert {:ok, decoded} = PollCrypto.decrypt_vote(update.vote, ctx)
+      assert decoded.selectedOptions == [Poll.option_hash("Dogs")]
+
+      tally = Poll.tally(poll_msg, [{voter, decoded}])
+      assert [%{name: "Cats", voters: []}, %{name: "Dogs", voters: [^voter]}] = tally
+    end
+
+    test "encrypt_vote round-trips multiple selections" do
+      secret = :crypto.strong_rand_bytes(32)
+
+      ctx = %{
+        message_secret: secret,
+        poll_msg_id: "ID",
+        poll_creator_jid: "c@s.whatsapp.net",
+        voter_jid: "v@s.whatsapp.net"
+      }
+
+      hashes = Enum.map(["A", "B"], &Poll.option_hash/1)
+      enc = PollCrypto.encrypt_vote(hashes, ctx)
+
+      assert {:ok, %{selectedOptions: ^hashes}} = PollCrypto.decrypt_vote(enc, ctx)
+    end
+  end
+
   # Inverse of PollCrypto.decrypt_vote — encrypt a vote for the round-trip test.
   defp encrypt_vote(plaintext, secret, poll_id, creator, voter) do
     sign = poll_id <> creator <> voter <> "Poll Vote" <> <<1>>

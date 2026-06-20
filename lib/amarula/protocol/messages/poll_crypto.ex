@@ -55,6 +55,30 @@ defmodule Amarula.Protocol.Messages.PollCrypto do
 
   def decrypt_vote(_enc, _ctx), do: {:error, :no_payload}
 
+  @doc """
+  Encrypt a poll vote — the inverse of `decrypt_vote/2`. `selected_option_hashes`
+  is the list of `sha256(option_name)` for the options being voted for. Returns
+  `%Proto.Message.PollEncValue{encPayload: ct<>tag, encIv: iv}` ready to wrap in a
+  `pollUpdateMessage`. Uses the same key derivation + AAD as the receive side, so
+  a vote we send round-trips through `decrypt_vote/2`.
+  """
+  @spec encrypt_vote([binary()], context()) :: Proto.Message.PollEncValue.t()
+  def encrypt_vote(selected_option_hashes, ctx) when is_list(selected_option_hashes) do
+    dec_key = vote_key(ctx)
+    aad = "#{ctx.poll_msg_id}\0#{ctx.voter_jid}"
+    iv = :crypto.strong_rand_bytes(12)
+
+    plaintext =
+      Proto.Message.PollVoteMessage.encode(%Proto.Message.PollVoteMessage{
+        selectedOptions: selected_option_hashes
+      })
+
+    {ciphertext, tag} =
+      :crypto.crypto_one_time_aead(:aes_256_gcm, dec_key, iv, plaintext, aad, @gcm_tag_len, true)
+
+    %Proto.Message.PollEncValue{encPayload: ciphertext <> tag, encIv: iv}
+  end
+
   # HMAC chain. Baileys `hmacSign(buffer, key)` = HMAC(key, buffer), so:
   #   key0   = HMAC(key=<32 zero bytes>, data=message_secret)
   #   decKey = HMAC(key=key0, data=sign)

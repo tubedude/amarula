@@ -134,7 +134,19 @@ defmodule Amarula do
   @typedoc ~S|A send target: an `Amarula.Address` or a jid string (`"<n>@s.whatsapp.net"` / `"<id>@g.us"`).|
   @type jid :: String.t() | Amarula.Address.t()
 
-  @typedoc "The key of a specific message (for reactions/edits/deletes)."
+  @typedoc """
+  A reference to a specific existing message (for reactions / edits / deletes /
+  poll votes). Either:
+
+    * the `%Amarula.Msg{}` you received (carries its chat, sender, id), or
+    * a `{jid, msg_id}` tuple — the chat `jid` plus the message id string.
+
+  Both are self-contained. (Quote *replies* use the `:quoted` opt on `send_text`,
+  which takes the `%Amarula.Msg{}` directly.)
+  """
+  @type message_ref :: Amarula.Msg.t() | {jid(), String.t()}
+
+  @typedoc "A raw message key — used by the low-level on-demand history request."
   @type message_key :: Proto.MessageKey.t()
 
   @typedoc "Result of a send: the assigned message id, or an error."
@@ -483,6 +495,29 @@ defmodule Amarula do
   def send_poll(conn, jid, name, options, opts \\ []),
     do: GenServer.call(conn, {:send_poll, jid, name, options, opts}, @send_call_timeout)
 
+  @doc """
+  Cast a vote on an existing poll. `poll` is a `message_ref` for the poll-creation
+  message (a `%Amarula.Msg{}` or `{jid, msg_id}` tuple); `message_secret` is the
+  poll's 32-byte secret (from `send_poll/5`, or the poll's `messageContextInfo`);
+  `option_names` are the chosen options. The vote is encrypted under the secret.
+
+  The poll's creator is taken from the ref (a `%Amarula.Msg{}`'s sender, or the
+  `{jid, _}` chat for a 1:1 poll). For a group poll referenced by tuple, pass the
+  creator explicitly with `:creator` in `opts`.
+  """
+  @spec send_poll_vote(conn(), message_ref(), binary(), [String.t()], keyword()) :: send_result()
+  def send_poll_vote(conn, poll, message_secret, option_names, opts \\ []) do
+    {jid, key} = message_key(poll)
+    creator = opts[:creator] |> resolve_creator(key)
+    voter = Amarula.Address.to_jid!(own_address(conn))
+    message = MessageEncoder.poll_vote(key, creator, voter, message_secret, option_names)
+    send_built(conn, jid, message)
+  end
+
+  defp resolve_creator(nil, %Proto.MessageKey{participant: p}) when is_binary(p), do: p
+  defp resolve_creator(nil, %Proto.MessageKey{remoteJid: jid}), do: jid
+  defp resolve_creator(creator, _key), do: Amarula.Address.to_jid!(creator)
+
   @doc "Send a contact (`display_name` + vCard string) to `jid`."
   @spec send_contact(conn(), jid(), String.t(), String.t()) :: send_result()
   def send_contact(conn, jid, display_name, vcard),
@@ -552,20 +587,35 @@ defmodule Amarula do
     end
   end
 
-  @doc "React to a message with `emoji` (empty string removes the reaction)."
-  @spec send_reaction(conn(), message_key(), String.t()) :: send_result()
-  def send_reaction(conn, %Proto.MessageKey{remoteJid: jid} = target_key, emoji),
-    do: send_built(conn, jid, MessageEncoder.reaction(target_key, emoji))
+  @doc """
+  React to a message with `emoji` (empty string removes the reaction). `ref` is a
+  `%Amarula.Msg{}` or a `{jid, msg_id}` tuple.
+  """
+  @spec send_reaction(conn(), message_ref(), String.t()) :: send_result()
+  def send_reaction(conn, ref, emoji) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.reaction(key, emoji))
+  end
 
-  @doc "Edit a message we sent, replacing its text."
-  @spec send_edit(conn(), message_key(), String.t()) :: send_result()
-  def send_edit(conn, %Proto.MessageKey{remoteJid: jid} = target_key, new_text),
-    do: send_built(conn, jid, MessageEncoder.edit(target_key, new_text))
+  @doc """
+  Edit a message we sent, replacing its text. `ref` is a `%Amarula.Msg{}` or a
+  `{jid, msg_id}` tuple.
+  """
+  @spec send_edit(conn(), message_ref(), String.t()) :: send_result()
+  def send_edit(conn, ref, new_text) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.edit(key, new_text))
+  end
 
-  @doc "Delete a message for everyone (revoke)."
-  @spec send_revoke(conn(), message_key()) :: send_result()
-  def send_revoke(conn, %Proto.MessageKey{remoteJid: jid} = target_key),
-    do: send_built(conn, jid, MessageEncoder.revoke(target_key))
+  @doc """
+  Delete a message for everyone (revoke). `ref` is a `%Amarula.Msg{}` or a
+  `{jid, msg_id}` tuple.
+  """
+  @spec send_revoke(conn(), message_ref()) :: send_result()
+  def send_revoke(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.revoke(key))
+  end
 
   @doc """
   Send media of `type` (`:image`/`:video`/`:audio`/`:document`/`:sticker`).
@@ -614,4 +664,25 @@ defmodule Amarula do
   # construct a message and relay it as a {:send_message, ...} call.
   defp send_built(conn, jid, message),
     do: GenServer.call(conn, {:send_message, jid, message}, @send_call_timeout)
+
+  # Resolve a public message_ref into the chat jid + the %Proto.MessageKey{} the
+  # encoders need. A %Amarula.Msg{} carries everything (chat, sender, id, fromMe);
+  # a {jid, msg_id} tuple builds the minimal key (no participant/fromMe known).
+  defp message_key(%Amarula.Msg{} = msg) do
+    jid = Amarula.Address.to_jid!(msg.channel)
+
+    key = %Proto.MessageKey{
+      remoteJid: jid,
+      id: msg.id,
+      fromMe: msg.from_me,
+      participant: msg.from && Amarula.Address.to_jid!(msg.from)
+    }
+
+    {jid, key}
+  end
+
+  defp message_key({jid, msg_id}) when is_binary(msg_id) do
+    jid = Amarula.Address.to_jid!(jid)
+    {jid, %Proto.MessageKey{remoteJid: jid, id: msg_id, fromMe: false}}
+  end
 end

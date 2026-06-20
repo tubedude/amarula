@@ -47,21 +47,36 @@ defmodule AmarulaTest do
     assert_received {:got, {:send_text, "x@s.whatsapp.net", "hi", []}}
   end
 
-  test "send_reaction builds a reaction and sends to the target's remoteJid", %{conn: conn} do
-    key = %Proto.MessageKey{remoteJid: "x@s.whatsapp.net", id: "ABC"}
-    assert {:ok, "MSGID"} = Amarula.send_reaction(conn, key, "👍")
+  test "send_reaction (via {jid, msg_id}) sends to the target's remoteJid", %{conn: conn} do
+    ref = {"x@s.whatsapp.net", "ABC"}
+    assert {:ok, "MSGID"} = Amarula.send_reaction(conn, ref, "👍")
     assert_received {:got, {:send_message, "x@s.whatsapp.net", msg}}
     assert msg.reactionMessage.text == "👍"
+    assert msg.reactionMessage.key.id == "ABC"
+  end
+
+  test "send_reaction also accepts a %Amarula.Msg{} (derives chat + key)", %{conn: conn} do
+    msg =
+      Amarula.Msg.from_proto(%Proto.Message{conversation: "hi"}, %{
+        id: "ABC",
+        channel: Amarula.Address.parse("x@s.whatsapp.net"),
+        from: Amarula.Address.parse("x@s.whatsapp.net")
+      })
+
+    assert {:ok, "MSGID"} = Amarula.send_reaction(conn, msg, "🔥")
+    assert_received {:got, {:send_message, "x@s.whatsapp.net", out}}
+    assert out.reactionMessage.text == "🔥"
+    assert out.reactionMessage.key.id == "ABC"
   end
 
   test "send_edit / send_revoke build the right protocol message", %{conn: conn} do
-    key = %Proto.MessageKey{remoteJid: "x@s.whatsapp.net", id: "ABC"}
+    ref = {"x@s.whatsapp.net", "ABC"}
 
-    Amarula.send_edit(conn, key, "v2")
+    Amarula.send_edit(conn, ref, "v2")
     assert_received {:got, {:send_message, "x@s.whatsapp.net", edit}}
     assert edit.protocolMessage.type == :MESSAGE_EDIT
 
-    Amarula.send_revoke(conn, key)
+    Amarula.send_revoke(conn, ref)
     assert_received {:got, {:send_message, "x@s.whatsapp.net", rev}}
     assert rev.protocolMessage.type == :REVOKE
   end

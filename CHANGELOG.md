@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cast a poll vote.** `Amarula.send_poll_vote/5` encrypts and sends a vote on an
+  existing poll (the inverse of the tally/decrypt path). Pass the poll's
+  `message_ref`, its `message_secret`, and the chosen option names.
+
+### Changed (breaking)
+
+- **Unified how you reference an existing message.** `send_reaction/3`,
+  `send_edit/3`, `send_revoke/2` (and the new `send_poll_vote`) now take a
+  `message_ref` — a `%Amarula.Msg{}` (the message you received) **or** a
+  `{jid, msg_id}` tuple — instead of a raw `%Proto.MessageKey{}`. This removes the
+  last proto type from the public API and gives one consistent currency: pass back
+  the struct you got, or the chat jid + id. Migration: replace
+  `%Proto.MessageKey{remoteJid: jid, id: id}` with `{jid, id}`, or pass the
+  `%Amarula.Msg{}` directly.
+
+### Added
+
 - **Reply (quoted) and mentions on outgoing messages.** `Amarula.send_text/4`
   and `Amarula.send_media/5` now take `:quoted` (an `%Amarula.Msg{}` to reply to)
   and `:mentions` (a list of jids/`%Amarula.Address{}`) opts. A text with either

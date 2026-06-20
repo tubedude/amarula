@@ -12,6 +12,7 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
   """
 
   alias Amarula.Protocol.Proto
+  alias Amarula.Protocol.Messages.{Poll, PollCrypto}
 
   @doc "Encode a `%Proto.Message{}` (or message map) and append random PKCS-style pad."
   @spec encode(struct() | map()) :: binary()
@@ -128,6 +129,41 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
     ctx = %Proto.MessageContextInfo{messageSecret: secret}
     message = %{poll_variant(opts, selectable) => creation, messageContextInfo: ctx}
     {struct(Proto.Message, message), secret}
+  end
+
+  @doc """
+  Build a `pollUpdateMessage` casting a vote on an existing poll. Args:
+
+    * `poll_key` — the `%Proto.MessageKey{}` of the poll-creation message.
+    * `creator_jid` — the poll creator's jid (the poll message author).
+    * `voter_jid` — our jid (the vote is encrypted per voter).
+    * `message_secret` — the poll's 32-byte secret (returned by `poll/3` at
+      creation, or decoded from the poll's `messageContextInfo`).
+    * `option_names` — the chosen option strings (must match the poll's options).
+
+  The vote is AES-256-GCM encrypted under the poll secret (`PollCrypto`), so it
+  round-trips through the same decrypt path tallies use.
+  """
+  @spec poll_vote(Proto.MessageKey.t(), String.t(), String.t(), binary(), [String.t()]) ::
+          Proto.Message.t()
+  def poll_vote(%Proto.MessageKey{} = poll_key, creator_jid, voter_jid, message_secret, option_names) do
+    ctx = %{
+      message_secret: message_secret,
+      poll_msg_id: poll_key.id,
+      poll_creator_jid: creator_jid,
+      voter_jid: voter_jid
+    }
+
+    hashes = Enum.map(option_names, &Poll.option_hash/1)
+    vote = PollCrypto.encrypt_vote(hashes, ctx)
+
+    %Proto.Message{
+      pollUpdateMessage: %Proto.Message.PollUpdateMessage{
+        pollCreationMessageKey: poll_key,
+        vote: vote,
+        senderTimestampMs: System.system_time(:millisecond)
+      }
+    }
   end
 
   defp poll_variant(opts, selectable) do

@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pin / unpin and keep / unkeep messages.** `Amarula.pin_message/2`,
   `unpin_message/2` (pin for everyone), `keep_message/2`, `unkeep_message/2`
   (exempt a message from a disappearing chat). Each takes a `message_ref`.
+- **View-once media and PTV (round video notes).** `send_media/5` gains
+  `:view_once` (wrap as view-once) and `:ptv` (for `:video`, send as a round
+  video note).
 
 ### Changed (breaking)
 

@@ -659,7 +659,11 @@ defmodule Amarula do
 
   Amarula encrypts and uploads the bytes for you. `opts` may carry `:mimetype`
   (auto-detected per type if omitted), `:caption`, `:width`, `:height`,
-  `:seconds`, `:ptt` (voice note), `:file_name`, `:title`.
+  `:seconds`, `:ptt` (voice note), `:file_name`, `:title`, plus:
+
+    * `:quoted` / `:mentions` — reply to / tag (see `send_text/4`).
+    * `:view_once` — send as view-once (the recipient can open it once).
+    * `:ptv` — for `:video`, send as a round video note (PTV).
   """
   @spec send_media(conn(), jid(), media_type(), binary(), keyword()) :: send_result()
   def send_media(conn, jid, type, data, opts \\ [])

@@ -33,6 +33,34 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
   end
 
+  describe "media view-once + ptv" do
+    test "view_once wraps the whole message in viewOnceMessage" do
+      msg = MessageEncoder.media(:image, media_info(), view_once: true)
+
+      assert msg.imageMessage == nil
+      assert %Proto.Message.FutureProofMessage{message: inner} = msg.viewOnceMessage
+      assert inner.imageMessage.url == "u"
+    end
+
+    test "ptv relocates the videoMessage to ptvMessage" do
+      msg = MessageEncoder.media(:video, media_info(), ptv: true)
+
+      assert msg.videoMessage == nil
+      assert msg.ptvMessage.url == "u"
+    end
+
+    test "ptv is ignored for non-video types" do
+      msg = MessageEncoder.media(:image, media_info(), ptv: true)
+      assert msg.imageMessage.url == "u"
+      assert msg.ptvMessage == nil
+    end
+
+    test "view_once + ptv compose (round note, openable once)" do
+      msg = MessageEncoder.media(:video, media_info(), ptv: true, view_once: true)
+      assert msg.viewOnceMessage.message.ptvMessage.url == "u"
+    end
+  end
+
   describe "pin/2 and keep/2" do
     setup do
       {:ok, key: %Proto.MessageKey{remoteJid: "g@g.us", id: "ABC"}}

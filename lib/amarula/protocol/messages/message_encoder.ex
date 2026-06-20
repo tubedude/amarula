@@ -230,6 +230,32 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
     type
     |> media_message(common, opts)
     |> put_media_context(media_field(type), context_info(opts))
+    |> maybe_ptv(type, opts)
+    |> maybe_view_once(opts)
+  end
+
+  # PTV (round video note): relocate the built videoMessage to the ptvMessage
+  # field (Baileys `obj.ptvMessage = obj.videoMessage`). Only valid for video.
+  defp maybe_ptv(%Proto.Message{videoMessage: vid} = message, :video, opts) do
+    if Keyword.get(opts, :ptv, false) do
+      %Proto.Message{ptvMessage: vid}
+    else
+      message
+    end
+  end
+
+  defp maybe_ptv(message, _type, _opts), do: message
+
+  # View-once: wrap the whole message in a viewOnceMessage (FutureProofMessage),
+  # mirroring Baileys `m = { viewOnceMessage: { message: m } }`.
+  defp maybe_view_once(message, opts) do
+    if Keyword.get(opts, :view_once, false) do
+      %Proto.Message{
+        viewOnceMessage: %Proto.Message.FutureProofMessage{message: message}
+      }
+    else
+      message
+    end
   end
 
   defp media_field(:image), do: :imageMessage

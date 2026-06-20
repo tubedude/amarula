@@ -64,7 +64,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Signal.LidMappingFileStore
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
-  alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing}
+  alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing, Notifications}
 
   defstruct [
     :websocket_client,
@@ -1850,11 +1850,9 @@ defmodule Amarula.Connection do
   # account_sync — account-level setting changes. disappearing_mode updates creds;
   # blocklist additions/removals surface as a :blocklist_update event.
   defp dispatch_notification(state, "account_sync", node) do
-    cond do
-      child = NodeUtils.get_binary_node_child(node, "disappearing_mode") ->
-        duration = NodeUtils.get_attr(child, "duration")
+    case Notifications.account_sync(node) do
+      {:disappearing, duration} ->
         Logger.debug("account_sync: disappearing mode duration=#{duration}")
-
         settings = Map.get(state.auth_creds, :account_settings, %{})
 
         creds =
@@ -1866,19 +1864,12 @@ defmodule Amarula.Connection do
 
         update_creds(state, creds)
 
-      child = NodeUtils.get_binary_node_child(node, "blocklist") ->
-        items =
-          child
-          |> NodeUtils.get_binary_node_children("item")
-          |> Enum.map(fn item ->
-            %{jid: NodeUtils.get_attr(item, "jid"), action: NodeUtils.get_attr(item, "action")}
-          end)
-
+      {:blocklist, items} ->
         Logger.debug("account_sync: blocklist update (#{length(items)} item(s))")
         emit_to_subscribers(state, :blocklist_update, items)
         state
 
-      true ->
+      :ignore ->
         state
     end
   end
@@ -1888,21 +1879,13 @@ defmodule Amarula.Connection do
   # uncached), we drop the cached device list for each affected user so the next
   # send re-fetches a fresh list via USync. A "remove" also drops their sessions.
   defp dispatch_notification(state, "devices", node) do
-    case node.content do
-      [%Node{tag: tag} = child | _] when tag in ~w(add remove update) ->
-        users =
-          child
-          |> NodeUtils.get_binary_node_children("device")
-          |> Enum.map(&NodeUtils.get_attr(&1, "jid"))
-          |> Enum.reject(&is_nil/1)
-          |> Enum.map(&JID.jid_normalized_user/1)
-          |> Enum.uniq()
-
+    case Notifications.devices(node) do
+      {tag, users} ->
         Logger.debug("devices #{tag}: dropping cached device list for #{length(users)} user(s)")
         Enum.each(users, &DeviceListCache.delete(conn(state), &1))
         state
 
-      _ ->
+      :ignore ->
         state
     end
   end
@@ -1910,8 +1893,7 @@ defmodule Amarula.Connection do
   # picture — a contact/group avatar changed; surface it as a contact update so a
   # consumer can refresh the image (Baileys emits contacts.update imgUrl).
   defp dispatch_notification(state, "picture", node) do
-    from = node |> NodeUtils.get_attr("from") |> JID.jid_normalized_user()
-    img_url = if NodeUtils.get_binary_node_child(node, "set"), do: "changed", else: "removed"
+    {from, img_url} = Notifications.picture(node)
     Logger.debug("picture #{img_url} for #{from}")
     emit_to_subscribers(state, :contacts_update, [%{id: from, img_url: img_url}])
     state

@@ -197,7 +197,7 @@ First public release.
 
 ### Removed
 
-- **`Amarula.logout/1` removed.** For a non-destructive teardown that keeps
+- **`Amarula.logout/1`** (removed). For a non-destructive teardown that keeps
   credentials, use `disconnect/1` (closes the websocket only) or `stop/1` (takes
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.

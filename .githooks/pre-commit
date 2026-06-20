@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pre-commit: enforce `mix format` so unformatted code never reaches CI.
+# Mirrors the primary CI step (.github/workflows/elixir.yml: "Check formatting").
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Bypass a single commit:  git commit --no-verify
+
+if ! mix format --check-formatted; then
+  echo
+  echo "✗ mix format check failed — run 'mix format' and re-stage."
+  exit 1
+fi

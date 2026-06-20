@@ -294,6 +294,13 @@ mix credo           # lint
 mix dialyzer        # type checking
 ```
 
+After cloning, enable the shared git hooks once so commits are format-checked
+locally (the same check CI runs), instead of finding out in CI:
+
+```bash
+git config core.hooksPath .githooks   # runs `mix format --check-formatted` pre-commit
+```
+
 ### Protocol Buffers
 
 When the WhatsApp protocol definitions in `proto/wa_proto.proto` change,

@@ -155,6 +155,27 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
   end
 
+  describe "member_label/1 (group member tag)" do
+    test "builds a GROUP_MEMBER_LABEL_CHANGE protocol message" do
+      msg = MessageEncoder.member_label("VIP")
+      pm = msg.protocolMessage
+      assert pm.type == :GROUP_MEMBER_LABEL_CHANGE
+      assert pm.memberLabel.label == "VIP"
+      assert is_integer(pm.memberLabel.labelTimestamp)
+    end
+
+    test "caps the label at 30 characters" do
+      long = String.duplicate("a", 50)
+
+      assert String.length(MessageEncoder.member_label(long).protocolMessage.memberLabel.label) ==
+               30
+    end
+
+    test "an empty label clears the tag (removal)" do
+      assert MessageEncoder.member_label("").protocolMessage.memberLabel.label == ""
+    end
+  end
+
   describe "pin/2 and keep/2" do
     setup do
       {:ok, key: %Proto.MessageKey{remoteJid: "g@g.us", id: "ABC"}}

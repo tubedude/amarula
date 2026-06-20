@@ -505,6 +505,24 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
   end
 
   @doc """
+  Set (or, with `""`, clear) your own **member tag** in a group — the per-group
+  self-label shown next to your name. Capped at 30 characters (WhatsApp's limit).
+  Sent to the group as a `GROUP_MEMBER_LABEL_CHANGE` protocol message.
+  """
+  @spec member_label(String.t()) :: Proto.Message.t()
+  def member_label(label) when is_binary(label) do
+    %Proto.Message{
+      protocolMessage: %Proto.Message.ProtocolMessage{
+        type: :GROUP_MEMBER_LABEL_CHANGE,
+        memberLabel: %Proto.MemberLabel{
+          label: String.slice(label, 0, 30),
+          labelTimestamp: System.system_time(:second)
+        }
+      }
+    }
+  end
+
+  @doc """
   A PEER_DATA_OPERATION placeholder-resend request for `message_key` — sent to our
   own devices to ask the phone to re-deliver that message (Baileys
   requestPlaceholderResend).

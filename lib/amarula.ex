@@ -617,6 +617,23 @@ defmodule Amarula do
     send_built(conn, jid, MessageEncoder.revoke(key))
   end
 
+  @doc """
+  Set your own **member tag** (per-group self-label) in `group`, or clear it with
+  `""`. The tag is capped at 30 characters — a longer one is rejected with
+  `{:error, :member_tag_too_long}` (we don't silently truncate). Relayed to the
+  group; other members see it via a `{:member_tag, _}` message (label `""` =
+  removed).
+  """
+  @spec update_member_tag(conn(), jid(), String.t()) ::
+          send_result() | {:error, :member_tag_too_long}
+  def update_member_tag(conn, group, label) when is_binary(label) do
+    if String.length(label) > 30 do
+      {:error, :member_tag_too_long}
+    else
+      send_built(conn, Amarula.Address.to_jid!(group), MessageEncoder.member_label(label))
+    end
+  end
+
   @doc "Pin a message for everyone in the chat. `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
   @spec pin_message(conn(), message_ref()) :: send_result()
   def pin_message(conn, ref) do

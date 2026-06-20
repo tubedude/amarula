@@ -114,6 +114,21 @@ defmodule AmarulaTest do
     assert msg.groupInviteMessage.groupName == "T"
   end
 
+  test "update_member_tag relays a member-label change to the group", %{conn: conn} do
+    assert {:ok, "MSGID"} = Amarula.update_member_tag(conn, "g@g.us", "VIP")
+    assert_received {:got, {:send_message, "g@g.us", msg}}
+    assert msg.protocolMessage.type == :GROUP_MEMBER_LABEL_CHANGE
+    assert msg.protocolMessage.memberLabel.label == "VIP"
+  end
+
+  test "update_member_tag rejects a label over 30 chars (no silent truncation)", %{conn: conn} do
+    assert {:error, :member_tag_too_long} =
+             Amarula.update_member_tag(conn, "g@g.us", String.duplicate("x", 31))
+
+    # exactly 30 is allowed
+    assert {:ok, _} = Amarula.update_member_tag(conn, "g@g.us", String.duplicate("x", 30))
+  end
+
   test "pin/unpin and keep/unkeep build the right protocol message", %{conn: conn} do
     ref = {"g@g.us", "ABC"}
 

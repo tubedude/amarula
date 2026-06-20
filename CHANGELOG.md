@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Group member tags** (Baileys #2502). `Amarula.update_member_tag/3` sets (or
+  clears, with `""`) your per-group self-label — capped at 30 chars, rejected with
+  `{:error, :member_tag_too_long}` rather than silently truncated. Incoming tag
+  changes classify as `{:member_tag, %{label, timestamp}}` on `%Amarula.Msg{}`,
+  **including removals** (empty label) — the case Baileys #2502 dropped.
 - **Android browser mode** (Baileys #2201). Setting a `:browser` whose client
   element contains `"Android"` (e.g. `["MyApp", "Android", ""]`) registers as an
   Android client instead of WhatsApp Web: `userAgent.platform = :ANDROID`, no

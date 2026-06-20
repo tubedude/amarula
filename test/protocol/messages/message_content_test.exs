@@ -141,6 +141,17 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     assert {:list_response, _} = MessageContent.classify(list)
   end
 
+  test "classifies a member-tag change, including removal (empty label, #2502)" do
+    set = MessageEncoder.member_label("VIP")
+    assert {:member_tag, %{label: "VIP", timestamp: ts}} = MessageContent.classify(set)
+    assert is_integer(ts)
+
+    # The #2502 case: removing the tag sends an empty label — still classified,
+    # not dropped.
+    removed = MessageEncoder.member_label("")
+    assert {:member_tag, %{label: ""}} = MessageContent.classify(removed)
+  end
+
   test "still falls through to {:other} for genuinely unknown content" do
     assert {:other, _} = MessageContent.classify(%Proto.Message{})
   end

@@ -146,7 +146,13 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
   """
   @spec poll_vote(Proto.MessageKey.t(), String.t(), String.t(), binary(), [String.t()]) ::
           Proto.Message.t()
-  def poll_vote(%Proto.MessageKey{} = poll_key, creator_jid, voter_jid, message_secret, option_names) do
+  def poll_vote(
+        %Proto.MessageKey{} = poll_key,
+        creator_jid,
+        voter_jid,
+        message_secret,
+        option_names
+      ) do
     ctx = %{
       message_secret: message_secret,
       poll_msg_id: poll_key.id,

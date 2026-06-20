@@ -116,9 +116,14 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
   end
 
   test "classifies pin and keep updates with the target key + flag" do
-    assert {:pin, %{key: @key, pinned?: true}} = MessageContent.classify(MessageEncoder.pin(@key, true))
+    assert {:pin, %{key: @key, pinned?: true}} =
+             MessageContent.classify(MessageEncoder.pin(@key, true))
+
     assert {:pin, %{pinned?: false}} = MessageContent.classify(MessageEncoder.pin(@key, false))
-    assert {:keep, %{key: @key, kept?: true}} = MessageContent.classify(MessageEncoder.keep(@key, true))
+
+    assert {:keep, %{key: @key, kept?: true}} =
+             MessageContent.classify(MessageEncoder.keep(@key, true))
+
     assert {:keep, %{kept?: false}} = MessageContent.classify(MessageEncoder.keep(@key, false))
   end
 

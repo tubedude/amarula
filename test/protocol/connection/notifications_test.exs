@@ -30,6 +30,7 @@ defmodule Amarula.Connection.NotificationsTest do
       }
 
       assert {:blocklist, items} = Notifications.account_sync(node)
+
       assert items == [
                %{jid: "1@s.whatsapp.net", action: "block"},
                %{jid: "2@s.whatsapp.net", action: "unblock"}

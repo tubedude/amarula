@@ -79,7 +79,8 @@ defmodule Amarula.Connection.SendOpsTest do
     end
 
     test "fetch_history targets me_id with the peer/high-force stanza attrs", %{key: key} do
-      {target, payload, _shape} = SendOps.fetch_history("me@s.whatsapp.net", key, 1_700_000_000, 50)
+      {target, payload, _shape} =
+        SendOps.fetch_history("me@s.whatsapp.net", key, 1_700_000_000, 50)
 
       assert target == "me@s.whatsapp.net"
       assert payload.stanza_attrs == %{"category" => "peer", "push_priority" => "high_force"}

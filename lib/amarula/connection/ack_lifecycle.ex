@@ -33,7 +33,14 @@ defmodule Amarula.Connection.AckLifecycle do
   `msg_id`, where `on_ack` applies the success shape. `timer` is created by the
   caller (it needs `self()`).
   """
-  @spec park(state(), String.t(), GenServer.from() | nil, reference(), (term() -> term()), String.t()) ::
+  @spec park(
+          state(),
+          String.t(),
+          GenServer.from() | nil,
+          reference(),
+          (term() -> term()),
+          String.t()
+        ) ::
           state()
   def park(state, _msg_id, nil, _timer, _on_ack, _jid), do: state
 

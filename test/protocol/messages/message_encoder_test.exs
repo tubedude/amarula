@@ -42,7 +42,8 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
 
     test "round-trips through classify (no dedicated tag → {:other})" do
       # albumMessage has no classify clause yet; it falls through to {:other}.
-      assert {:other, _} = Amarula.Protocol.Messages.MessageContent.classify(MessageEncoder.album(2, 0))
+      assert {:other, _} =
+               Amarula.Protocol.Messages.MessageContent.classify(MessageEncoder.album(2, 0))
     end
 
     test "a child media references the album parent via messageContextInfo" do

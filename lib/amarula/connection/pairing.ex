@@ -72,9 +72,25 @@ defmodule Amarula.Connection.Pairing do
   Merge the paired-device fields into creds. `me.name` defaults to "~" (Baileys)
   when there's no business name — presence-available requires a non-nil me.name.
   """
-  @spec update_credentials_after_pairing(map(), term(), String.t(), String.t(), term(), term(), term()) ::
+  @spec update_credentials_after_pairing(
+          map(),
+          term(),
+          String.t(),
+          String.t(),
+          term(),
+          term(),
+          term()
+        ) ::
           map()
-  def update_credentials_after_pairing(creds, account, jid, lid, biz_name, platform, signal_identity) do
+  def update_credentials_after_pairing(
+        creds,
+        account,
+        jid,
+        lid,
+        biz_name,
+        platform,
+        signal_identity
+      ) do
     creds
     |> Map.put(:account, account)
     |> Map.put(:me, %{id: jid, name: biz_name || "~", lid: lid})

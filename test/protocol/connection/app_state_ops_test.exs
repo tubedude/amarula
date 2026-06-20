@@ -40,7 +40,11 @@ defmodule Amarula.Connection.AppStateOpsTest do
 
     test "sync_keys_in flattens across a batch" do
       share = fn id ->
-        %{protocolMessage: %{appStateSyncKeyShare: %{keys: [%{keyId: %{keyId: id}, keyData: %{keyData: "D"}}]}}}
+        %{
+          protocolMessage: %{
+            appStateSyncKeyShare: %{keys: [%{keyId: %{keyId: id}, keyData: %{keyData: "D"}}]}
+          }
+        }
       end
 
       messages = [share.("A"), %{conversation: "x"}, share.("B")]

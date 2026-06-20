@@ -632,7 +632,12 @@ defmodule Amarula do
   @spec send_group_invite(conn(), jid(), String.t(), String.t(), keyword()) :: send_result()
   def send_group_invite(conn, jid, group_jid, code, opts \\ []) do
     group_jid = Amarula.Address.to_jid!(group_jid)
-    send_built(conn, Amarula.Address.to_jid!(jid), MessageEncoder.group_invite(group_jid, code, opts))
+
+    send_built(
+      conn,
+      Amarula.Address.to_jid!(jid),
+      MessageEncoder.group_invite(group_jid, code, opts)
+    )
   end
 
   @doc """

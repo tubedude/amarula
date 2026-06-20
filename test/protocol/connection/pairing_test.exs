@@ -56,15 +56,16 @@ defmodule Amarula.Connection.PairingTest do
 
   describe "update_credentials_after_pairing/7" do
     test "sets me/account/platform and prepends the signal identity" do
-      creds = Pairing.update_credentials_after_pairing(
-        %{signal_identities: [:existing]},
-        :account,
-        "jid@s.whatsapp.net",
-        "lid@lid",
-        "Biz",
-        "android",
-        :new_identity
-      )
+      creds =
+        Pairing.update_credentials_after_pairing(
+          %{signal_identities: [:existing]},
+          :account,
+          "jid@s.whatsapp.net",
+          "lid@lid",
+          "Biz",
+          "android",
+          :new_identity
+        )
 
       assert creds.account == :account
       assert creds.platform == "android"
@@ -73,15 +74,16 @@ defmodule Amarula.Connection.PairingTest do
     end
 
     test "defaults me.name to ~ when there's no business name, seeds identities" do
-      creds = Pairing.update_credentials_after_pairing(
-        %{},
-        :account,
-        "jid@s.whatsapp.net",
-        "lid@lid",
-        nil,
-        "ios",
-        :id
-      )
+      creds =
+        Pairing.update_credentials_after_pairing(
+          %{},
+          :account,
+          "jid@s.whatsapp.net",
+          "lid@lid",
+          nil,
+          "ios",
+          :id
+        )
 
       assert creds.me.name == "~"
       assert creds.signal_identities == [:id]

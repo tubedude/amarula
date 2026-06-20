@@ -33,6 +33,31 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
   end
 
+  describe "group_invite/3" do
+    test "builds a groupInviteMessage with code + optional fields" do
+      msg =
+        MessageEncoder.group_invite("123@g.us", "ABCD1234",
+          group_name: "Team",
+          caption: "join us",
+          expiration: 1_700_000_000
+        )
+
+      gi = msg.groupInviteMessage
+      assert gi.groupJid == "123@g.us"
+      assert gi.inviteCode == "ABCD1234"
+      assert gi.groupName == "Team"
+      assert gi.caption == "join us"
+      assert gi.inviteExpiration == 1_700_000_000
+    end
+
+    test "round-trips through classify as {:group_invite, _}" do
+      msg = MessageEncoder.group_invite("123@g.us", "ABCD1234")
+
+      assert {:group_invite, %Proto.Message.GroupInviteMessage{inviteCode: "ABCD1234"}} =
+               Amarula.Protocol.Messages.MessageContent.classify(msg)
+    end
+  end
+
   describe "media view-once + ptv" do
     test "view_once wraps the whole message in viewOnceMessage" do
       msg = MessageEncoder.media(:image, media_info(), view_once: true)

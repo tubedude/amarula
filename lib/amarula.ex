@@ -624,6 +624,17 @@ defmodule Amarula do
     send_built(conn, jid, MessageEncoder.pin(key, true))
   end
 
+  @doc """
+  Send a group-invite message to `jid` — a tap-to-join card for `group_jid` using
+  `code` (from `Amarula.Group.invite_code/2`). `opts`: `:group_name`, `:caption`,
+  `:expiration` (unix ms).
+  """
+  @spec send_group_invite(conn(), jid(), String.t(), String.t(), keyword()) :: send_result()
+  def send_group_invite(conn, jid, group_jid, code, opts \\ []) do
+    group_jid = Amarula.Address.to_jid!(group_jid)
+    send_built(conn, Amarula.Address.to_jid!(jid), MessageEncoder.group_invite(group_jid, code, opts))
+  end
+
   @doc "Unpin a previously pinned message. `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
   @spec unpin_message(conn(), message_ref()) :: send_result()
   def unpin_message(conn, ref) do

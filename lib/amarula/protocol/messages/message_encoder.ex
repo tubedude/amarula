@@ -347,6 +347,24 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
   end
 
   @doc """
+  Build a group-invite message — a sendable chat card that lets the recipient
+  join `group_jid` via `code` (from `Amarula.Group.invite_code/2`). `opts`:
+  `:group_name`, `:caption`, `:expiration` (unix ms when the code expires).
+  """
+  @spec group_invite(String.t(), String.t(), keyword()) :: Proto.Message.t()
+  def group_invite(group_jid, code, opts \\ []) do
+    %Proto.Message{
+      groupInviteMessage: %Proto.Message.GroupInviteMessage{
+        groupJid: group_jid,
+        inviteCode: code,
+        inviteExpiration: opts[:expiration],
+        groupName: opts[:group_name],
+        caption: opts[:caption]
+      }
+    }
+  end
+
+  @doc """
   Pin (`pin?: true`) or unpin (`false`) the message identified by `target_key`
   for everyone in the chat (`PIN_FOR_ALL` / `UNPIN_FOR_ALL`).
   """

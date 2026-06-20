@@ -30,6 +30,15 @@ defmodule Amarula.Protocol.AppState.SyncActionTest do
     assert {:chat, %Chat{pinned: true}} = SyncAction.decode(mut(v, ["pin_v1", @jid]))
   end
 
+  test "pin action with an absent/false pinned flag → false (never nil — #2328)" do
+    # proto3-optional pinned: the server omits it for some conversations.
+    absent = %V{pinAction: %V.PinAction{}}
+    assert {:chat, %Chat{pinned: false}} = SyncAction.decode(mut(absent, ["pin_v1", @jid]))
+
+    unpinned = %V{pinAction: %V.PinAction{pinned: false}}
+    assert {:chat, %Chat{pinned: false}} = SyncAction.decode(mut(unpinned, ["pin_v1", @jid]))
+  end
+
   test "mark read → unread 0; unread → -1" do
     read = %V{markChatAsReadAction: %V.MarkChatAsReadAction{read: true}}
     assert {:chat, %Chat{unread: 0}} = SyncAction.decode(mut(read, ["markChatAsRead", @jid]))

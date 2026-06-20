@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pinned chat state is always a definite boolean** (Baileys #2328). A pin
+  app-state action whose `pinned` flag the server omits (proto3-optional) left
+  `%Amarula.Chat{}.pinned` as `nil` ("undefined for some conversations"). It now
+  coerces to `false` — only an explicit `pinned: true` is pinned — so consumers
+  never see an ambiguous nil from a pin action.
 - **`mark_online_on_connect: false` is now honored** (Baileys #2553). The
   per-connection setting was defined and documented but never read — the login
   path always sent presence-available, so the account appeared online and the

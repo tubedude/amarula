@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-20
+
+New message/group capabilities (Tier 1 + Tier 2 of the proto coverage review,
+plus several from upstream issue triage), an optional Android client mode, and
+three protocol fixes. No breaking changes.
+
 ### Fixed
 
 - **Audio: thread `:waveform` and warn when `:seconds` is missing** (Baileys

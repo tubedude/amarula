@@ -4,9 +4,222 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
   alias Amarula.Protocol.Messages.MessageEncoder
   alias Amarula.Protocol.Proto
 
+  # A received message to reply to, built through the real constructor.
+  defp inbound_msg do
+    proto = %Proto.Message{conversation: "original"}
+
+    Amarula.Msg.from_proto(proto, %{
+      id: "ORIG1",
+      channel: Amarula.Address.parse("g@g.us"),
+      from: Amarula.Address.parse("1@s.whatsapp.net")
+    })
+  end
+
+  defp media_info do
+    %{
+      url: "u",
+      direct_path: "d",
+      media_key: "k",
+      file_sha256: "s",
+      file_enc_sha256: "e",
+      file_length: 1,
+      mimetype: "image/jpeg"
+    }
+  end
+
   describe "text/1" do
     test "builds a conversation message" do
       assert %Proto.Message{conversation: "hi"} = MessageEncoder.text("hi")
+    end
+  end
+
+  describe "album/2 and media album_parent" do
+    test "album parent carries expected image/video counts" do
+      msg = MessageEncoder.album(2, 1)
+      assert msg.albumMessage.expectedImageCount == 2
+      assert msg.albumMessage.expectedVideoCount == 1
+    end
+
+    test "round-trips through classify (no dedicated tag → {:other})" do
+      # albumMessage has no classify clause yet; it falls through to {:other}.
+      assert {:other, _} = Amarula.Protocol.Messages.MessageContent.classify(MessageEncoder.album(2, 0))
+    end
+
+    test "a child media references the album parent via messageContextInfo" do
+      parent = %Proto.MessageKey{remoteJid: "g@g.us", id: "PARENT", fromMe: true}
+      msg = MessageEncoder.media(:image, media_info(), album_parent: parent)
+
+      assoc = msg.messageContextInfo.messageAssociation
+      assert assoc.associationType == :MEDIA_ALBUM
+      assert assoc.parentMessageKey == parent
+    end
+
+    test "no album_parent → no messageContextInfo association" do
+      msg = MessageEncoder.media(:image, media_info(), [])
+      assert msg.messageContextInfo == nil
+    end
+  end
+
+  describe "event/2" do
+    test "builds an eventMessage with name + optional fields" do
+      msg =
+        MessageEncoder.event("Launch",
+          description: "v1.0",
+          join_link: "https://call",
+          start_time: 1_700_000_000,
+          end_time: 1_700_003_600,
+          extra_guests_allowed: true
+        )
+
+      ev = msg.eventMessage
+      assert ev.name == "Launch"
+      assert ev.description == "v1.0"
+      assert ev.joinLink == "https://call"
+      assert ev.startTime == 1_700_000_000
+      assert ev.endTime == 1_700_003_600
+      assert ev.extraGuestsAllowed == true
+    end
+
+    test "location as a {lat, lng} tuple builds a LocationMessage" do
+      msg = MessageEncoder.event("Picnic", location: {1.5, 2.5})
+      assert msg.eventMessage.location.degreesLatitude == 1.5
+      assert msg.eventMessage.location.degreesLongitude == 2.5
+    end
+
+    test "location as a keyword carries name/address" do
+      msg = MessageEncoder.event("Picnic", location: [lat: 1.0, lng: 2.0, name: "Park"])
+      assert msg.eventMessage.location.name == "Park"
+    end
+
+    test "no location → nil" do
+      assert MessageEncoder.event("Bare").eventMessage.location == nil
+    end
+
+    test "round-trips through classify as {:event, _}" do
+      assert {:event, %Proto.Message.EventMessage{name: "X"}} =
+               Amarula.Protocol.Messages.MessageContent.classify(MessageEncoder.event("X"))
+    end
+  end
+
+  describe "group_invite/3" do
+    test "builds a groupInviteMessage with code + optional fields" do
+      msg =
+        MessageEncoder.group_invite("123@g.us", "ABCD1234",
+          group_name: "Team",
+          caption: "join us",
+          expiration: 1_700_000_000
+        )
+
+      gi = msg.groupInviteMessage
+      assert gi.groupJid == "123@g.us"
+      assert gi.inviteCode == "ABCD1234"
+      assert gi.groupName == "Team"
+      assert gi.caption == "join us"
+      assert gi.inviteExpiration == 1_700_000_000
+    end
+
+    test "round-trips through classify as {:group_invite, _}" do
+      msg = MessageEncoder.group_invite("123@g.us", "ABCD1234")
+
+      assert {:group_invite, %Proto.Message.GroupInviteMessage{inviteCode: "ABCD1234"}} =
+               Amarula.Protocol.Messages.MessageContent.classify(msg)
+    end
+  end
+
+  describe "media view-once + ptv" do
+    test "view_once wraps the whole message in viewOnceMessage" do
+      msg = MessageEncoder.media(:image, media_info(), view_once: true)
+
+      assert msg.imageMessage == nil
+      assert %Proto.Message.FutureProofMessage{message: inner} = msg.viewOnceMessage
+      assert inner.imageMessage.url == "u"
+    end
+
+    test "ptv relocates the videoMessage to ptvMessage" do
+      msg = MessageEncoder.media(:video, media_info(), ptv: true)
+
+      assert msg.videoMessage == nil
+      assert msg.ptvMessage.url == "u"
+    end
+
+    test "ptv is ignored for non-video types" do
+      msg = MessageEncoder.media(:image, media_info(), ptv: true)
+      assert msg.imageMessage.url == "u"
+      assert msg.ptvMessage == nil
+    end
+
+    test "view_once + ptv compose (round note, openable once)" do
+      msg = MessageEncoder.media(:video, media_info(), ptv: true, view_once: true)
+      assert msg.viewOnceMessage.message.ptvMessage.url == "u"
+    end
+  end
+
+  describe "pin/2 and keep/2" do
+    setup do
+      {:ok, key: %Proto.MessageKey{remoteJid: "g@g.us", id: "ABC"}}
+    end
+
+    test "pin → PIN_FOR_ALL with key + timestamp", %{key: key} do
+      msg = MessageEncoder.pin(key, true)
+      assert msg.pinInChatMessage.type == :PIN_FOR_ALL
+      assert msg.pinInChatMessage.key == key
+      assert is_integer(msg.pinInChatMessage.senderTimestampMs)
+    end
+
+    test "unpin → UNPIN_FOR_ALL", %{key: key} do
+      assert MessageEncoder.pin(key, false).pinInChatMessage.type == :UNPIN_FOR_ALL
+    end
+
+    test "keep → KEEP_FOR_ALL, undo → UNDO_KEEP_FOR_ALL", %{key: key} do
+      assert MessageEncoder.keep(key, true).keepInChatMessage.keepType == :KEEP_FOR_ALL
+      assert MessageEncoder.keep(key, false).keepInChatMessage.keepType == :UNDO_KEEP_FOR_ALL
+    end
+  end
+
+  describe "context_info/1 (reply + mentions)" do
+    test "no quoted/mentions → nil (message stays a plain conversation)" do
+      assert MessageEncoder.context_info([]) == nil
+      assert %Proto.Message{conversation: "hi"} = MessageEncoder.text("hi", [])
+    end
+
+    test "quoted builds stanzaId + participant + inlined quotedMessage" do
+      msg = inbound_msg()
+      ctx = MessageEncoder.context_info(quoted: msg)
+
+      assert ctx.stanzaId == "ORIG1"
+      assert ctx.participant == "1@s.whatsapp.net"
+      assert ctx.quotedMessage == msg.raw
+    end
+
+    test "mentions map to mentionedJid (jids or Address)" do
+      ctx =
+        MessageEncoder.context_info(
+          mentions: ["2@s.whatsapp.net", Amarula.Address.parse("3@s.whatsapp.net")]
+        )
+
+      assert ctx.mentionedJid == ["2@s.whatsapp.net", "3@s.whatsapp.net"]
+      assert ctx.stanzaId == nil
+    end
+
+    test "a reply switches text to extendedTextMessage carrying the contextInfo" do
+      msg = MessageEncoder.text("yes!", quoted: inbound_msg())
+
+      assert msg.conversation == nil
+      assert msg.extendedTextMessage.text == "yes!"
+      assert msg.extendedTextMessage.contextInfo.stanzaId == "ORIG1"
+    end
+
+    test "mentions alone also switch to extendedTextMessage" do
+      msg = MessageEncoder.text("hi @x", mentions: ["2@s.whatsapp.net"])
+      assert msg.extendedTextMessage.contextInfo.mentionedJid == ["2@s.whatsapp.net"]
+    end
+
+    test "context attaches to the media submessage, not the top level" do
+      msg = MessageEncoder.media(:image, media_info(), quoted: inbound_msg())
+
+      assert msg.imageMessage.contextInfo.stanzaId == "ORIG1"
+      # round-trips through the proto encoder without raising
+      assert is_binary(MessageEncoder.encode(msg))
     end
   end
 

@@ -42,28 +42,96 @@ defmodule AmarulaTest do
     {:ok, conn: conn}
   end
 
-  test "send_text forwards {:send_text, jid, text}", %{conn: conn} do
+  test "send_text forwards {:send_text, jid, text, opts}", %{conn: conn} do
     assert {:ok, "MSGID"} = Amarula.send_text(conn, "x@s.whatsapp.net", "hi")
-    assert_received {:got, {:send_text, "x@s.whatsapp.net", "hi"}}
+    assert_received {:got, {:send_text, "x@s.whatsapp.net", "hi", []}}
   end
 
-  test "send_reaction builds a reaction and sends to the target's remoteJid", %{conn: conn} do
-    key = %Proto.MessageKey{remoteJid: "x@s.whatsapp.net", id: "ABC"}
-    assert {:ok, "MSGID"} = Amarula.send_reaction(conn, key, "👍")
+  test "send_reaction (via {jid, msg_id}) sends to the target's remoteJid", %{conn: conn} do
+    ref = {"x@s.whatsapp.net", "ABC"}
+    assert {:ok, "MSGID"} = Amarula.send_reaction(conn, ref, "👍")
     assert_received {:got, {:send_message, "x@s.whatsapp.net", msg}}
     assert msg.reactionMessage.text == "👍"
+    assert msg.reactionMessage.key.id == "ABC"
+  end
+
+  test "send_reaction also accepts a %Amarula.Msg{} (derives chat + key)", %{conn: conn} do
+    msg =
+      Amarula.Msg.from_proto(%Proto.Message{conversation: "hi"}, %{
+        id: "ABC",
+        channel: Amarula.Address.parse("x@s.whatsapp.net"),
+        from: Amarula.Address.parse("x@s.whatsapp.net")
+      })
+
+    assert {:ok, "MSGID"} = Amarula.send_reaction(conn, msg, "🔥")
+    assert_received {:got, {:send_message, "x@s.whatsapp.net", out}}
+    assert out.reactionMessage.text == "🔥"
+    assert out.reactionMessage.key.id == "ABC"
   end
 
   test "send_edit / send_revoke build the right protocol message", %{conn: conn} do
-    key = %Proto.MessageKey{remoteJid: "x@s.whatsapp.net", id: "ABC"}
+    ref = {"x@s.whatsapp.net", "ABC"}
 
-    Amarula.send_edit(conn, key, "v2")
+    Amarula.send_edit(conn, ref, "v2")
     assert_received {:got, {:send_message, "x@s.whatsapp.net", edit}}
     assert edit.protocolMessage.type == :MESSAGE_EDIT
 
-    Amarula.send_revoke(conn, key)
+    Amarula.send_revoke(conn, ref)
     assert_received {:got, {:send_message, "x@s.whatsapp.net", rev}}
     assert rev.protocolMessage.type == :REVOKE
+  end
+
+  test "send_album sends the parent then each item referencing it", %{conn: conn} do
+    items = [{:image, <<1>>, [caption: "a"]}, {:video, <<2>>, []}]
+    assert {:ok, "MSGID"} = Amarula.send_album(conn, "g@g.us", items)
+
+    # Parent first: album with the right counts.
+    assert_received {:got, {:send_message, "g@g.us", parent}}
+    assert parent.albumMessage.expectedImageCount == 1
+    assert parent.albumMessage.expectedVideoCount == 1
+
+    # Then each item as a media send carrying :album_parent pointing at the parent.
+    assert_received {:got, {:send_media, "g@g.us", :image, <<1>>, img_opts}}
+    assert %Proto.MessageKey{id: "MSGID"} = img_opts[:album_parent]
+    assert img_opts[:caption] == "a"
+
+    assert_received {:got, {:send_media, "g@g.us", :video, <<2>>, vid_opts}}
+    assert %Proto.MessageKey{id: "MSGID"} = vid_opts[:album_parent]
+  end
+
+  test "send_event builds an eventMessage to the target jid", %{conn: conn} do
+    Amarula.send_event(conn, "g@g.us", "Launch", description: "v1")
+    assert_received {:got, {:send_message, "g@g.us", msg}}
+    assert msg.eventMessage.name == "Launch"
+    assert msg.eventMessage.description == "v1"
+  end
+
+  test "send_group_invite builds a groupInviteMessage to the target jid", %{conn: conn} do
+    Amarula.send_group_invite(conn, "x@s.whatsapp.net", "123@g.us", "CODE", group_name: "T")
+    assert_received {:got, {:send_message, "x@s.whatsapp.net", msg}}
+    assert msg.groupInviteMessage.groupJid == "123@g.us"
+    assert msg.groupInviteMessage.inviteCode == "CODE"
+    assert msg.groupInviteMessage.groupName == "T"
+  end
+
+  test "pin/unpin and keep/unkeep build the right protocol message", %{conn: conn} do
+    ref = {"g@g.us", "ABC"}
+
+    Amarula.pin_message(conn, ref)
+    assert_received {:got, {:send_message, "g@g.us", pin}}
+    assert pin.pinInChatMessage.type == :PIN_FOR_ALL
+
+    Amarula.unpin_message(conn, ref)
+    assert_received {:got, {:send_message, "g@g.us", unpin}}
+    assert unpin.pinInChatMessage.type == :UNPIN_FOR_ALL
+
+    Amarula.keep_message(conn, ref)
+    assert_received {:got, {:send_message, "g@g.us", keep}}
+    assert keep.keepInChatMessage.keepType == :KEEP_FOR_ALL
+
+    Amarula.unkeep_message(conn, ref)
+    assert_received {:got, {:send_message, "g@g.us", unkeep}}
+    assert unkeep.keepInChatMessage.keepType == :UNDO_KEEP_FOR_ALL
   end
 
   test "send_media forwards {:send_media, jid, type, data, opts}", %{conn: conn} do

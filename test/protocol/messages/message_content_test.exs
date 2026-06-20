@@ -103,4 +103,40 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     vote = %Proto.Message{pollUpdateMessage: %Proto.Message.PollUpdateMessage{}}
     assert {:poll_vote, %Proto.Message.PollUpdateMessage{}} = MessageContent.classify(vote)
   end
+
+  test "unwraps view-once and classifies the inner media" do
+    inner = MessageEncoder.media(:image, @info, [])
+    wrapped = %Proto.Message{viewOnceMessage: %Proto.Message.FutureProofMessage{message: inner}}
+    assert {:media, :image, _} = MessageContent.classify(wrapped)
+  end
+
+  test "classifies a round video note (ptvMessage) as media :video" do
+    ptv = MessageEncoder.media(:video, @info, ptv: true)
+    assert {:media, :video, _} = MessageContent.classify(ptv)
+  end
+
+  test "classifies pin and keep updates with the target key + flag" do
+    assert {:pin, %{key: @key, pinned?: true}} = MessageContent.classify(MessageEncoder.pin(@key, true))
+    assert {:pin, %{pinned?: false}} = MessageContent.classify(MessageEncoder.pin(@key, false))
+    assert {:keep, %{key: @key, kept?: true}} = MessageContent.classify(MessageEncoder.keep(@key, true))
+    assert {:keep, %{kept?: false}} = MessageContent.classify(MessageEncoder.keep(@key, false))
+  end
+
+  test "classifies receive-only business/interactive types instead of {:other}" do
+    invite = %Proto.Message{groupInviteMessage: %Proto.Message.GroupInviteMessage{}}
+    assert {:group_invite, _} = MessageContent.classify(invite)
+
+    event = %Proto.Message{eventMessage: %Proto.Message.EventMessage{}}
+    assert {:event, _} = MessageContent.classify(event)
+
+    order = %Proto.Message{orderMessage: %Proto.Message.OrderMessage{}}
+    assert {:order, _} = MessageContent.classify(order)
+
+    list = %Proto.Message{listResponseMessage: %Proto.Message.ListResponseMessage{}}
+    assert {:list_response, _} = MessageContent.classify(list)
+  end
+
+  test "still falls through to {:other} for genuinely unknown content" do
+    assert {:other, _} = MessageContent.classify(%Proto.Message{})
+  end
 end

@@ -12,8 +12,10 @@ defmodule Amarula.Storage.File do
   file is Elixir-specific, not interchangeable with Baileys' JSON state.
 
   Writes are atomic (temp file + rename) so a crash mid-write can't corrupt
-  state. A corrupt or unreadable entry is logged and treated as a miss, matching
-  the prior stores' fail-soft behaviour.
+  state. A genuinely corrupt or unreadable entry is logged and treated as a miss,
+  matching the prior stores' fail-soft behaviour — but a valid, self-written term
+  is always recovered, even when it carries atoms not yet loaded on a cold BEAM
+  (see `decode/2`).
 
   ## Options
 
@@ -115,11 +117,27 @@ defmodule Amarula.Storage.File do
 
   # `[:safe]` refuses to mint new atoms or instantiate funs/refs/external terms from
   # the payload — so a tampered .term file can't exhaust the atom table or smuggle in
-  # an unsafe term. Legitimate values only use atoms already loaded by our structs, so
-  # they decode fine; a rejected (or genuinely corrupt) file raises and is treated as a
-  # miss, same as before.
+  # an unsafe term. We try it first as a cheap guard.
+  #
+  # But these files are *self-written, trusted* data: we wrote them with
+  # `term_to_binary/1`. A legitimate creds term carries struct atoms (e.g.
+  # `Amarula.Protocol.Proto.ADVSignedDeviceIdentity`) that `[:safe]` refuses to mint
+  # when the generated proto module hasn't been loaded yet — load-order dependent on a
+  # cold BEAM. Treating that as a miss silently logs the session out and forces a
+  # re-pair. So on the `[:safe]`-specific rejection we fall back to an unsafe decode of
+  # our own file; only if *that* also fails is the file genuinely corrupt.
   defp decode(bin, path) do
     {:ok, :erlang.binary_to_term(bin, [:safe])}
+  rescue
+    ArgumentError ->
+      # `[:safe]` rejected an atom/term it wouldn't mint. The file is ours and was a
+      # valid term when written, so decode it without `[:safe]` (which also loads the
+      # atoms, so subsequent `[:safe]` reads of the same shape pass).
+      decode_trusted(bin, path)
+  end
+
+  defp decode_trusted(bin, path) do
+    {:ok, :erlang.binary_to_term(bin)}
   rescue
     _ ->
       Logger.warning("Storage.File: corrupt entry at #{path} — treating as miss")

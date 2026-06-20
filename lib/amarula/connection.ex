@@ -26,7 +26,6 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Binary.{Decoder, JID, NodeUtils, Encoder, Node}
   alias Amarula.Protocol.Messages.{ConversationSender, Media, MessageEncoder}
   alias Amarula.Protocol.Messages.{HistorySync, MessageDecryptor}
-  alias Amarula.Protocol.Groups.Metadata
   alias Amarula.Protocol.Presence
 
   # A send blocks the caller until the per-recipient sender finishes (up to three
@@ -53,11 +52,8 @@ defmodule Amarula.Connection do
   # How long to wait for an IQ reply before failing the waiting caller.
   @iq_timeout_ms 20_000
 
-  # How long to wait for the server's <ack class="message"> confirming a relayed
-  # send before failing the parked caller with :ack_timeout. The frame was written
-  # but never confirmed. Overridable via config (`:ack_timeout_ms`) for tests; the
-  # client-side @send_call_timeout must exceed enrich + this worst case.
-  @ack_timeout_ms 30_000
+  # The <ack> wait (default 30s, config :ack_timeout_ms) lives on
+  # Connection.AckLifecycle now; @send_call_timeout must still exceed it.
   alias Amarula.Protocol.Crypto.Constants
   alias Amarula.Protocol.Proto
 
@@ -65,6 +61,8 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Signal.LidMappingFileStore
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
+  alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing, Notifications, Receive}
+  alias Amarula.Connection.{AppStateOps, AckLifecycle}
 
   defstruct [
     :websocket_client,
@@ -416,8 +414,8 @@ defmodule Amarula.Connection do
   Send a 1:1/group text message to `jid`. Encrypts and relays (fetching the
   recipient's prekey bundle first if we have no session). Returns `{:ok, msg_id}`.
   """
-  def send_text(pid \\ __MODULE__, jid, text) do
-    GenServer.call(pid, {:send_text, jid, text}, @send_call_timeout)
+  def send_text(pid \\ __MODULE__, jid, text, opts \\ []) do
+    GenServer.call(pid, {:send_text, jid, text, opts}, @send_call_timeout)
   end
 
   @doc """
@@ -657,34 +655,13 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:group_metadata, group}, from, state) do
-    group_jid = Amarula.Address.to_jid!(group)
-    iq = Metadata.query_iq(group_jid)
-
-    transform = fn
-      {:ok, node} ->
-        with {:ok, meta} <- Metadata.parse(node),
-             do: {:ok, Amarula.Group.from_metadata(meta)}
-
-      {:error, node} ->
-        {:error, node}
-    end
-
+    {iq, transform} = GroupOps.metadata(Amarula.Address.to_jid!(group))
     {:noreply, send_waiter_iq(state, iq, from, transform)}
   end
 
   @impl GenServer
   def handle_call(:list_groups, from, state) do
-    iq = Metadata.query_all_iq()
-
-    transform = fn
-      {:ok, node} ->
-        {:ok, metas} = Metadata.parse_all(node)
-        {:ok, Enum.map(metas, &Amarula.Group.from_metadata/1)}
-
-      {:error, node} ->
-        {:error, node}
-    end
-
+    {iq, transform} = GroupOps.list()
     {:noreply, send_waiter_iq(state, iq, from, transform)}
   end
 
@@ -741,65 +718,32 @@ defmodule Amarula.Connection do
   # --- Send path (folded from the former Socket facade) ---
 
   @impl GenServer
-  def handle_call({:send_text, jid, text}, from, state) do
-    deliver_async(state, jid, %{text: text}, from)
+  def handle_call({:send_text, jid, text, opts}, from, state) do
+    dispatch_send(state, SendOps.text(jid, text, opts), from)
   end
 
   @impl GenServer
   def handle_call({:send_message, jid, message}, from, state) do
-    deliver_async(state, jid, %{message: message}, from)
+    dispatch_send(state, SendOps.message(jid, message), from)
   end
 
   @impl GenServer
   def handle_call({:request_resend, message_key}, from, state) do
-    me_id = get_in(state.auth_creds, [:me, :id])
-
-    if me_id do
-      pdo = MessageEncoder.placeholder_resend_request(message_key)
-      # A PEER_DATA_OPERATION request is sent to OURSELVES (own devices) with the
-      # peer category + high push priority, so the phone re-delivers the original.
-      payload = %{
-        message: pdo,
-        stanza_attrs: %{"category" => "peer", "push_priority" => "high_force"}
-      }
-
-      deliver_async(state, me_id, payload, from)
-    else
-      {:reply, {:error, :not_authenticated}, state}
-    end
+    with_me_id(state, from, fn me_id ->
+      SendOps.request_resend(me_id, message_key)
+    end)
   end
 
   @impl GenServer
   def handle_call({:fetch_history, oldest_key, oldest_ts, count}, from, state) do
-    me_id = get_in(state.auth_creds, [:me, :id])
-
-    if me_id do
-      pdo = MessageEncoder.history_sync_on_demand_request(oldest_key, oldest_ts, count)
-      # An on-demand history request is a PEER_DATA_OPERATION sent to OURSELVES
-      # (own devices) with the peer category + high push priority; the phone
-      # replies later with an ON_DEMAND HistorySync notification.
-      payload = %{
-        message: pdo,
-        stanza_attrs: %{"category" => "peer", "push_priority" => "high_force"}
-      }
-
-      deliver_async(state, me_id, payload, from)
-    else
-      {:reply, {:error, :not_authenticated}, state}
-    end
+    with_me_id(state, from, fn me_id ->
+      SendOps.fetch_history(me_id, oldest_key, oldest_ts, count)
+    end)
   end
 
   @impl GenServer
   def handle_call({:send_poll, jid, name, options, opts}, from, state) do
-    {message, secret} = MessageEncoder.poll(name, options, opts)
-
-    # Poll's reply carries the secret: {:ok, id} → {:ok, id, secret}.
-    shape = fn
-      :ok, msg_id -> {:ok, msg_id, secret}
-      result, msg_id -> default_send_reply(result, msg_id)
-    end
-
-    deliver_async(state, jid, %{message: message}, from, shape)
+    dispatch_send(state, SendOps.poll(jid, name, options, opts), from)
   end
 
   @impl GenServer
@@ -1030,7 +974,7 @@ defmodule Amarula.Connection do
   # the recipient's ConversationSender, forwarding the original caller's `from`.
   @impl GenServer
   def handle_info({:send_media_ready, jid, message, from}, state) do
-    deliver_async(state, jid, %{message: message}, from)
+    dispatch_send(state, SendOps.media(jid, message), from)
   end
 
   @impl GenServer
@@ -1110,10 +1054,10 @@ defmodule Amarula.Connection do
   # monitor. An unknown ref isn't ours — ignore.
   @impl GenServer
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    case pop_monitor_by_ref(state, ref) do
+    case AckLifecycle.pop_monitor_by_ref(state, ref) do
       {nil, state} -> {:noreply, state}
       {_jid, state} when reason == :normal -> {:noreply, state}
-      {jid, state} -> {:noreply, fail_recipient_sends(state, jid, reason)}
+      {jid, state} -> {:noreply, AckLifecycle.fail_recipient_sends(state, jid, reason)}
     end
   end
 
@@ -1330,7 +1274,23 @@ defmodule Amarula.Connection do
   # `from` nil = fire-and-forget (a retry resend, no caller waiting) → nothing is
   # parked. `shape` maps a successful ack to the caller's reply (default:
   # `{:ok, msg_id}`; poll adds its secret).
-  defp deliver_async(state, target, payload, from, shape \\ &default_send_reply/2)
+  # Dispatch a `SendOps` build triple. Thin glue between the send-callback bodies
+  # (which now live in `SendOps`) and `deliver_async` (the ack-aware dispatcher,
+  # which stays here because it owns the ack lifecycle).
+  defp dispatch_send(state, {target, payload, shape}, from) do
+    deliver_async(state, target, payload, from, shape)
+  end
+
+  # Resend/history go to OUR own devices, so they need a logged-in `me.id`. Guard
+  # it once; on success run `build_fun.(me_id)` (a `SendOps` builder) and dispatch.
+  defp with_me_id(state, from, build_fun) do
+    case get_in(state.auth_creds, [:me, :id]) do
+      nil -> {:reply, {:error, :not_authenticated}, state}
+      me_id -> dispatch_send(state, build_fun.(me_id), from)
+    end
+  end
+
+  defp deliver_async(state, target, payload, from, shape \\ &SendOps.default_send_reply/2)
 
   # Sandbox (offline) mode: the connection has no socket and there is no peer to
   # reach, so a send must not run the real pipeline (USync/bundle fetch IQs would
@@ -1384,104 +1344,28 @@ defmodule Amarula.Connection do
   # sender is per recipient and may hold several in-flight sends; one monitor
   # covers them all. On its :DOWN we fail every parked send for this jid. A
   # fire-and-forget send (no parked entry) needs no monitor — but harmless to set.
+  # Monitor a recipient's sender once (the self()-bound Process.monitor stays
+  # here; AckLifecycle owns the map). One monitor covers all the recipient's
+  # in-flight sends; on its :DOWN we fail every parked send for this jid.
   defp ensure_sender_monitor(state, jid, sender) do
-    case Map.fetch(state.sender_monitors, jid) do
-      {:ok, _ref} ->
-        state
-
-      :error ->
-        ref = Process.monitor(sender)
-        %{state | sender_monitors: Map.put(state.sender_monitors, jid, ref)}
+    if AckLifecycle.monitored?(state, jid) do
+      state
+    else
+      AckLifecycle.put_monitor(state, jid, Process.monitor(sender))
     end
   end
 
-  # Park the consumer's `from` (with its ack-success shape and a timeout timer)
-  # until the server confirms msg_id. A fire-and-forget send (from == nil) parks
-  # nothing: no caller waits, so a missing ack is silently fine.
+  # Park the consumer's `from` until the server confirms msg_id. The timeout
+  # timer needs self() so it's created here; AckLifecycle stores it. The shape
+  # applies to a successful ack only, so it's pre-bound with msg_id as `on_ack`.
   defp park_ack(state, _msg_id, nil, _shape, _jid), do: state
 
   defp park_ack(state, msg_id, from, shape, jid) do
-    timer = Process.send_after(self(), {:ack_timeout, msg_id}, ack_timeout_ms(state))
-    # The shape stored applies to a successful ack only; it is given msg_id here.
-    on_ack = fn :ok -> shape.(:ok, msg_id) end
-
-    %{
-      state
-      | pending_acks: Map.put(state.pending_acks, msg_id, {from, on_ack, timer, jid})
-    }
+    timer = Process.send_after(self(), {:ack_timeout, msg_id}, AckLifecycle.timeout_ms(state))
+    AckLifecycle.park(state, msg_id, from, timer, fn :ok -> shape.(:ok, msg_id) end, jid)
   end
 
-  defp ack_timeout_ms(%{config: %{ack_timeout_ms: ms}}) when is_integer(ms), do: ms
-  defp ack_timeout_ms(_state), do: @ack_timeout_ms
-
-  # Resolve a parked send: reply the consumer `reply_fun.(on_ack)`, cancel the
-  # timeout timer, and drop the entry. `reply_fun` receives the stored ack-success
-  # shape so the success path can apply it (`on_ack.(:ok)`) while failure/timeout
-  # bypass it. An unknown id (already resolved, fire-and-forget, or not ours) is a
-  # no-op — the same id never resolves twice (a duplicate ack is harmless).
-  defp resolve_ack(state, msg_id, reply_fun) do
-    case Map.pop(state.pending_acks, msg_id) do
-      {nil, _acks} ->
-        state
-
-      {{from, on_ack, timer, jid}, acks} ->
-        Process.cancel_timer(timer)
-        GenServer.reply(from, reply_fun.(on_ack))
-        maybe_drop_monitor(%{state | pending_acks: acks}, jid)
-    end
-  end
-
-  # Once a recipient has no remaining parked sends, stop monitoring its sender so
-  # monitor refs don't leak and we don't hold a stale monitor on a sender that
-  # will idle-stop and respawn. The next send re-establishes the monitor.
-  defp maybe_drop_monitor(state, jid) do
-    still_parked? = Enum.any?(state.pending_acks, fn {_id, {_f, _o, _t, j}} -> j == jid end)
-
-    if still_parked? do
-      state
-    else
-      case Map.pop(state.sender_monitors, jid) do
-        {nil, _} ->
-          state
-
-        {ref, monitors} ->
-          Process.demonitor(ref, [:flush])
-          %{state | sender_monitors: monitors}
-      end
-    end
-  end
-
-  # Find which recipient a :DOWN ref belonged to and drop that monitor entry.
-  # The monitor already fired, so no demonitor is needed.
-  defp pop_monitor_by_ref(state, ref) do
-    case Enum.find(state.sender_monitors, fn {_jid, r} -> r == ref end) do
-      nil ->
-        {nil, state}
-
-      {jid, ^ref} ->
-        {jid, %{state | sender_monitors: Map.delete(state.sender_monitors, jid)}}
-    end
-  end
-
-  # Reply every parked send for a crashed recipient with {:error,
-  # {:sender_crashed, reason}}, cancel their timers, and drop them. (The monitor
-  # entry was already removed by pop_monitor_by_ref.)
-  defp fail_recipient_sends(state, jid, reason) do
-    {mine, rest} =
-      Map.split_with(state.pending_acks, fn {_id, {_f, _o, _t, j}} -> j == jid end)
-
-    Enum.each(mine, fn {_id, {from, _on_ack, timer, _j}} ->
-      Process.cancel_timer(timer)
-      GenServer.reply(from, {:error, {:sender_crashed, reason}})
-    end)
-
-    %{state | pending_acks: rest}
-  end
-
-  @doc false
-  def default_send_reply(:ok, msg_id), do: {:ok, msg_id}
-  def default_send_reply({:error, reason}, _msg_id), do: {:error, reason}
-  def default_send_reply({:halted, reason}, _msg_id), do: {:error, {:halted, reason}}
+  defp resolve_ack(state, msg_id, reply_fun), do: AckLifecycle.resolve(state, msg_id, reply_fun)
 
   defp generate_message_id do
     "3EB0" <> (:crypto.strong_rand_bytes(8) |> Base.encode16(case: :upper))
@@ -1693,9 +1577,9 @@ defmodule Amarula.Connection do
   defp handle_message_ack(state, node) do
     msg_id = NodeUtils.get_attr(node, "id")
 
-    case NodeUtils.get_attr(node, "error") do
-      nil -> resolve_ack(state, msg_id, fn on_ack -> on_ack.(:ok) end)
-      code -> resolve_ack(state, msg_id, fn _on_ack -> {:error, {:send_rejected, code}} end)
+    case Receive.ack_outcome(node) do
+      :ok -> resolve_ack(state, msg_id, fn on_ack -> on_ack.(:ok) end)
+      {:error, _} = err -> resolve_ack(state, msg_id, fn _on_ack -> err end)
     end
   end
 
@@ -1752,9 +1636,7 @@ defmodule Amarula.Connection do
     state = send_message_ack(state, node)
     Amarula.Telemetry.emit([:amarula, :retry, :received], profile(state), %{count: 1})
 
-    msg_id = NodeUtils.get_attr(node, "id")
-    from = NodeUtils.get_attr(node, "from")
-    participant = NodeUtils.get_attr(node, "participant") || from
+    {msg_id, participant} = Receive.retry_targets(node)
 
     cond do
       is_nil(msg_id) ->
@@ -1893,11 +1775,9 @@ defmodule Amarula.Connection do
   # account_sync — account-level setting changes. disappearing_mode updates creds;
   # blocklist additions/removals surface as a :blocklist_update event.
   defp dispatch_notification(state, "account_sync", node) do
-    cond do
-      child = NodeUtils.get_binary_node_child(node, "disappearing_mode") ->
-        duration = NodeUtils.get_attr(child, "duration")
+    case Notifications.account_sync(node) do
+      {:disappearing, duration} ->
         Logger.debug("account_sync: disappearing mode duration=#{duration}")
-
         settings = Map.get(state.auth_creds, :account_settings, %{})
 
         creds =
@@ -1909,19 +1789,12 @@ defmodule Amarula.Connection do
 
         update_creds(state, creds)
 
-      child = NodeUtils.get_binary_node_child(node, "blocklist") ->
-        items =
-          child
-          |> NodeUtils.get_binary_node_children("item")
-          |> Enum.map(fn item ->
-            %{jid: NodeUtils.get_attr(item, "jid"), action: NodeUtils.get_attr(item, "action")}
-          end)
-
+      {:blocklist, items} ->
         Logger.debug("account_sync: blocklist update (#{length(items)} item(s))")
         emit_to_subscribers(state, :blocklist_update, items)
         state
 
-      true ->
+      :ignore ->
         state
     end
   end
@@ -1931,21 +1804,13 @@ defmodule Amarula.Connection do
   # uncached), we drop the cached device list for each affected user so the next
   # send re-fetches a fresh list via USync. A "remove" also drops their sessions.
   defp dispatch_notification(state, "devices", node) do
-    case node.content do
-      [%Node{tag: tag} = child | _] when tag in ~w(add remove update) ->
-        users =
-          child
-          |> NodeUtils.get_binary_node_children("device")
-          |> Enum.map(&NodeUtils.get_attr(&1, "jid"))
-          |> Enum.reject(&is_nil/1)
-          |> Enum.map(&JID.jid_normalized_user/1)
-          |> Enum.uniq()
-
+    case Notifications.devices(node) do
+      {tag, users} ->
         Logger.debug("devices #{tag}: dropping cached device list for #{length(users)} user(s)")
         Enum.each(users, &DeviceListCache.delete(conn(state), &1))
         state
 
-      _ ->
+      :ignore ->
         state
     end
   end
@@ -1953,8 +1818,7 @@ defmodule Amarula.Connection do
   # picture — a contact/group avatar changed; surface it as a contact update so a
   # consumer can refresh the image (Baileys emits contacts.update imgUrl).
   defp dispatch_notification(state, "picture", node) do
-    from = node |> NodeUtils.get_attr("from") |> JID.jid_normalized_user()
-    img_url = if NodeUtils.get_binary_node_child(node, "set"), do: "changed", else: "removed"
+    {from, img_url} = Notifications.picture(node)
     Logger.debug("picture #{img_url} for #{from}")
     emit_to_subscribers(state, :contacts_update, [%{id: from, img_url: img_url}])
     state
@@ -2297,34 +2161,19 @@ defmodule Amarula.Connection do
     # We're still waiting for the user to scan the QR code and pair-success to arrive.
     # The pair-device IQ is just sending us QR codes, not completing authentication.
 
-    # Send IQ acknowledgment - use list for attribute order: to, type, id
+    # Send IQ acknowledgment.
     msg_id = NodeUtils.get_attr(node, "id")
-
-    ack_node = %Node{
-      tag: "iq",
-      attrs: [
-        {"to", "@s.whatsapp.net"},
-        {"type", "result"},
-        {"id", msg_id}
-      ],
-      # No content (matches Baileys)
-      content: nil
-    }
-
     Logger.debug("Sending pair-device IQ ack (id=#{msg_id})")
-    state = send_binary_node(state, ack_node)
+    state = send_binary_node(state, Pairing.pair_device_ack_node(msg_id))
 
     # Extract ref nodes and start cycling QR codes (matches Baileys genPairQR loop)
-    with pair_device_node when not is_nil(pair_device_node) <-
-           NodeUtils.get_binary_node_child(node, "pair-device"),
-         [_ | _] = ref_nodes <-
-           NodeUtils.get_binary_node_children(pair_device_node, "ref") do
-      refs = Enum.map(ref_nodes, & &1.content)
-      emit_next_qr(%{state | qr_refs: refs})
-    else
-      _ ->
+    case Pairing.qr_refs(node) do
+      [] ->
         Logger.warning("pair-device IQ had no ref nodes")
         state
+
+      refs ->
+        emit_next_qr(%{state | qr_refs: refs})
     end
   end
 
@@ -2400,7 +2249,7 @@ defmodule Amarula.Connection do
       account_enc = DeviceIdentity.encode(verified_account, false)
 
       # Build and send reply
-      reply_node = build_pair_device_sign_reply(msg_id, device_identity.keyIndex, account_enc)
+      reply_node = Pairing.pair_device_sign_reply(msg_id, device_identity.keyIndex, account_enc)
 
       Logger.debug(
         "Sending pair-device-sign reply: msg_id=#{msg_id}, key_index=#{device_identity.keyIndex}"
@@ -2410,7 +2259,7 @@ defmodule Amarula.Connection do
 
       # Update credentials
       updated_creds =
-        update_credentials_after_pairing(
+        Pairing.update_credentials_after_pairing(
           state.auth_creds,
           verified_account,
           jid,
@@ -2449,52 +2298,8 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Device-identity pairing crypto extracted to Auth.DeviceIdentity (pure).
-
-  defp build_pair_device_sign_reply(msg_id, key_index, account_enc) do
-    %Node{
-      tag: "iq",
-      attrs: %{
-        "to" => Constants.s_whatsapp_net(),
-        "type" => "result",
-        "id" => msg_id
-      },
-      content: [
-        %Node{
-          tag: "pair-device-sign",
-          attrs: %{},
-          content: [
-            %Node{
-              tag: "device-identity",
-              attrs: %{"key-index" => to_string(key_index)},
-              content: account_enc
-            }
-          ]
-        }
-      ]
-    }
-  end
-
-  defp update_credentials_after_pairing(
-         creds,
-         account,
-         jid,
-         lid,
-         biz_name,
-         platform,
-         signal_identity
-       ) do
-    creds
-    |> Map.put(:account, account)
-    # Default name to "~" (Baileys) when there's no business name — a personal
-    # account has no <biz>, and presence-available (which marks the companion
-    # ACTIVE on the phone, clearing "Paused") requires a non-nil me.name.
-    |> Map.put(:me, %{id: jid, name: biz_name || "~", lid: lid})
-    |> Map.put(:platform, platform)
-    |> Map.update(:signal_identities, [signal_identity], fn identities ->
-      [signal_identity | identities || []]
-    end)
-  end
+  # Device-identity pairing crypto extracted to Auth.DeviceIdentity (pure);
+  # pairing node/creds builders extracted to Connection.Pairing (pure).
 
   # Full-frame tap for protocol diffing against Baileys. Off unless AMARULA_FRAME_TAP
   # is set. Dumps every in/out node as one-line XML so two clients' post-login frame
@@ -3372,11 +3177,7 @@ defmodule Amarula.Connection do
 
   # Store any app-state-sync keys shared in these messages; resync if we got some.
   defp maybe_handle_app_state_key_share(state, messages) do
-    shared =
-      messages
-      |> Enum.flat_map(&app_state_keys/1)
-
-    case shared do
+    case AppStateOps.sync_keys_in(messages) do
       [] ->
         state
 
@@ -3395,19 +3196,6 @@ defmodule Amarula.Connection do
         resync_app_state(state)
     end
   end
-
-  defp app_state_keys(%{protocolMessage: %{appStateSyncKeyShare: %{keys: keys}}})
-       when is_list(keys) do
-    Enum.flat_map(keys, fn
-      %{keyId: %{keyId: id}, keyData: %{keyData: data}} when is_binary(id) and is_binary(data) ->
-        [{Base.encode64(id), data}]
-
-      _ ->
-        []
-    end)
-  end
-
-  defp app_state_keys(_msg), do: []
 
   # Request + decode patches for the named collections (all by default), persist
   # new state, emit changes. A server_sync notification names ONE collection, so
@@ -3444,8 +3232,7 @@ defmodule Amarula.Connection do
   end
 
   defp emit_app_state_changes(state, changes) do
-    chats = for {:chat, c} <- changes, do: c
-    contacts = for {:contact, c} <- changes, do: c
+    {chats, contacts} = AppStateOps.partition_changes(changes)
     if chats != [], do: emit_to_subscribers(state, :chats_update, chats)
     if contacts != [], do: emit_to_subscribers(state, :contacts_update, contacts)
   end
@@ -3711,17 +3498,7 @@ defmodule Amarula.Connection do
 
   # Ask the server how many of our one-time prekeys it still holds.
   defp request_pre_key_count(state) do
-    count_iq = %Node{
-      tag: "iq",
-      attrs: [
-        {"xmlns", "encrypt"},
-        {"type", "get"},
-        {"to", Constants.s_whatsapp_net()}
-      ],
-      content: [%Node{tag: "count", attrs: %{}, content: nil}]
-    }
-
-    send_tracked_iq(state, count_iq, :prekey_count)
+    send_tracked_iq(state, PreKeyOps.count_query_node(), :prekey_count)
   end
 
   defp handle_tracked_iq(:app_state_sync, {:ok, node}, state) do
@@ -3735,23 +3512,12 @@ defmodule Amarula.Connection do
   end
 
   defp handle_tracked_iq(:prekey_count, {:ok, node}, state) do
-    server_count =
-      case NodeUtils.get_binary_node_child(node, "count") do
-        nil -> 0
-        count_node -> String.to_integer(NodeUtils.get_attr(count_node, "value") || "0")
-      end
-
-    # If the server has none we send the big initial batch, otherwise top up.
-    target =
-      if server_count == 0,
-        do: PreKeys.initial_pre_key_count(),
-        else: PreKeys.min_pre_key_count()
+    server_count = PreKeyOps.server_count(node)
+    target = PreKeyOps.upload_target(server_count)
 
     Logger.debug("#{server_count} pre-keys found on server")
 
-    # Baileys also re-uploads when the most recently generated prekey is gone
-    # from local storage (verifyCurrentPreKeyExists).
-    if server_count <= target or missing_current_pre_key?(state.auth_creds) do
+    if PreKeyOps.upload_needed?(server_count, target, state.auth_creds) do
       upload_pre_keys(state, target)
     else
       finish_login(state)
@@ -3862,11 +3628,6 @@ defmodule Amarula.Connection do
 
     Logger.debug("Sending presence available (name: #{name})")
     send_binary_node(state, node)
-  end
-
-  defp missing_current_pre_key?(creds) do
-    current_id = Map.get(creds, :next_pre_key_id, 1) - 1
-    current_id > 0 and not Map.has_key?(Map.get(creds, :pre_keys, %{}), current_id)
   end
 
   defp upload_pre_keys(state, count, kind \\ :prekey_upload) do

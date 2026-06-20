@@ -114,8 +114,13 @@ defmodule Amarula do
 
   alias Amarula.Connection
   alias Amarula.ProfileRegistry
-  alias Amarula.Protocol.Messages.Media
+  alias Amarula.Protocol.Messages.{Media, MessageEncoder}
   alias Amarula.Protocol.Proto
+
+  # A send blocks the caller until the per-recipient sender finishes (up to three
+  # IQ round-trips for a new recipient); the call timeout must exceed that worst
+  # case. Mirrors Connection's own bound — the facade calls the process directly.
+  @send_call_timeout 90_000
 
   @typedoc """
   A connection handle: the pid from `connect/2`, a registered name, or the `:via`
@@ -129,7 +134,19 @@ defmodule Amarula do
   @typedoc ~S|A send target: an `Amarula.Address` or a jid string (`"<n>@s.whatsapp.net"` / `"<id>@g.us"`).|
   @type jid :: String.t() | Amarula.Address.t()
 
-  @typedoc "The key of a specific message (for reactions/edits/deletes)."
+  @typedoc """
+  A reference to a specific existing message (for reactions / edits / deletes /
+  poll votes). Either:
+
+    * the `%Amarula.Msg{}` you received (carries its chat, sender, id), or
+    * a `{jid, msg_id}` tuple — the chat `jid` plus the message id string.
+
+  Both are self-contained. (Quote *replies* use the `:quoted` opt on `send_text`,
+  which takes the `%Amarula.Msg{}` directly.)
+  """
+  @type message_ref :: Amarula.Msg.t() | {jid(), String.t()}
+
+  @typedoc "A raw message key — used by the low-level on-demand history request."
   @type message_key :: Proto.MessageKey.t()
 
   @typedoc "Result of a send: the assigned message id, or an error."
@@ -213,10 +230,12 @@ defmodule Amarula do
 
   > #### The returned pid is not restart-safe {: .warning}
   >
-  > If the connection crashes, its supervision tree restarts it under a **new
-  > pid** — the pid returned here then points at a dead process. For anything
-  > you hold across time (a GenServer state field, a long-lived process), store
-  > the **profile** and address the connection with `via/1` instead:
+  > A raw pid is returned on purpose — you can `Process.monitor/1` it to detect a
+  > crash, or `Process.alive?/1` it. But if the connection crashes, its supervision
+  > tree restarts it under a **new pid**, and the one returned here then points at a
+  > dead process. So for anything you hold across time (a GenServer state field, a
+  > long-lived process), store the **profile** and address the connection with
+  > `via/1` instead:
   >
   >     conn = Amarula.via(profile)          # always resolves to the current pid
   >     Amarula.send_text(conn, jid, "hi")
@@ -272,7 +291,7 @@ defmodule Amarula do
   profile entirely. Returns `:ok | {:error, reason}`.
   """
   @spec disconnect(conn()) :: :ok | {:error, term()}
-  defdelegate disconnect(conn), to: Connection
+  def disconnect(conn), do: GenServer.call(conn, :disconnect)
 
   @doc """
   (Re)open the connection's websocket on an already-started connection — the
@@ -280,7 +299,7 @@ defmodule Amarula do
   profile's stored credentials. Returns `:ok | {:error, reason}`.
   """
   @spec reconnect(conn()) :: :ok | {:error, term()}
-  defdelegate reconnect(conn), to: Connection, as: :connect
+  def reconnect(conn), do: GenServer.call(conn, :connect)
 
   @doc """
   Stop a connection entirely — the whole supervision tree — and release its profile
@@ -311,7 +330,7 @@ defmodule Amarula do
   (websocket only) or `stop/1` (the whole tree, freeing the profile slot).
   """
   @spec wipe_credentials(conn()) :: :ok | {:error, term()}
-  defdelegate wipe_credentials(conn), to: Connection
+  def wipe_credentials(conn), do: GenServer.call(conn, :wipe_credentials)
 
   @doc """
   List every profile that has stored credentials in `storage`.
@@ -368,7 +387,7 @@ defmodule Amarula do
 
   @doc "Current connection state (e.g. `:disconnected`, `:connecting`, `:connected`)."
   @spec connection_state(conn()) :: atom()
-  defdelegate connection_state(conn), to: Connection, as: :get_connection_state
+  def connection_state(conn), do: GenServer.call(conn, :get_connection_state)
 
   ## Identity -----------------------------------------------------------------
 
@@ -394,7 +413,7 @@ defmodule Amarula do
   """
   @spec own_address(conn()) :: Amarula.Address.t()
   def own_address(conn) do
-    case conn |> Connection.get_auth_creds() |> get_in([:me, :id]) do
+    case conn |> GenServer.call(:get_auth_creds) |> get_in([:me, :id]) do
       id when is_binary(id) -> Amarula.Address.parse(id) || Amarula.Address.empty()
       _ -> Amarula.Address.empty()
     end
@@ -414,23 +433,29 @@ defmodule Amarula do
   running two connections on the same account.
   """
   @spec own_chat?(conn(), Amarula.Msg.t()) :: boolean()
-  defdelegate own_chat?(conn, msg), to: Connection
+  def own_chat?(conn, msg), do: GenServer.call(conn, {:own_chat?, msg})
 
-  @doc "Send a 1:1/group text message to `jid`."
-  @spec send_text(conn(), jid(), String.t()) :: send_result()
-  defdelegate send_text(conn, jid, text), to: Connection
+  @doc """
+  Send a 1:1/group text message to `jid`. `opts`:
+
+    * `:quoted` — reply to an `%Amarula.Msg{}` (threads the quote).
+    * `:mentions` — list of jids/`%Amarula.Address{}` to tag (`@mention`).
+  """
+  @spec send_text(conn(), jid(), String.t(), keyword()) :: send_result()
+  def send_text(conn, jid, text, opts \\ []),
+    do: GenServer.call(conn, {:send_text, jid, text, opts}, @send_call_timeout)
 
   @doc "Set your global presence: `:available` (online) or `:unavailable`. Needs a profile name."
   @spec set_presence(conn(), :available | :unavailable) :: :ok | {:error, term()}
-  defdelegate set_presence(conn, type), to: Connection
+  def set_presence(conn, type), do: GenServer.call(conn, {:set_presence, type})
 
   @doc "Send a typing indicator to `jid`: `:composing`, `:recording`, or `:paused`."
   @spec send_chatstate(conn(), jid(), :composing | :recording | :paused) :: :ok
-  defdelegate send_chatstate(conn, jid, type), to: Connection
+  def send_chatstate(conn, jid, type), do: GenServer.call(conn, {:send_chatstate, jid, type})
 
   @doc "Subscribe to a contact's presence updates."
   @spec subscribe_presence(conn(), jid()) :: :ok
-  defdelegate subscribe_presence(conn, jid), to: Connection, as: :presence_subscribe
+  def subscribe_presence(conn, jid), do: GenServer.call(conn, {:presence_subscribe, jid})
 
   @doc """
   Request a link-code (phone-number) pairing code for `phone` (E.164 digits;
@@ -447,15 +472,18 @@ defmodule Amarula do
   """
   @spec request_pairing_code(conn(), String.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
-  def request_pairing_code(conn, phone, opts \\ []),
-    do: Connection.request_pairing_code(conn, phone, opts)
+  def request_pairing_code(conn, phone, opts \\ []) do
+    digits = String.replace(phone, ~r/\D/, "")
+    GenServer.call(conn, {:request_pairing_code, digits, Keyword.get(opts, :custom_code)})
+  end
 
   @doc """
   Send a read receipt for `message_ids` in chat `jid` (pass `participant` for a
   group sender). Marks those messages read on the sender's side.
   """
   @spec mark_read(conn(), jid(), [String.t(), ...], jid() | nil) :: :ok
-  defdelegate mark_read(conn, jid, message_ids, participant \\ nil), to: Connection
+  def mark_read(conn, jid, message_ids, participant \\ nil),
+    do: GenServer.call(conn, {:mark_read, jid, message_ids, participant})
 
   @doc """
   Send a poll to `jid`. Returns `{:ok, msg_id, message_secret}` — keep the
@@ -465,20 +493,45 @@ defmodule Amarula do
   @spec send_poll(conn(), jid(), String.t(), [String.t(), ...], keyword()) ::
           {:ok, String.t(), binary()} | {:error, term()}
   def send_poll(conn, jid, name, options, opts \\ []),
-    do: Connection.send_poll(conn, jid, name, options, opts)
+    do: GenServer.call(conn, {:send_poll, jid, name, options, opts}, @send_call_timeout)
+
+  @doc """
+  Cast a vote on an existing poll. `poll` is a `message_ref` for the poll-creation
+  message (a `%Amarula.Msg{}` or `{jid, msg_id}` tuple); `message_secret` is the
+  poll's 32-byte secret (from `send_poll/5`, or the poll's `messageContextInfo`);
+  `option_names` are the chosen options. The vote is encrypted under the secret.
+
+  The poll's creator is taken from the ref (a `%Amarula.Msg{}`'s sender, or the
+  `{jid, _}` chat for a 1:1 poll). For a group poll referenced by tuple, pass the
+  creator explicitly with `:creator` in `opts`.
+  """
+  @spec send_poll_vote(conn(), message_ref(), binary(), [String.t()], keyword()) :: send_result()
+  def send_poll_vote(conn, poll, message_secret, option_names, opts \\ []) do
+    {jid, key} = message_key(poll)
+    creator = opts[:creator] |> resolve_creator(key)
+    voter = Amarula.Address.to_jid!(own_address(conn))
+    message = MessageEncoder.poll_vote(key, creator, voter, message_secret, option_names)
+    send_built(conn, jid, message)
+  end
+
+  defp resolve_creator(nil, %Proto.MessageKey{participant: p}) when is_binary(p), do: p
+  defp resolve_creator(nil, %Proto.MessageKey{remoteJid: jid}), do: jid
+  defp resolve_creator(creator, _key), do: Amarula.Address.to_jid!(creator)
 
   @doc "Send a contact (`display_name` + vCard string) to `jid`."
   @spec send_contact(conn(), jid(), String.t(), String.t()) :: send_result()
-  defdelegate send_contact(conn, jid, display_name, vcard), to: Connection
+  def send_contact(conn, jid, display_name, vcard),
+    do: send_built(conn, jid, MessageEncoder.contact(display_name, vcard))
 
   @doc "Send multiple contacts to `jid`: `pairs` is `[{display_name, vcard}, ...]`."
   @spec send_contacts(conn(), jid(), String.t(), [{String.t(), String.t()}, ...]) :: send_result()
-  defdelegate send_contacts(conn, jid, display_name, pairs), to: Connection
+  def send_contacts(conn, jid, display_name, pairs),
+    do: send_built(conn, jid, MessageEncoder.contacts(display_name, pairs))
 
   @doc "Send a location to `jid`. `opts`: `:name`, `:address`, `:url`, `:is_live`."
   @spec send_location(conn(), jid(), float(), float(), keyword()) :: send_result()
   def send_location(conn, jid, lat, lng, opts \\ []),
-    do: Connection.send_location(conn, jid, lat, lng, opts)
+    do: send_built(conn, jid, MessageEncoder.location(lat, lng, opts))
 
   # Contacts, profile and groups live in their own modules:
   #   * `Amarula.Contacts` — on_whatsapp/2, fetch_status/2, resolve_lid/2
@@ -495,7 +548,8 @@ defmodule Amarula do
   Returns `{:ok, request_msg_id}` or `{:error, :not_authenticated}`.
   """
   @spec fetch_history(conn(), message_key(), integer(), non_neg_integer()) :: send_result()
-  defdelegate fetch_history(conn, oldest_key, oldest_ts, count), to: Connection
+  def fetch_history(conn, oldest_key, oldest_ts, count),
+    do: GenServer.call(conn, {:fetch_history, oldest_key, oldest_ts, count}, @send_call_timeout)
 
   @doc """
   Resolve the original message a reply quotes.
@@ -527,23 +581,132 @@ defmodule Amarula do
       participant: q.from && Amarula.Address.to_jid!(q.from)
     }
 
-    case Connection.request_resend(conn, key) do
+    case GenServer.call(conn, {:request_resend, key}, @send_call_timeout) do
       {:ok, request_id} -> {:requested, request_id}
       {:error, _} = err -> err
     end
   end
 
-  @doc "React to a message with `emoji` (empty string removes the reaction)."
-  @spec send_reaction(conn(), message_key(), String.t()) :: send_result()
-  defdelegate send_reaction(conn, target_key, emoji), to: Connection
+  @doc """
+  React to a message with `emoji` (empty string removes the reaction). `ref` is a
+  `%Amarula.Msg{}` or a `{jid, msg_id}` tuple.
+  """
+  @spec send_reaction(conn(), message_ref(), String.t()) :: send_result()
+  def send_reaction(conn, ref, emoji) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.reaction(key, emoji))
+  end
 
-  @doc "Edit a message we sent, replacing its text."
-  @spec send_edit(conn(), message_key(), String.t()) :: send_result()
-  defdelegate send_edit(conn, target_key, new_text), to: Connection
+  @doc """
+  Edit a message we sent, replacing its text. `ref` is a `%Amarula.Msg{}` or a
+  `{jid, msg_id}` tuple.
+  """
+  @spec send_edit(conn(), message_ref(), String.t()) :: send_result()
+  def send_edit(conn, ref, new_text) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.edit(key, new_text))
+  end
 
-  @doc "Delete a message for everyone (revoke)."
-  @spec send_revoke(conn(), message_key()) :: send_result()
-  defdelegate send_revoke(conn, target_key), to: Connection
+  @doc """
+  Delete a message for everyone (revoke). `ref` is a `%Amarula.Msg{}` or a
+  `{jid, msg_id}` tuple.
+  """
+  @spec send_revoke(conn(), message_ref()) :: send_result()
+  def send_revoke(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.revoke(key))
+  end
+
+  @doc "Pin a message for everyone in the chat. `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
+  @spec pin_message(conn(), message_ref()) :: send_result()
+  def pin_message(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.pin(key, true))
+  end
+
+  @doc """
+  Send a group-invite message to `jid` — a tap-to-join card for `group_jid` using
+  `code` (from `Amarula.Group.invite_code/2`). `opts`: `:group_name`, `:caption`,
+  `:expiration` (unix ms).
+  """
+  @spec send_group_invite(conn(), jid(), String.t(), String.t(), keyword()) :: send_result()
+  def send_group_invite(conn, jid, group_jid, code, opts \\ []) do
+    group_jid = Amarula.Address.to_jid!(group_jid)
+    send_built(conn, Amarula.Address.to_jid!(jid), MessageEncoder.group_invite(group_jid, code, opts))
+  end
+
+  @doc """
+  Send an album (grouped media) to `jid`. `items` is a list of
+  `{type, data, opts}` (same shape as `send_media/5`), where `type` is `:image`
+  or `:video`. Sends the album parent first, then each item referencing it.
+
+  Returns `{:ok, parent_msg_id}` once the parent and all items are sent, or
+  `{:error, {:album_item, index, reason}}` if an item fails (the parent and
+  earlier items have already been sent).
+
+  > WhatsApp expects ≥2 items, all images/videos.
+  """
+  @spec send_album(conn(), jid(), [{:image | :video, binary(), keyword()}]) ::
+          {:ok, String.t()} | {:error, term()}
+  def send_album(conn, jid, items) when is_list(items) do
+    jid = Amarula.Address.to_jid!(jid)
+    images = Enum.count(items, fn {t, _, _} -> t == :image end)
+    videos = Enum.count(items, fn {t, _, _} -> t == :video end)
+
+    with {:ok, parent_id} <- send_built(conn, jid, MessageEncoder.album(images, videos)) do
+      parent_key = %Proto.MessageKey{remoteJid: jid, id: parent_id, fromMe: true}
+      send_album_items(conn, jid, items, parent_key, parent_id)
+    end
+  end
+
+  defp send_album_items(conn, jid, items, parent_key, parent_id) do
+    items
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, parent_id}, fn {{type, data, opts}, idx}, _acc ->
+      item_opts = Keyword.put(opts, :album_parent, parent_key)
+
+      case send_media(conn, jid, type, data, item_opts) do
+        {:ok, _id} -> {:cont, {:ok, parent_id}}
+        {:error, reason} -> {:halt, {:error, {:album_item, idx, reason}}}
+      end
+    end)
+  end
+
+  @doc """
+  Send an event to `jid` (a group or 1:1). `name` is the title. `opts`:
+  `:description`, `:location` (`{lat, lng}` or `[lat:, lng:, name:, address:]`),
+  `:join_link`, `:start_time` / `:end_time` (unix seconds), `:extra_guests_allowed`.
+
+  > Responding to an event (RSVP) is not yet supported — the response is an
+  > encrypted `EncEventResponseMessage`, a separate crypto seam (like poll votes).
+  """
+  @spec send_event(conn(), jid(), String.t(), keyword()) :: send_result()
+  def send_event(conn, jid, name, opts \\ []),
+    do: send_built(conn, Amarula.Address.to_jid!(jid), MessageEncoder.event(name, opts))
+
+  @doc "Unpin a previously pinned message. `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
+  @spec unpin_message(conn(), message_ref()) :: send_result()
+  def unpin_message(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.pin(key, false))
+  end
+
+  @doc """
+  Keep a message in a disappearing chat (exempt it from auto-delete). `ref` is a
+  `%Amarula.Msg{}` or `{jid, msg_id}`.
+  """
+  @spec keep_message(conn(), message_ref()) :: send_result()
+  def keep_message(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.keep(key, true))
+  end
+
+  @doc "Undo a previous keep (let the message disappear again). `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
+  @spec unkeep_message(conn(), message_ref()) :: send_result()
+  def unkeep_message(conn, ref) do
+    {jid, key} = message_key(ref)
+    send_built(conn, jid, MessageEncoder.keep(key, false))
+  end
 
   @doc """
   Send media of `type` (`:image`/`:video`/`:audio`/`:document`/`:sticker`).
@@ -556,10 +719,16 @@ defmodule Amarula do
 
   Amarula encrypts and uploads the bytes for you. `opts` may carry `:mimetype`
   (auto-detected per type if omitted), `:caption`, `:width`, `:height`,
-  `:seconds`, `:ptt` (voice note), `:file_name`, `:title`.
+  `:seconds`, `:ptt` (voice note), `:file_name`, `:title`, plus:
+
+    * `:quoted` / `:mentions` — reply to / tag (see `send_text/4`).
+    * `:view_once` — send as view-once (the recipient can open it once).
+    * `:ptv` — for `:video`, send as a round video note (PTV).
   """
   @spec send_media(conn(), jid(), media_type(), binary(), keyword()) :: send_result()
-  defdelegate send_media(conn, jid, type, data, opts \\ []), to: Connection
+  def send_media(conn, jid, type, data, opts \\ [])
+      when type in [:image, :video, :audio, :document, :sticker] and is_binary(data),
+      do: GenServer.call(conn, {:send_media, jid, type, data, opts}, @send_call_timeout)
 
   ## Receiving -----------------------------------------------------------------
   #
@@ -584,4 +753,31 @@ defmodule Amarula do
 
   @spec download_media(map(), media_type()) :: {:ok, binary()} | {:error, term()}
   def download_media(media_struct, type), do: Media.download(media_struct, type)
+
+  # Send an already-built %Proto.Message{} to `jid`. The shared tail of the
+  # message-building send helpers (contact/location/reaction/edit/revoke), which
+  # construct a message and relay it as a {:send_message, ...} call.
+  defp send_built(conn, jid, message),
+    do: GenServer.call(conn, {:send_message, jid, message}, @send_call_timeout)
+
+  # Resolve a public message_ref into the chat jid + the %Proto.MessageKey{} the
+  # encoders need. A %Amarula.Msg{} carries everything (chat, sender, id, fromMe);
+  # a {jid, msg_id} tuple builds the minimal key (no participant/fromMe known).
+  defp message_key(%Amarula.Msg{} = msg) do
+    jid = Amarula.Address.to_jid!(msg.channel)
+
+    key = %Proto.MessageKey{
+      remoteJid: jid,
+      id: msg.id,
+      fromMe: msg.from_me,
+      participant: msg.from && Amarula.Address.to_jid!(msg.from)
+    }
+
+    {jid, key}
+  end
+
+  defp message_key({jid, msg_id}) when is_binary(msg_id) do
+    jid = Amarula.Address.to_jid!(jid)
+    {jid, %Proto.MessageKey{remoteJid: jid, id: msg_id, fromMe: false}}
+  end
 end

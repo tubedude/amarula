@@ -65,6 +65,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
   alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing, Notifications, Receive}
+  alias Amarula.Connection.AppStateOps
 
   defstruct [
     :websocket_client,
@@ -3250,11 +3251,7 @@ defmodule Amarula.Connection do
 
   # Store any app-state-sync keys shared in these messages; resync if we got some.
   defp maybe_handle_app_state_key_share(state, messages) do
-    shared =
-      messages
-      |> Enum.flat_map(&app_state_keys/1)
-
-    case shared do
+    case AppStateOps.sync_keys_in(messages) do
       [] ->
         state
 
@@ -3273,19 +3270,6 @@ defmodule Amarula.Connection do
         resync_app_state(state)
     end
   end
-
-  defp app_state_keys(%{protocolMessage: %{appStateSyncKeyShare: %{keys: keys}}})
-       when is_list(keys) do
-    Enum.flat_map(keys, fn
-      %{keyId: %{keyId: id}, keyData: %{keyData: data}} when is_binary(id) and is_binary(data) ->
-        [{Base.encode64(id), data}]
-
-      _ ->
-        []
-    end)
-  end
-
-  defp app_state_keys(_msg), do: []
 
   # Request + decode patches for the named collections (all by default), persist
   # new state, emit changes. A server_sync notification names ONE collection, so
@@ -3322,8 +3306,7 @@ defmodule Amarula.Connection do
   end
 
   defp emit_app_state_changes(state, changes) do
-    chats = for {:chat, c} <- changes, do: c
-    contacts = for {:contact, c} <- changes, do: c
+    {chats, contacts} = AppStateOps.partition_changes(changes)
     if chats != [], do: emit_to_subscribers(state, :chats_update, chats)
     if contacts != [], do: emit_to_subscribers(state, :contacts_update, contacts)
   end

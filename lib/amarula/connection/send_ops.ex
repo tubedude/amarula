@@ -23,9 +23,22 @@ defmodule Amarula.Connection.SendOps do
   @type shape :: (term(), String.t() -> term())
   @type build :: {target(), payload(), shape()}
 
-  @doc "Plain text → `%{text: text}` for `jid`."
-  @spec text(term(), String.t()) :: build()
-  def text(jid, text), do: {jid, %{text: text}, &default_send_reply/2}
+  @doc """
+  Text → a send build for `jid`. With no reply/mention context it stays the
+  lightweight `%{text: text}` shorthand (the sandbox/offline path mints a reply
+  without encoding). When `:quoted`/`:mentions` are present we build the full
+  `%Proto.Message{}` here (an `extendedTextMessage` carrying the `contextInfo`).
+  """
+  @spec text(term(), String.t(), keyword()) :: build()
+  def text(jid, text, opts \\ []) do
+    payload =
+      case MessageEncoder.context_info(opts) do
+        nil -> %{text: text}
+        _ctx -> %{message: MessageEncoder.text(text, opts)}
+      end
+
+    {jid, payload, &default_send_reply/2}
+  end
 
   @doc "Pre-built `%Proto.Message{}` → `%{message: message}` for `jid`."
   @spec message(term(), struct()) :: build()

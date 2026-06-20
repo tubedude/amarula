@@ -42,9 +42,9 @@ defmodule AmarulaTest do
     {:ok, conn: conn}
   end
 
-  test "send_text forwards {:send_text, jid, text}", %{conn: conn} do
+  test "send_text forwards {:send_text, jid, text, opts}", %{conn: conn} do
     assert {:ok, "MSGID"} = Amarula.send_text(conn, "x@s.whatsapp.net", "hi")
-    assert_received {:got, {:send_text, "x@s.whatsapp.net", "hi"}}
+    assert_received {:got, {:send_text, "x@s.whatsapp.net", "hi", []}}
   end
 
   test "send_reaction builds a reaction and sends to the target's remoteJid", %{conn: conn} do

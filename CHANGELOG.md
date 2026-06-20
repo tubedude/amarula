@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Reply (quoted) and mentions on outgoing messages.** `Amarula.send_text/4`
+  and `Amarula.send_media/5` now take `:quoted` (an `%Amarula.Msg{}` to reply to)
+  and `:mentions` (a list of jids/`%Amarula.Address{}`) opts. A text with either
+  is sent as an `extendedTextMessage` carrying the `contextInfo`; media attaches
+  the `contextInfo` to the media submessage. Backward compatible — existing
+  3-arg `send_text` calls are unchanged.
+
 ## [0.2.1] - 2026-06-20
 
 Internal refactor only — **no API changes.** Every public `Amarula` function

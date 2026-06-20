@@ -4,9 +4,79 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
   alias Amarula.Protocol.Messages.MessageEncoder
   alias Amarula.Protocol.Proto
 
+  # A received message to reply to, built through the real constructor.
+  defp inbound_msg do
+    proto = %Proto.Message{conversation: "original"}
+
+    Amarula.Msg.from_proto(proto, %{
+      id: "ORIG1",
+      channel: Amarula.Address.parse("g@g.us"),
+      from: Amarula.Address.parse("1@s.whatsapp.net")
+    })
+  end
+
+  defp media_info do
+    %{
+      url: "u",
+      direct_path: "d",
+      media_key: "k",
+      file_sha256: "s",
+      file_enc_sha256: "e",
+      file_length: 1,
+      mimetype: "image/jpeg"
+    }
+  end
+
   describe "text/1" do
     test "builds a conversation message" do
       assert %Proto.Message{conversation: "hi"} = MessageEncoder.text("hi")
+    end
+  end
+
+  describe "context_info/1 (reply + mentions)" do
+    test "no quoted/mentions → nil (message stays a plain conversation)" do
+      assert MessageEncoder.context_info([]) == nil
+      assert %Proto.Message{conversation: "hi"} = MessageEncoder.text("hi", [])
+    end
+
+    test "quoted builds stanzaId + participant + inlined quotedMessage" do
+      msg = inbound_msg()
+      ctx = MessageEncoder.context_info(quoted: msg)
+
+      assert ctx.stanzaId == "ORIG1"
+      assert ctx.participant == "1@s.whatsapp.net"
+      assert ctx.quotedMessage == msg.raw
+    end
+
+    test "mentions map to mentionedJid (jids or Address)" do
+      ctx =
+        MessageEncoder.context_info(
+          mentions: ["2@s.whatsapp.net", Amarula.Address.parse("3@s.whatsapp.net")]
+        )
+
+      assert ctx.mentionedJid == ["2@s.whatsapp.net", "3@s.whatsapp.net"]
+      assert ctx.stanzaId == nil
+    end
+
+    test "a reply switches text to extendedTextMessage carrying the contextInfo" do
+      msg = MessageEncoder.text("yes!", quoted: inbound_msg())
+
+      assert msg.conversation == nil
+      assert msg.extendedTextMessage.text == "yes!"
+      assert msg.extendedTextMessage.contextInfo.stanzaId == "ORIG1"
+    end
+
+    test "mentions alone also switch to extendedTextMessage" do
+      msg = MessageEncoder.text("hi @x", mentions: ["2@s.whatsapp.net"])
+      assert msg.extendedTextMessage.contextInfo.mentionedJid == ["2@s.whatsapp.net"]
+    end
+
+    test "context attaches to the media submessage, not the top level" do
+      msg = MessageEncoder.media(:image, media_info(), quoted: inbound_msg())
+
+      assert msg.imageMessage.contextInfo.stanzaId == "ORIG1"
+      # round-trips through the proto encoder without raising
+      assert is_binary(MessageEncoder.encode(msg))
     end
   end
 

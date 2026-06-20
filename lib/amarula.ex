@@ -423,10 +423,15 @@ defmodule Amarula do
   @spec own_chat?(conn(), Amarula.Msg.t()) :: boolean()
   def own_chat?(conn, msg), do: GenServer.call(conn, {:own_chat?, msg})
 
-  @doc "Send a 1:1/group text message to `jid`."
-  @spec send_text(conn(), jid(), String.t()) :: send_result()
-  def send_text(conn, jid, text),
-    do: GenServer.call(conn, {:send_text, jid, text}, @send_call_timeout)
+  @doc """
+  Send a 1:1/group text message to `jid`. `opts`:
+
+    * `:quoted` — reply to an `%Amarula.Msg{}` (threads the quote).
+    * `:mentions` — list of jids/`%Amarula.Address{}` to tag (`@mention`).
+  """
+  @spec send_text(conn(), jid(), String.t(), keyword()) :: send_result()
+  def send_text(conn, jid, text, opts \\ []),
+    do: GenServer.call(conn, {:send_text, jid, text, opts}, @send_call_timeout)
 
   @doc "Set your global presence: `:available` (online) or `:unavailable`. Needs a profile name."
   @spec set_presence(conn(), :available | :unavailable) :: :ok | {:error, term()}

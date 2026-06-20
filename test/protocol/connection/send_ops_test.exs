@@ -17,6 +17,18 @@ defmodule Amarula.Connection.SendOpsTest do
       assert shape.(:ok, "MID") == {:ok, "MID"}
     end
 
+    test "plain text keeps the lightweight %{text:} shorthand (no context)" do
+      {_t, payload, _s} = SendOps.text("123@s.whatsapp.net", "hi", [])
+      assert payload == %{text: "hi"}
+    end
+
+    test "a reply/mention builds the full proto payload (extendedTextMessage)" do
+      {_t, %{message: message}, _s} =
+        SendOps.text("123@s.whatsapp.net", "hi", mentions: ["2@s.whatsapp.net"])
+
+      assert message.extendedTextMessage.contextInfo.mentionedJid == ["2@s.whatsapp.net"]
+    end
+
     test "message passes a pre-built proto through untouched" do
       msg = %Proto.Message{conversation: "x"}
       {target, payload, _shape} = SendOps.message("g@g.us", msg)

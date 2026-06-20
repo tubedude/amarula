@@ -22,10 +22,55 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
     |> pad_random_max16()
   end
 
-  @doc "Build a plain-text conversation message."
-  @spec text(String.t()) :: Proto.Message.t()
-  def text(body) when is_binary(body) do
-    %Proto.Message{conversation: body}
+  @doc """
+  Build a text message. With no `:quoted`/`:mentions` context it's a plain
+  `conversation`; when a reply or mentions are present WhatsApp requires an
+  `extendedTextMessage` (which carries the `contextInfo`), so we switch to that.
+  """
+  @spec text(String.t(), keyword()) :: Proto.Message.t()
+  def text(body, opts \\ []) when is_binary(body) do
+    case context_info(opts) do
+      nil ->
+        %Proto.Message{conversation: body}
+
+      %Proto.ContextInfo{} = ctx ->
+        %Proto.Message{
+          extendedTextMessage: %Proto.Message.ExtendedTextMessage{text: body, contextInfo: ctx}
+        }
+    end
+  end
+
+  @doc """
+  Build a `%Proto.ContextInfo{}` from reply/mention opts, or `nil` when neither
+  is present (so a message stays a plain `conversation`/bare media):
+
+    * `:quoted` — an `%Amarula.Msg{}` being replied to. Fills `stanzaId` (its id),
+      `participant` (its sender jid), and inlines its raw proto as `quotedMessage`.
+    * `:mentions` — a list of jids or `%Amarula.Address{}` to tag (`mentionedJid`).
+  """
+  @spec context_info(keyword()) :: Proto.ContextInfo.t() | nil
+  def context_info(opts) do
+    quoted = Keyword.get(opts, :quoted)
+    mentions = Keyword.get(opts, :mentions, [])
+
+    if is_nil(quoted) and mentions == [] do
+      nil
+    else
+      base =
+        case quoted do
+          %Amarula.Msg{} = msg ->
+            %Proto.ContextInfo{
+              stanzaId: msg.id,
+              participant: msg.from && Amarula.Address.to_jid!(msg.from),
+              quotedMessage: msg.raw
+            }
+
+          nil ->
+            %Proto.ContextInfo{}
+        end
+
+      %{base | mentionedJid: Enum.map(mentions, &Amarula.Address.to_jid!/1)}
+    end
   end
 
   @doc """
@@ -146,7 +191,24 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
       mimetype: info.mimetype
     }
 
-    media_message(type, common, opts)
+    type
+    |> media_message(common, opts)
+    |> put_media_context(media_field(type), context_info(opts))
+  end
+
+  defp media_field(:image), do: :imageMessage
+  defp media_field(:video), do: :videoMessage
+  defp media_field(:audio), do: :audioMessage
+  defp media_field(:document), do: :documentMessage
+  defp media_field(:sticker), do: :stickerMessage
+
+  # Attach reply/mention contextInfo to the media submessage. No context →
+  # unchanged.
+  defp put_media_context(message, _field, nil), do: message
+
+  defp put_media_context(%Proto.Message{} = message, field, %Proto.ContextInfo{} = ctx) do
+    sub = Map.fetch!(message, field)
+    %{message | field => %{sub | contextInfo: ctx}}
   end
 
   @doc "Convenience: `media(:image, info, opts)`."

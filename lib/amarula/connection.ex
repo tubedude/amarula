@@ -414,8 +414,8 @@ defmodule Amarula.Connection do
   Send a 1:1/group text message to `jid`. Encrypts and relays (fetching the
   recipient's prekey bundle first if we have no session). Returns `{:ok, msg_id}`.
   """
-  def send_text(pid \\ __MODULE__, jid, text) do
-    GenServer.call(pid, {:send_text, jid, text}, @send_call_timeout)
+  def send_text(pid \\ __MODULE__, jid, text, opts \\ []) do
+    GenServer.call(pid, {:send_text, jid, text, opts}, @send_call_timeout)
   end
 
   @doc """
@@ -718,8 +718,8 @@ defmodule Amarula.Connection do
   # --- Send path (folded from the former Socket facade) ---
 
   @impl GenServer
-  def handle_call({:send_text, jid, text}, from, state) do
-    dispatch_send(state, SendOps.text(jid, text), from)
+  def handle_call({:send_text, jid, text, opts}, from, state) do
+    dispatch_send(state, SendOps.text(jid, text, opts), from)
   end
 
   @impl GenServer

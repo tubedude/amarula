@@ -84,21 +84,6 @@ defmodule Amarula.Contacts do
   end
 
   @doc """
-  Resolve each phone number to its privacy **LID** (`<n>@lid`) and persist the
-  LID↔PN mapping, so the LID/PN mapping (and the Signal addressing the send
-  pipeline uses) resolve that contact afterwards.
-
-  `on_whatsapp/2` returns only the PN, so it can't establish a mapping; this runs
-  a `:lid`+`:contact` USync (the only query that returns the pairing) and feeds the
-  result into the same mapping store Amarula auto-populates from group metadata and
-  the send pipeline. Returns one entry per number that resolved to a LID; numbers
-  not on WhatsApp (no LID in the reply) are omitted.
-
-      Amarula.Contacts.resolve_lid(conn, ["15551234567"])
-      #=> {:ok, [%{lid: %Amarula.Address{kind: :lid, ...},
-      #           pn: %Amarula.Address{kind: :pn, ...}}]}
-  """
-  @doc """
   Look up a contact's **PN** from their **LID** in the local mapping store — a
   cheap read, no server query. Returns an `Amarula.Address` (`:pn`) or `nil` when
   the mapping isn't known yet.
@@ -143,6 +128,21 @@ defmodule Amarula.Contacts do
   defp maybe_address(nil, _kind), do: nil
   defp maybe_address(user, kind) when is_binary(user), do: kind.(user)
 
+  @doc """
+  Resolve each phone number to its privacy **LID** (`<n>@lid`) and persist the
+  LID↔PN mapping, so the LID/PN mapping (and the Signal addressing the send
+  pipeline uses) resolve that contact afterwards.
+
+  `on_whatsapp/2` returns only the PN, so it can't establish a mapping; this runs
+  a `:lid`+`:contact` USync (the only query that returns the pairing) and feeds the
+  result into the same mapping store Amarula auto-populates from group metadata and
+  the send pipeline. Returns one entry per number that resolved to a LID; numbers
+  not on WhatsApp (no LID in the reply) are omitted.
+
+      Amarula.Contacts.resolve_lid(conn, ["15551234567"])
+      #=> {:ok, [%{lid: %Amarula.Address{kind: :lid, ...},
+      #           pn: %Amarula.Address{kind: :pn, ...}}]}
+  """
   @spec resolve_lid(conn(), [String.t()] | String.t()) :: {:ok, [lid_pair()]} | {:error, term()}
   def resolve_lid(conn, phones) do
     phones = List.wrap(phones)

@@ -1,8 +1,54 @@
 # Connection decomposition plan
 
-> Status: **planned, not started.** Point-in-time design doc (the
-> `docs/plans/` convention — may drift from the code). The living reference is
-> `docs/INFRASTRUCTURE.md`.
+> Status: **landed.** All eight extraction slices plus the facade collapse
+> shipped. Point-in-time design doc (the `docs/plans/` convention); the living
+> reference is `docs/INFRASTRUCTURE.md`. The design rationale below is kept as
+> written; see **As landed** for where the result differs from the original plan.
+
+## As landed
+
+Eight focused modules now live under `lib/amarula/connection/`, each backed by a
+direct unit test (all at 100% line coverage). The bodies of `Connection`'s
+callbacks moved into them; `Connection` stays the process and the dispatcher.
+
+| Module | Holds |
+|---|---|
+| `SendOps` | send builders (`text`/`message`/`poll`/`media`/`request_resend`/`fetch_history`) + `default_send_reply` → `{target, payload, shape}` |
+| `GroupOps` | `metadata`/`list` IQ + reply-transform builders |
+| `PreKeyOps` | count-query node, server-count parse, upload-target/needed decisions |
+| `Pairing` | pair-device ack node, QR-ref extraction, sign-reply node, post-pairing creds merge |
+| `Notifications` | `account_sync`/`devices`/`picture` parsers |
+| `Receive` | `<ack>` outcome + retry-receipt target parsing |
+| `AppStateOps` | sync-key extraction + chat/contact change partitioning |
+| `AckLifecycle` | the shared park/resolve/monitor seam (a state module) |
+
+**Facade collapse done, signatures frozen.** `lib/amarula.ex` now issues
+`GenServer.call(conn, {…})` directly instead of `defdelegate`-ing. Every public
+function's signature, arity, defaults, and `@spec` are byte-identical (verified by
+diff) — only bodies changed, so the whole suite passed unchanged. The
+message-building helpers (contact/contacts/location/reaction/edit/revoke) inline
+their `MessageEncoder` construction via a private `send_built/3`;
+`request_pairing_code` inlines its digit-strip.
+
+### Where this differs from the original plan
+
+- **The `Connection` client wrappers were kept, not deleted.** The plan called
+  them dead boilerplate (its "role 1"). They are not: they are a real per-process
+  client API (a leaf API — consumers/tests/examples call them, nothing internal
+  calls them onward, which is the normal state of a public capability, not
+  evidence of dead code). The facade simply no longer *routes through* them.
+- **`AckLifecycle` is the shared ack seam** (plan slice 8), separated from
+  `SendOps` exactly as the seam discussion concluded — used by the send path, the
+  receive `<ack>` handler, and the `:DOWN`/`:ack_timeout` handlers.
+- **Each slice extracted the *pure* body only**; anything bound to the live
+  socket, cipher, IQ correlation, or the Storage seam stayed on `Connection`
+  (`deliver_async`, `send_waiter_iq`, `send_tracked_iq`, the login flow). Several
+  slices are thinner than the table below implied because their parsing already
+  lived in dedicated modules (`Receipt.parse`, `Presence.parse_update`,
+  `GroupNotification.parse`, `MessageDecryptor`).
+
+The dialyzer warnings present after the work (`login.ex`, `retry_cache/step.ex`)
+predate it and are untouched by these modules.
 
 ## Motivation
 
@@ -23,8 +69,10 @@ module playing five roles at once:
 Roles currently fused into that one module:
 
 1. **Client API** — `def send_text(pid, …)` → `GenServer.call` (the wrappers the
-   facade delegates *to*). **Deleted by this plan** — the facade calls the process
-   directly; the `handle_call` clauses stay on `Connection`, their bodies move out.
+   facade delegates *to*). The facade now calls the process directly and no longer
+   routes through these; the `handle_call` clauses stay on `Connection`, their
+   bodies move out. (As landed, the wrappers were **kept**, not deleted — they're a
+   real per-process API; see **As landed › Where this differs**.)
 2. **GenServer process** — `handle_call` / `handle_info` / `handle_cast`.
 3. **Send orchestration** — `deliver_async`, poll/media/resend/history builders.
 4. **Receive / dispatch** — decode → `dispatch_node` → `handle_*`, notification
@@ -89,7 +137,7 @@ after:
 ```elixir
 # lib/amarula.ex — facade calls the process directly, signature frozen:
 def send_poll(conn, jid, name, options, opts),
-  do: GenServer.call(via(conn), {:send_poll, jid, name, options, opts})
+  do: GenServer.call(conn, {:send_poll, jid, name, options, opts}, @send_call_timeout)
 
 # connection.ex — the wrapper is gone; the callback stays here as a dispatcher:
 def handle_call({:send_poll, jid, name, options, opts}, from, state),
@@ -102,6 +150,10 @@ organizes the send-callback bodies — a plain module, no socket). Behaviour
 identical; the body is now testable without a live socket.
 
 ## Module decomposition (mirror the facade's own grouping)
+
+> This is the **as-planned** carve (intended line ranges). For the modules that
+> actually shipped and what each ended up holding, see **As landed** above — some
+> are thinner because their parsing already lived in dedicated modules.
 
 | New module | Absorbs (approx. line ranges) | Backs facade |
 |---|---|---|
@@ -149,9 +201,11 @@ no facade funcs and skip (c).
 - **Facade *contract* is frozen — its bodies are not.** Every public function in
   `lib/amarula.ex` keeps its exact signature, arity, defaults, and return shape.
   The only permitted change is mechanical: `defdelegate … to: Connection` becomes
-  a direct `GenServer.call(via(conn), {…})`. No new public function, no changed
-  argument, no changed return. If a slice tempts anything beyond that swap, the
-  slice is wrong — stop.
+  a direct `GenServer.call(conn, {…})` (`conn` is already the call target — a pid
+  or via-tuple; `via/1` takes a *profile*, not a conn, so it is not wrapped here).
+  No new public function, no changed argument, no changed return. If a slice tempts
+  anything beyond that swap, the slice is wrong — stop. *(As landed: held — the
+  public function set and every `@spec` are byte-identical, verified by diff.)*
 - **Event shapes are frozen.** `{:amarula, type, data}` payloads are the
   consumer contract (`Amarula` `t:event/0`). Extraction must not alter them.
 - **No new process / no new message hop.** Pure-ish modules called in-process

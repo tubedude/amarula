@@ -12,6 +12,11 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     * `{:revoke, target_key}`
     * `{:media, type, message_struct}`            — type in :image/:video/:audio/:document/:sticker
     * `{:protocol, type, protocol_message}`       — other protocolMessages (history sync, keys, …)
+    * `{:pin, %{key, pinned?}}` / `{:keep, %{key, kept?}}`
+    * `{:group_invite, msg}` / `{:event, msg}`
+    * `{:product, msg}` / `{:order, msg}` / `{:button_response, msg}` /
+      `{:list_response, msg}` / `{:template_reply, msg}` /
+      `{:interactive_response, msg}` — WhatsApp Business / interactive (receive-only)
     * `{:sender_key, skdm}`                        — Signal group-session-key plumbing (filtered before emit)
     * `{:other, message}`                          — anything not yet classified
 
@@ -47,6 +52,19 @@ defmodule Amarula.Protocol.Messages.MessageContent do
 
   defp unwrap(%Proto.Message{ephemeralMessage: %{message: inner}}) when not is_nil(inner),
     do: unwrap(inner)
+
+  # View-once wrappers (V1/V2/extension) carry the real media inside; unwrap so it
+  # classifies as ordinary media. (The "open once" semantics are the recipient
+  # app's concern; the content is the same.)
+  defp unwrap(%Proto.Message{viewOnceMessage: %{message: inner}}) when not is_nil(inner),
+    do: unwrap(inner)
+
+  defp unwrap(%Proto.Message{viewOnceMessageV2: %{message: inner}}) when not is_nil(inner),
+    do: unwrap(inner)
+
+  defp unwrap(%Proto.Message{viewOnceMessageV2Extension: %{message: inner}})
+       when not is_nil(inner),
+       do: unwrap(inner)
 
   defp unwrap(message), do: message
 
@@ -111,6 +129,40 @@ defmodule Amarula.Protocol.Messages.MessageContent do
   # message), the content clauses above win and this is never reached.
   defp do_classify(%Proto.Message{senderKeyDistributionMessage: skdm}) when not is_nil(skdm),
     do: {:sender_key, skdm}
+
+  # PTV (round video note) reuses VideoMessage — surface it as media :video.
+  defp do_classify(%Proto.Message{ptvMessage: m}) when not is_nil(m), do: {:media, :video, m}
+
+  # Pin / keep updates mirror what we send (Tier-1). Carry the target key + flag.
+  defp do_classify(%Proto.Message{pinInChatMessage: %{key: key, type: type}})
+       when not is_nil(key),
+       do: {:pin, %{key: key, pinned?: type == :PIN_FOR_ALL}}
+
+  defp do_classify(%Proto.Message{keepInChatMessage: %{key: key, keepType: type}})
+       when not is_nil(key),
+       do: {:keep, %{key: key, kept?: type == :KEEP_FOR_ALL}}
+
+  defp do_classify(%Proto.Message{groupInviteMessage: m}) when not is_nil(m),
+    do: {:group_invite, m}
+
+  defp do_classify(%Proto.Message{eventMessage: m}) when not is_nil(m), do: {:event, m}
+
+  # WhatsApp Business / interactive content — a normal linked-device client can't
+  # send these, but it can receive them. Surface them typed instead of {:other}.
+  defp do_classify(%Proto.Message{productMessage: m}) when not is_nil(m), do: {:product, m}
+  defp do_classify(%Proto.Message{orderMessage: m}) when not is_nil(m), do: {:order, m}
+
+  defp do_classify(%Proto.Message{buttonsResponseMessage: m}) when not is_nil(m),
+    do: {:button_response, m}
+
+  defp do_classify(%Proto.Message{listResponseMessage: m}) when not is_nil(m),
+    do: {:list_response, m}
+
+  defp do_classify(%Proto.Message{templateButtonReplyMessage: m}) when not is_nil(m),
+    do: {:template_reply, m}
+
+  defp do_classify(%Proto.Message{interactiveResponseMessage: m}) when not is_nil(m),
+    do: {:interactive_response, m}
 
   defp do_classify(message), do: {:other, message}
 

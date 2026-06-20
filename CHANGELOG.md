@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **More inbound message types are now classified** instead of collapsing to
+  `{:other}`: view-once media (unwrapped to its inner media), PTV round notes
+  (as media `:video`), pin/keep updates, group invites, events, and the
+  receive-only WhatsApp Business / interactive types (product, order, button /
+  list / template / interactive responses). Surfaced on `%Amarula.Msg{}` via its
+  `type` + `content`.
 - **Cast a poll vote.** `Amarula.send_poll_vote/5` encrypts and sends a vote on an
   existing poll (the inverse of the tally/decrypt path). Pass the poll's
   `message_ref`, its `message_secret`, and the chosen option names.

@@ -84,6 +84,51 @@ defmodule Amarula.Contacts do
   end
 
   @doc """
+  Look up a contact's **PN** from their **LID** in the local mapping store — a
+  cheap read, no server query. Returns an `Amarula.Address` (`:pn`) or `nil` when
+  the mapping isn't known yet.
+
+  Amarula auto-populates this store from group metadata, the send pipeline, and
+  `resolve_lid/2`. So after a `:messages_upsert` from a group member you can map
+  their LID back to a PN without hitting WhatsApp — call `resolve_lid/2` first if
+  the mapping is missing.
+
+      Amarula.Contacts.pn_for_lid(conn, "12345@lid")
+      #=> %Amarula.Address{kind: :pn, ...} | nil
+
+  > #### Replying to a LID-addressed message {: .tip}
+  >
+  > You do **not** need the PN to *reply* — `msg.channel` (a `@lid` address) is a
+  > valid send target; the send pipeline resolves the LID on the wire. Use this
+  > lookup only when your logic needs to *identify* the sender by phone number
+  > (Baileys #2205). For an inbound DM whose mapping isn't cached yet, run
+  > `resolve_lid/2` once to populate it.
+  """
+  @spec pn_for_lid(conn(), String.t() | Address.t()) :: Address.t() | nil
+  def pn_for_lid(conn, lid) do
+    # The store holds bare user strings; the result is a PN user → wrap as :pn.
+    conn
+    |> Connection.get_conn()
+    |> LidMappingFileStore.pn_for_lid(Address.to_jid!(lid))
+    |> maybe_address(&Address.pn/1)
+  end
+
+  @doc """
+  Look up a contact's **LID** from their **PN** in the local mapping store — the
+  inverse of `pn_for_lid/2`. A cheap read; `nil` when unmapped.
+  """
+  @spec lid_for_pn(conn(), String.t() | Address.t()) :: Address.t() | nil
+  def lid_for_pn(conn, pn) do
+    conn
+    |> Connection.get_conn()
+    |> LidMappingFileStore.lid_for_pn(Address.to_jid!(pn))
+    |> maybe_address(&Address.lid/1)
+  end
+
+  defp maybe_address(nil, _kind), do: nil
+  defp maybe_address(user, kind) when is_binary(user), do: kind.(user)
+
+  @doc """
   Resolve each phone number to its privacy **LID** (`<n>@lid`) and persist the
   LID↔PN mapping, so the LID/PN mapping (and the Signal addressing the send
   pipeline uses) resolve that contact afterwards.

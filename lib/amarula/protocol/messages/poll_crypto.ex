@@ -32,6 +32,17 @@ defmodule Amarula.Protocol.Messages.PollCrypto do
   `:encPayload`/`:encIv`). Returns `{:ok, %PollVoteMessage{}}` (its
   `selectedOptions` are SHA-256 hashes of the chosen option names — match against
   `Poll.tally/3`), or `{:error, reason}`.
+
+  > #### Jid forms must match the sender's {: .warning}
+  >
+  > The decryption key is derived from `poll_creator_jid` and `voter_jid` — so
+  > they must be **the exact jid strings the voter used** when encrypting. In a
+  > **LID group** the voter keys on their **LID** (the `participant` on the vote
+  > message), not their PN; passing the PN (or vice-versa) derives the wrong key
+  > and decryption fails (`{:error, :decrypt_failed}`) — the root of Baileys
+  > #2158. Use the author jid as it appears on the vote's `key.participant`
+  > (resolve LID↔PN with `Amarula.Contacts.pn_for_lid/2` only if you need to
+  > *compare* identities — not to build this context).
   """
   @spec decrypt_vote(map(), context()) :: {:ok, struct()} | {:error, term()}
   def decrypt_vote(%{encPayload: payload, encIv: iv}, ctx)

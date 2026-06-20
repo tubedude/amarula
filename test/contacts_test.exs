@@ -150,4 +150,44 @@ defmodule Amarula.ContactsTest do
       ]
     }
   end
+
+  # A stub that answers Connection.get_conn (:conn) with a real %Conn{} so the
+  # local LID-mapping lookups read the populated store (no live socket).
+  defmodule StubConn do
+    use GenServer
+    def start_link(conn), do: GenServer.start_link(__MODULE__, conn)
+    def init(conn), do: {:ok, conn}
+    def handle_call(:conn, _from, conn), do: {:reply, conn, conn}
+  end
+
+  describe "pn_for_lid/2 and lid_for_pn/2 (local store lookup — #2263)" do
+    alias Amarula.Contacts
+    alias Amarula.Protocol.Signal.LidMappingFileStore
+
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "amarula_contacts_lid_#{System.unique_integer([:positive])}")
+
+      on_exit(fn -> File.rm_rf(dir) end)
+      conn_struct = Amarula.TestConn.new(dir)
+      LidMappingFileStore.store_mappings(conn_struct, [{@lid, @jid}])
+      {:ok, pid} = StubConn.start_link(conn_struct)
+      {:ok, pid: pid}
+    end
+
+    test "resolves a known LID to its PN address", %{pid: pid} do
+      pn = Contacts.pn_for_lid(pid, @lid)
+      assert %Amarula.Address{kind: :pn, user: "15550001234"} = pn
+    end
+
+    test "resolves a known PN to its LID address (inverse)", %{pid: pid} do
+      lid = Contacts.lid_for_pn(pid, @jid)
+      assert %Amarula.Address{kind: :lid, user: "111111111111111"} = lid
+    end
+
+    test "returns nil for an unmapped id", %{pid: pid} do
+      assert Contacts.pn_for_lid(pid, "999999999999999@lid") == nil
+      assert Contacts.lid_for_pn(pid, "15559999999@s.whatsapp.net") == nil
+    end
+  end
 end

@@ -124,6 +124,26 @@ defmodule Amarula.Protocol.Messages.PollTest do
 
       assert {:ok, %{selectedOptions: ^hashes}} = PollCrypto.decrypt_vote(enc, ctx)
     end
+
+    test "round-trips with LID jids, and a jid-form mismatch fails (#2158)" do
+      lid_ctx = %{
+        message_secret: :crypto.strong_rand_bytes(32),
+        poll_msg_id: "PID",
+        poll_creator_jid: "111@lid",
+        voter_jid: "222@lid"
+      }
+
+      hashes = [Poll.option_hash("Yes")]
+      enc = PollCrypto.encrypt_vote(hashes, lid_ctx)
+
+      # Same LID jids decrypt fine — the cipher is jid-form agnostic.
+      assert {:ok, %{selectedOptions: ^hashes}} = PollCrypto.decrypt_vote(enc, lid_ctx)
+
+      # Decrypting with the PN form of the voter (a different string) derives the
+      # wrong key — this is the #2158 trap, and it fails cleanly, not a crash.
+      pn_voter = %{lid_ctx | voter_jid: "222@s.whatsapp.net"}
+      assert {:error, :decrypt_failed} = PollCrypto.decrypt_vote(enc, pn_voter)
+    end
   end
 
   # Inverse of PollCrypto.decrypt_vote — encrypt a vote for the round-trip test.

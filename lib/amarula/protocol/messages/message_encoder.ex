@@ -322,9 +322,23 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
   end
 
   defp media_message(:audio, common, opts) do
+    # No :seconds → WhatsApp can't show a duration, and iPhone recipients may
+    # refuse to play clips longer than ~10s (Baileys #2646). We don't compute it
+    # (no media processing); warn so the caller knows to pass it.
+    if is_nil(Keyword.get(opts, :seconds)) do
+      require Logger
+
+      Logger.warning(
+        "audio sent without :seconds — clips >10s may not play on iPhone (pass :seconds)"
+      )
+    end
+
     %Proto.Message{
       audioMessage:
-        struct(Proto.Message.AudioMessage, Map.merge(common, take(opts, [:seconds, :ptt])))
+        struct(
+          Proto.Message.AudioMessage,
+          Map.merge(common, take(opts, [:seconds, :ptt, :waveform]))
+        )
     }
   end
 
@@ -486,6 +500,24 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
       protocolMessage: %Proto.Message.ProtocolMessage{
         key: target_key,
         type: :REVOKE
+      }
+    }
+  end
+
+  @doc """
+  Set (or, with `""`, clear) your own **member tag** in a group — the per-group
+  self-label shown next to your name. Capped at 30 characters (WhatsApp's limit).
+  Sent to the group as a `GROUP_MEMBER_LABEL_CHANGE` protocol message.
+  """
+  @spec member_label(String.t()) :: Proto.Message.t()
+  def member_label(label) when is_binary(label) do
+    %Proto.Message{
+      protocolMessage: %Proto.Message.ProtocolMessage{
+        type: :GROUP_MEMBER_LABEL_CHANGE,
+        memberLabel: %Proto.MemberLabel{
+          label: String.slice(label, 0, 30),
+          labelTimestamp: System.system_time(:second)
+        }
       }
     }
   end

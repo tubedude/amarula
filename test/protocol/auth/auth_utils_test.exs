@@ -124,4 +124,29 @@ defmodule Amarula.Protocol.Auth.AuthUtilsTest do
       assert info.webSubPlatform == :WEB_BROWSER
     end
   end
+
+  describe "android browser mode" do
+    @android %{@config | browser: ["MyApp", "Android", ""]}
+
+    test "user agent platform is :ANDROID (not :WEB)" do
+      assert AuthUtils.create_user_agent(@android).platform == :ANDROID
+      # default browser stays :WEB
+      assert AuthUtils.create_user_agent(@config).platform == :WEB
+    end
+
+    test "webInfo is omitted (nil) for android" do
+      assert AuthUtils.create_web_info(@android) == nil
+      # non-android still carries webInfo
+      refute is_nil(AuthUtils.create_web_info(@config))
+    end
+
+    test "device props platformType is :ANDROID_PHONE" do
+      assert AuthUtils.create_device_props(@android).platformType == :ANDROID_PHONE
+    end
+
+    test "match is case-insensitive and substring (e.g. 'Android')" do
+      lower = %{@config | browser: ["x", "android", ""]}
+      assert AuthUtils.create_user_agent(lower).platform == :ANDROID
+    end
+  end
 end

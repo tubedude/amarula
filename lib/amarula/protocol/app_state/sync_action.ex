@@ -37,7 +37,11 @@ defmodule Amarula.Protocol.AppState.SyncAction do
   end
 
   defp classify(%{pinAction: %{} = p}, [_type, id | _], _op) do
-    {:chat, %Chat{address: addr(id), pinned: p.pinned}}
+    # `PinAction.pinned` is proto3-optional: the server omits it for some
+    # conversations, leaving it nil (Baileys #2328: "pinned undefined for some").
+    # Coerce to a definite boolean — only an explicit `pinned: true` is pinned;
+    # absent / nil / false all mean unpinned — so consumers never see nil.
+    {:chat, %Chat{address: addr(id), pinned: p.pinned == true}}
   end
 
   defp classify(%{markChatAsReadAction: %{} = r}, [_type, id | _], _op) do

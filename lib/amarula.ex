@@ -171,6 +171,10 @@ defmodule Amarula do
       a contact/group member's presence (`:available`/`:unavailable`) or typing
       state (`:composing`/`:recording`) — `Amarula.Protocol.Presence`
     * `:blocklist_update`  — `[%{jid, action}]` block/unblock changes
+    * `:lid_mapping_update` — `[%{lid: Address, pn: Address}]` newly-learned LID↔PN
+      mappings (from the send pipeline / group metadata). React to these to map a
+      group member's LID back to a PN without a server query (see
+      `Amarula.Contacts.pn_for_lid/2`).
     * `:pairing_code`      — `%{code: code}` the 8-char link-code (phone-number)
       pairing code to display (from `request_pairing_code/3`)
     * `:pairing_success`   — `%{jid, lid, platform}` (QR) or `%{via: :link_code}`
@@ -192,6 +196,7 @@ defmodule Amarula do
           | :receipt_update
           | :presence_update
           | :blocklist_update
+          | :lid_mapping_update
           | :pairing_code
           | :pairing_success
           | :history_sync
@@ -208,6 +213,29 @@ defmodule Amarula do
 
   Connection/protocol defaults are filled in (see `Amarula.Config`), so `config`
   need only carry `:profile` (+ `:auth` and any overrides).
+
+  ## Commonly-used options
+
+  `config` is a map; only `:profile` is required. The options you'll reach for
+  most (full list + defaults in `Amarula.Config`):
+
+    * `:profile` — **required.** Names this connection's stored credentials, so it
+      reconnects without re-pairing. Any term (e.g. `:primary`, `"acct-42"`).
+    * `:mark_online_on_connect` (default `true`) — send presence-available on
+      connect. Set `false` to stay **offline** to others; the **primary phone then
+      keeps receiving push notifications** (live messages are queued offline rather
+      than pushed to this session).
+    * `:browser` (default `["Mac OS", "Chrome", "14.4.1"]`) — the `[os, client,
+      version]` triple shown in the user's *Linked devices*. A `"Android"` client
+      element opts into **Android registration** (can receive view-once media; see
+      `Amarula.Config`).
+    * `:sync_full_history` (default `true`) — request full history on link.
+    * `:auth` — explicit creds (advanced; normally Amarula loads/persists these for
+      you from `:profile`).
+    * `:offline` (default `false`) — sandbox mode (below).
+
+  > Every per-connection setting can be overridden here and wins over the default
+  > — see the full table in `Amarula.Config`.
 
   ## Offline (sandbox) mode
 
@@ -249,7 +277,8 @@ defmodule Amarula do
   that's already live returns `{:error, {:already_running, pid}}` — use `whereis/1`
   to get the existing one.
 
-  `opts`:
+  `opts` here are **process/runtime** wiring, distinct from the **config map**
+  passed to `new/1` (the WhatsApp/protocol settings like `:mark_online_on_connect`):
     * `:parent_pid` — process to receive `{:amarula, ..}` events (default: caller)
     * `:name`       — optional registered name for the connection
   """
@@ -617,6 +646,23 @@ defmodule Amarula do
     send_built(conn, jid, MessageEncoder.revoke(key))
   end
 
+  @doc """
+  Set your own **member tag** (per-group self-label) in `group`, or clear it with
+  `""`. The tag is capped at 30 characters — a longer one is rejected with
+  `{:error, :member_tag_too_long}` (we don't silently truncate). Relayed to the
+  group; other members see it via a `{:member_tag, _}` message (label `""` =
+  removed).
+  """
+  @spec update_member_tag(conn(), jid(), String.t()) ::
+          send_result() | {:error, :member_tag_too_long}
+  def update_member_tag(conn, group, label) when is_binary(label) do
+    if String.length(label) > 30 do
+      {:error, :member_tag_too_long}
+    else
+      send_built(conn, Amarula.Address.to_jid!(group), MessageEncoder.member_label(label))
+    end
+  end
+
   @doc "Pin a message for everyone in the chat. `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
   @spec pin_message(conn(), message_ref()) :: send_result()
   def pin_message(conn, ref) do
@@ -729,6 +775,14 @@ defmodule Amarula do
     * `:quoted` / `:mentions` — reply to / tag (see `send_text/4`).
     * `:view_once` — send as view-once (the recipient can open it once).
     * `:ptv` — for `:video`, send as a round video note (PTV).
+
+  > #### Audio needs `:seconds` {: .warning}
+  >
+  > Amarula does no media processing — it won't compute an audio clip's duration
+  > for you. **Pass `:seconds` (the clip length) for `:audio`.** Without it, clips
+  > longer than ~10s may fail to play on iPhone recipients (WhatsApp rejects the
+  > playback and asks the sender to resend — Baileys #2646). Voice notes (`:ptt`)
+  > can also carry a `:waveform` (bytes) for the amplitude preview.
   """
   @spec send_media(conn(), jid(), media_type(), binary(), keyword()) :: send_result()
   def send_media(conn, jid, type, data, opts \\ [])

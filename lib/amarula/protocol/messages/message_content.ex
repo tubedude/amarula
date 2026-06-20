@@ -13,6 +13,8 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     * `{:media, type, message_struct}`            — type in :image/:video/:audio/:document/:sticker
     * `{:protocol, type, protocol_message}`       — other protocolMessages (history sync, keys, …)
     * `{:pin, %{key, pinned?}}` / `{:keep, %{key, kept?}}`
+    * `{:member_tag, %{label, timestamp}}` — a member's per-group self-label
+      changed (`label: ""` means it was removed)
     * `{:group_invite, msg}` / `{:event, msg}`
     * `{:product, msg}` / `{:order, msg}` / `{:button_response, msg}` /
       `{:list_response, msg}` / `{:template_reply, msg}` /
@@ -93,6 +95,15 @@ defmodule Amarula.Protocol.Messages.MessageContent do
   defp do_classify(%Proto.Message{protocolMessage: %{type: :REVOKE, key: key}})
        when not is_nil(key),
        do: {:revoke, key}
+
+  # A member changed their per-group self-label. Emit even when the label is empty
+  # — that IS the removal, which Baileys #2502 dropped by guarding on a truthy
+  # label. `label` is "" for a removal; consumers treat "" as "tag cleared".
+  defp do_classify(%Proto.Message{
+         protocolMessage: %{type: :GROUP_MEMBER_LABEL_CHANGE, memberLabel: %{} = ml}
+       }) do
+    {:member_tag, %{label: ml.label || "", timestamp: ml.labelTimestamp}}
+  end
 
   defp do_classify(%Proto.Message{protocolMessage: %{type: type} = pm}) when not is_nil(type),
     do: {:protocol, type, pm}

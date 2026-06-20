@@ -614,6 +614,8 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
       new_lids = for {lid, _pn} <- newly, do: lid
       Connection.assert_lid_sessions(ctx.cm, new_lids)
+      # Surface the newly-learned pairs to the consumer (:lid_mapping_update).
+      Connection.notify_lid_mappings(ctx.cm, newly)
     end
 
     :ok

@@ -46,6 +46,20 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "mark_online?/1 (markOnlineOnConnect — Baileys #2553)" do
+    test "defaults to true when unset (connect sends presence-available)" do
+      assert Connection.mark_online?(%{})
+    end
+
+    test "honors an explicit per-connection false" do
+      refute Connection.mark_online?(%{mark_online_on_connect: false})
+    end
+
+    test "honors an explicit true" do
+      assert Connection.mark_online?(%{mark_online_on_connect: true})
+    end
+  end
+
   describe "connection manager lifecycle" do
     test "starts and initializes correctly" do
       # Use a tmp-rooted profile so the connection never touches the repo's data
@@ -245,6 +259,26 @@ defmodule Amarula.ConnectionTest do
       send(pid, {:ws_event, nil, {:close, :test}})
 
       assert_receive {:amarula, :connection_update, %{connection: :disconnected}}
+      GenServer.stop(pid)
+    end
+
+    test "emits :lid_mapping_update with Address pairs (#2263)", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      Connection.notify_lid_mappings(pid, [{"111@lid", "15550001234@s.whatsapp.net"}])
+
+      assert_receive {:amarula, :lid_mapping_update, [%{lid: lid, pn: pn}]}
+      assert %Amarula.Address{kind: :lid, user: "111"} = lid
+      assert %Amarula.Address{kind: :pn, user: "15550001234"} = pn
+      GenServer.stop(pid)
+    end
+
+    test "notify_lid_mappings with [] emits nothing", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      Connection.notify_lid_mappings(pid, [])
+
+      refute_receive {:amarula, :lid_mapping_update, _}
       GenServer.stop(pid)
     end
   end

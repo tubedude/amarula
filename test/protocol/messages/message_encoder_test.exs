@@ -155,6 +155,27 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
   end
 
+  describe "member_label/1 (group member tag)" do
+    test "builds a GROUP_MEMBER_LABEL_CHANGE protocol message" do
+      msg = MessageEncoder.member_label("VIP")
+      pm = msg.protocolMessage
+      assert pm.type == :GROUP_MEMBER_LABEL_CHANGE
+      assert pm.memberLabel.label == "VIP"
+      assert is_integer(pm.memberLabel.labelTimestamp)
+    end
+
+    test "caps the label at 30 characters" do
+      long = String.duplicate("a", 50)
+
+      assert String.length(MessageEncoder.member_label(long).protocolMessage.memberLabel.label) ==
+               30
+    end
+
+    test "an empty label clears the tag (removal)" do
+      assert MessageEncoder.member_label("").protocolMessage.memberLabel.label == ""
+    end
+  end
+
   describe "pin/2 and keep/2" do
     setup do
       {:ok, key: %Proto.MessageKey{remoteJid: "g@g.us", id: "ABC"}}
@@ -349,9 +370,22 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
 
     test "each type maps to its own proto field" do
       assert MessageEncoder.media(:video, @info, seconds: 3).videoMessage.seconds == 3
-      assert MessageEncoder.media(:audio, @info, ptt: true).audioMessage.ptt == true
+      assert MessageEncoder.media(:audio, @info, seconds: 5, ptt: true).audioMessage.ptt == true
       assert MessageEncoder.media(:document, @info, title: "t").documentMessage.title == "t"
       assert MessageEncoder.media(:sticker, @info).stickerMessage.url == "https://x/y"
+    end
+
+    test "audio threads :seconds and :waveform (#2646)" do
+      audio = MessageEncoder.media(:audio, @info, seconds: 42, waveform: <<1, 2, 3>>).audioMessage
+      assert audio.seconds == 42
+      assert audio.waveform == <<1, 2, 3>>
+    end
+
+    test "audio without :seconds warns (iPhone playback risk, #2646)" do
+      import ExUnit.CaptureLog
+
+      log = capture_log(fn -> MessageEncoder.media(:audio, @info, ptt: true) end)
+      assert log =~ "audio sent without :seconds"
     end
 
     test "image/2 is media(:image, ...)" do

@@ -7,11 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-06-20
+
+A big batch of new message and group capabilities — replies, mentions, poll
+votes, pins, view-once, albums, events, group invites, member tags, and LID↔PN
+resolution — plus an optional Android client mode and three protocol fixes. No
+breaking changes.
+
+### Fixed
+
+- **Audio: thread `:waveform` and warn when `:seconds` is missing** (Baileys
+  #2646). `send_media(:audio, …)` now passes a `:waveform` opt through to the
+  proto, and logs a warning when `:seconds` is absent — without a duration, clips
+  longer than ~10s may fail to play on iPhone recipients. Amarula does no media
+  processing, so the caller must supply `:seconds`; this is now documented on
+  `send_media/5` and surfaced at send time.
+- **Pinned chat state is always a definite boolean** (Baileys #2328). A pin
+  app-state action whose `pinned` flag the server omits (proto3-optional) left
+  `%Amarula.Chat{}.pinned` as `nil` ("undefined for some conversations"). It now
+  coerces to `false` — only an explicit `pinned: true` is pinned — so consumers
+  never see an ambiguous nil from a pin action.
+- **`mark_online_on_connect: false` is now honored** (Baileys #2553). The
+  per-connection setting was defined and documented but never read — the login
+  path always sent presence-available, so the account appeared online and the
+  primary phone stopped getting push notifications regardless of the flag. Connect
+  (and the post-pairing push-name refresh) now gate presence-available on it.
+
+### Added
+
+- **LID↔PN mapping lookups + a `:lid_mapping_update` event** (Baileys #2263).
+  `Amarula.Contacts.pn_for_lid/2` and `lid_for_pn/2` read the local mapping store
+  (no server query) — resolve a group member's LID to a PN after a
+  `:messages_upsert`. And a new `:lid_mapping_update` consumer event fires with
+  `[%{lid: Address, pn: Address}]` whenever the send pipeline learns new mappings,
+  so consumers can persist them as they arrive instead of polling.
+- **Group member tags** (Baileys #2502). `Amarula.update_member_tag/3` sets (or
+  clears, with `""`) your per-group self-label — capped at 30 chars, rejected with
+  `{:error, :member_tag_too_long}` rather than silently truncated. Incoming tag
+  changes classify as `{:member_tag, %{label, timestamp}}` on `%Amarula.Msg{}`,
+  **including removals** (empty label) — the case Baileys #2502 dropped.
+- **Android browser mode** (Baileys #2201). Setting a `:browser` whose client
+  element contains `"Android"` (e.g. `["MyApp", "Android", ""]`) registers as an
+  Android client instead of WhatsApp Web: `userAgent.platform = :ANDROID`, no
+  `webInfo`, `DeviceProps.platformType = :ANDROID_PHONE`. Lets a session receive
+  view-once media. Experimental, and shows as a phone in Linked Devices — see the
+  impact note in `Amarula.Config`. Non-Android browsers are unaffected.
+
 ## [0.2.2] - 2026-06-20
 
-A bug-fix plus new outgoing/incoming message types (Tier 1 + Tier 2 of the proto
-coverage review). One small breaking change to how you reference an existing
-message (see **Changed (breaking)**).
+A bug-fix plus new outgoing/incoming message types. One small breaking change to
+how you reference an existing message (see **Changed (breaking)**).
 
 ### Fixed
 

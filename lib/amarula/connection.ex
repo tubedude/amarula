@@ -64,7 +64,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Signal.LidMappingFileStore
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
-  alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing, Notifications}
+  alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing, Notifications, Receive}
 
   defstruct [
     :websocket_client,
@@ -1650,9 +1650,9 @@ defmodule Amarula.Connection do
   defp handle_message_ack(state, node) do
     msg_id = NodeUtils.get_attr(node, "id")
 
-    case NodeUtils.get_attr(node, "error") do
-      nil -> resolve_ack(state, msg_id, fn on_ack -> on_ack.(:ok) end)
-      code -> resolve_ack(state, msg_id, fn _on_ack -> {:error, {:send_rejected, code}} end)
+    case Receive.ack_outcome(node) do
+      :ok -> resolve_ack(state, msg_id, fn on_ack -> on_ack.(:ok) end)
+      {:error, _} = err -> resolve_ack(state, msg_id, fn _on_ack -> err end)
     end
   end
 
@@ -1709,9 +1709,7 @@ defmodule Amarula.Connection do
     state = send_message_ack(state, node)
     Amarula.Telemetry.emit([:amarula, :retry, :received], profile(state), %{count: 1})
 
-    msg_id = NodeUtils.get_attr(node, "id")
-    from = NodeUtils.get_attr(node, "from")
-    participant = NodeUtils.get_attr(node, "participant") || from
+    {msg_id, participant} = Receive.retry_targets(node)
 
     cond do
       is_nil(msg_id) ->

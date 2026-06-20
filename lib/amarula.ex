@@ -214,6 +214,29 @@ defmodule Amarula do
   Connection/protocol defaults are filled in (see `Amarula.Config`), so `config`
   need only carry `:profile` (+ `:auth` and any overrides).
 
+  ## Commonly-used options
+
+  `config` is a map; only `:profile` is required. The options you'll reach for
+  most (full list + defaults in `Amarula.Config`):
+
+    * `:profile` — **required.** Names this connection's stored credentials, so it
+      reconnects without re-pairing. Any term (e.g. `:primary`, `"acct-42"`).
+    * `:mark_online_on_connect` (default `true`) — send presence-available on
+      connect. Set `false` to stay **offline** to others; the **primary phone then
+      keeps receiving push notifications** (live messages are queued offline rather
+      than pushed to this session).
+    * `:browser` (default `["Mac OS", "Chrome", "14.4.1"]`) — the `[os, client,
+      version]` triple shown in the user's *Linked devices*. A `"Android"` client
+      element opts into **Android registration** (can receive view-once media; see
+      `Amarula.Config`).
+    * `:sync_full_history` (default `true`) — request full history on link.
+    * `:auth` — explicit creds (advanced; normally Amarula loads/persists these for
+      you from `:profile`).
+    * `:offline` (default `false`) — sandbox mode (below).
+
+  > Every per-connection setting can be overridden here and wins over the default
+  > — see the full table in `Amarula.Config`.
+
   ## Offline (sandbox) mode
 
   `offline: true` runs the connection with no socket: it never reaches WhatsApp,
@@ -254,7 +277,8 @@ defmodule Amarula do
   that's already live returns `{:error, {:already_running, pid}}` — use `whereis/1`
   to get the existing one.
 
-  `opts`:
+  `opts` here are **process/runtime** wiring, distinct from the **config map**
+  passed to `new/1` (the WhatsApp/protocol settings like `:mark_online_on_connect`):
     * `:parent_pid` — process to receive `{:amarula, ..}` events (default: caller)
     * `:name`       — optional registered name for the connection
   """

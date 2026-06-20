@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`mark_online_on_connect: false` is now honored** (Baileys #2553). The
+  per-connection setting was defined and documented but never read — the login
+  path always sent presence-available, so the account appeared online and the
+  primary phone stopped getting push notifications regardless of the flag. Connect
+  (and the post-pairing push-name refresh) now gate presence-available on it.
+
 ### Added
 
 - **Android browser mode** (Baileys #2201). Setting a `:browser` whose client

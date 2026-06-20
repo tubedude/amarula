@@ -46,6 +46,20 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "mark_online?/1 (markOnlineOnConnect — Baileys #2553)" do
+    test "defaults to true when unset (connect sends presence-available)" do
+      assert Connection.mark_online?(%{})
+    end
+
+    test "honors an explicit per-connection false" do
+      refute Connection.mark_online?(%{mark_online_on_connect: false})
+    end
+
+    test "honors an explicit true" do
+      assert Connection.mark_online?(%{mark_online_on_connect: true})
+    end
+  end
+
   describe "connection manager lifecycle" do
     test "starts and initializes correctly" do
       # Use a tmp-rooted profile so the connection never touches the repo's data

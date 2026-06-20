@@ -25,7 +25,7 @@ defmodule Amarula.Config do
   | `:connect_timeout_ms` | `30_000` | WebSocket connect timeout |
   | `:keep_alive_interval_ms` | `30_000` | WA-level keep-alive ping interval |
   | `:sync_full_history` | `true` | request full history on link |
-  | `:mark_online_on_connect` | `true` | send presence available on connect |
+  | `:mark_online_on_connect` | `true` | send presence-available on connect. `false` keeps this session **unavailable** — it appears offline to others and the **primary phone keeps receiving push notifications** (live messages are then queued offline rather than pushed to this session). |
   | `:fire_init_queries` | `true` | run the post-login init IQ queries |
   | `:country_code` | `"US"` | |
   | `:headers` / `:origin` / `:agent` | see defaults | HTTP/WS handshake |

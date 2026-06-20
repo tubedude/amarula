@@ -3308,8 +3308,10 @@ defmodule Amarula.Connection do
 
     if real_name && me[:name] in [nil, "~"] do
       new_state = update_creds(state, put_in(state.auth_creds, [:me, :name], real_name))
-      Logger.info("Learned push name: #{inspect(real_name)} — re-sending presence")
-      send_presence_available(new_state)
+      Logger.info("Learned push name: #{inspect(real_name)} — refreshing presence")
+      # Honor mark_online_on_connect here too: learning the name must not force a
+      # connection that opted out of presence back online.
+      maybe_mark_online(new_state)
     else
       state
     end
@@ -3596,11 +3598,13 @@ defmodule Amarula.Connection do
   # Mirrors Baileys CB:success body (passive IQ, unified_session, digest key
   # bundle) plus the connection-open presence (markOnlineOnConnect default).
   defp finish_login(state) do
-    state = send_passive_iq(state, "active")
-    state = send_unified_session(state)
-    state = send_digest_iq(state)
-    state = send_init_queries(state)
-    state = send_presence_available(state)
+    state =
+      state
+      |> send_passive_iq("active")
+      |> send_unified_session()
+      |> send_digest_iq()
+      |> send_init_queries()
+      |> maybe_mark_online()
 
     # Emit :open here, on CB:success (after passive 'active' + digest + init
     # queries), mirroring Baileys socket.ts which emits `connection: 'open'` in its
@@ -3610,14 +3614,35 @@ defmodule Amarula.Connection do
     state
   end
 
+  # Presence-available on connect is gated by the per-connection
+  # `:mark_online_on_connect` setting (default true; passed to `Amarula.new/1`).
+  #
+  # When false, the companion stays "unavailable" to the server: it appears
+  # OFFLINE to other users and the PRIMARY PHONE keeps receiving push
+  # notifications — the documented trade-off (Baileys #2553). Live messages are
+  # then queued offline rather than pushed straight to this session, so a
+  # consumer that wants real-time delivery should leave this at the default true
+  # (or call `set_presence(:available)` explicitly).
+  defp maybe_mark_online(state) do
+    if mark_online?(state.config) do
+      send_presence_available(state)
+    else
+      Logger.debug("mark_online_on_connect: false — staying unavailable on connect")
+      state
+    end
+  end
+
+  @doc false
+  # Whether to send presence-available on connect. Per-connection setting (passed
+  # to `Amarula.new/1`), default true. Public-ish (`@doc false`) so the gate is
+  # unit-testable without a live login.
+  def mark_online?(config), do: Map.get(config, :mark_online_on_connect, true)
+
   # Baileys sendPresenceUpdate('available'): <presence name={me.name} type="available"/>.
-  # Without this the server treats the companion as unavailable and queues live
-  # messages as offline instead of pushing them — silent connection.
   defp send_presence_available(state) do
     # Personal accounts (and profiles paired before push-name learning existed)
     # carry no me.name; "~" is the bootstrap placeholder WhatsApp accepts. The
-    # real push name self-heals later from the PUSH_NAME history sync. Skipping
-    # presence here leaves the phone "Paused", so always send.
+    # real push name self-heals later from the PUSH_NAME history sync.
     name = get_in(state.auth_creds, [:me, :name]) || "~"
 
     node = %Node{

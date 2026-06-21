@@ -146,11 +146,22 @@ defmodule Amarula.Connection do
   # Client API
 
   @doc """
-  Starts the connection — the per-connection process that owns the websocket,
-  the noise cipher, IQ correlation, login, sends, and consumer-event delivery.
+  **Internal.** Starts the bare Connection process only.
+
+  This starts *just* this GenServer — **not** a working connection. A functional
+  connection needs the surrounding per-connection tree (its sender supervisor and
+  the `InstanceRegistry` wiring its siblings resolve through); without that, the
+  first send fails. `ConnectionSupervisor` calls this as the tree's child.
+
+  Consumers must **not** put `{Amarula.Connection, …}` in their own supervisor —
+  that yields a half-wired connection. The supported entry point is
+  `Amarula.connect/2`, which builds the whole tree (and owns the protocol-driven
+  restarts — e.g. the 515 reconnect after QR pairing — that the consumer should
+  not have to manage). To control *naming/distribution*, pass a `:registry` in the
+  connection config (e.g. `Horde.Registry`); see `Amarula.ProfileRegistry`.
 
   `opts`:
-    * `:name`       — registered name (a `:via` tuple into the instance's Registry,
+    * `:name`       — registered name (a `:via` tuple into `InstanceRegistry`,
       passed by `ConnectionSupervisor`). Omit to start an unnamed process.
     * `:parent_pid` — process to receive `{:amarula, type, data}` events
   """
@@ -164,7 +175,10 @@ defmodule Amarula.Connection do
     GenServer.start_link(__MODULE__, init_arg, name: Keyword.get(opts, :name))
   end
 
-  # Supervisor-friendly form: child spec {Connection, {conn, opts}}.
+  @doc false
+  # Internal: used by ConnectionSupervisor to start Connection as a tree child.
+  # NOT a consumer "supervise-it-yourself" hook — a bare Connection is non-functional
+  # (see start_link/2). Use Amarula.connect/2.
   def child_spec({conn, opts}) do
     %{id: __MODULE__, start: {__MODULE__, :start_link, [conn, opts]}}
   end

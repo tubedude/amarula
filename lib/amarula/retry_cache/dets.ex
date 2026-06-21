@@ -3,9 +3,10 @@ defmodule Amarula.RetryCache.DETS do
   On-disk `Amarula.RetryCache` adapter — survives restart.
 
   One DETS table per connection profile (`<root>/<profile>/retry_cache.dets`),
-  holding `{msg_id, entry}`. Bounded to `@max_entries`; on overflow the oldest
-  entries (by `entry.ts`) are evicted. Independent of `Amarula.Storage` — its
-  location is its own (`:root`), not borrowed from the durable-storage backend.
+  holding `{msg_id, entry}`. Bounded the same way as the ETS adapter — entries
+  past the `@ttl_ms` (5 min) retry window are dropped, then the oldest beyond
+  `:max_entries` (default 512). Independent of `Amarula.Storage` — its location is
+  its own (`:root`), not borrowed from the durable-storage backend.
 
   Opened lazily and kept open per `{root, profile}`; DETS auto-repairs an
   uncleanly-closed table on reopen.
@@ -14,13 +15,14 @@ defmodule Amarula.RetryCache.DETS do
 
     * `:root`        — base dir holding one `.dets` file per profile (default
       `AMARULA_CACHE_DIR` or `./amarula_cache`).
-    * `:max_entries` — cap before eviction (default 200).
+    * `:max_entries` — hard cap before oldest-eviction (default 512).
   """
 
   @behaviour Amarula.RetryCache
 
   @default_root "./amarula_cache"
-  @default_max 200
+  @default_max 512
+  @ttl_ms 5 * 60 * 1000
 
   @impl true
   def new(opts) do
@@ -40,8 +42,10 @@ defmodule Amarula.RetryCache.DETS do
 
   @impl true
   def get(%{root: root}, profile, msg_id) do
+    cutoff = now_ms() - @ttl_ms
+
     case :dets.lookup(open(root, profile), msg_id) do
-      [{^msg_id, entry}] -> {:ok, entry}
+      [{^msg_id, %{ts: ts} = entry}] when ts >= cutoff -> {:ok, entry}
       _ -> :error
     end
   end
@@ -63,7 +67,16 @@ defmodule Amarula.RetryCache.DETS do
     end
   end
 
+  # Write-triggered eviction: drop entries past the TTL first, then trim the
+  # oldest down to the hard cap.
   defp evict(table, max) do
+    cutoff = now_ms() - @ttl_ms
+
+    expired =
+      :dets.select(table, [{{:"$1", %{ts: :"$2"}}, [{:<, :"$2", cutoff}], [:"$1"]}])
+
+    Enum.each(expired, &:dets.delete(table, &1))
+
     over = :dets.info(table, :size) - max
 
     if over > 0 do
@@ -73,4 +86,6 @@ defmodule Amarula.RetryCache.DETS do
       |> Enum.each(fn {_ts, id} -> :dets.delete(table, id) end)
     end
   end
+
+  defp now_ms, do: System.system_time(:millisecond)
 end

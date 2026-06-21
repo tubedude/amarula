@@ -3,7 +3,17 @@ defmodule Amarula.RetryCacheTest do
 
   alias Amarula.RetryCache
 
-  defp entry(jid, ts), do: %{recipient_jid: jid, message: %{conversation: "hi"}, ts: ts}
+  # `seq` is a small ordinal (1, 2, 3…) standing in for send order. Map it to a
+  # real, *recent* ms timestamp — a few seconds ago, well inside the 5-min TTL —
+  # while preserving order (higher seq = newer), so eviction-by-oldest still drops
+  # the lowest seqs first.
+  defp entry(jid, seq) do
+    ts = System.system_time(:millisecond) - (100 - seq) * 1000
+    %{recipient_jid: jid, message: %{conversation: "hi"}, ts: ts}
+  end
+
+  # A timestamp just past the 5-min retry TTL — such an entry must be dropped.
+  defp stale_ts, do: System.system_time(:millisecond) - (5 * 60 * 1000 + 1000)
 
   # Per-adapter opts (DETS needs a root dir; ETS doesn't).
   defp opts(Amarula.RetryCache.ETS, _dir), do: [max_entries: 5]
@@ -47,6 +57,51 @@ defmodule Amarula.RetryCacheTest do
         assert :error = RetryCache.get(s, p, "id1")
         assert :error = RetryCache.get(s, p, "id3")
         assert {:ok, _} = RetryCache.get(s, p, "id8")
+      end
+
+      test "drops entries past the 5-min TTL", %{scope: s, profile: p} do
+        stale = %{recipient_jid: "a@s", message: %{conversation: "old"}, ts: stale_ts()}
+        RetryCache.put(s, p, "old", stale)
+        RetryCache.put(s, p, "fresh", entry("a@s", 1))
+
+        # `get` rejects the expired entry, and the next write evicted it.
+        assert :error = RetryCache.get(s, p, "old")
+        assert {:ok, _} = RetryCache.get(s, p, "fresh")
+      end
+    end
+  end
+
+  describe "ReadOnly adapter (consumer store)" do
+    test "get/3 delegates to the consumer's function" do
+      store = %{"id1" => %{recipient_jid: "a@s", message: %{conversation: "hi"}}}
+
+      scope =
+        RetryCache.scope(%{
+          retry_cache:
+            {Amarula.RetryCache.ReadOnly, get: fn _profile, id -> Map.fetch(store, id) end}
+        })
+
+      assert {:ok, %{recipient_jid: "a@s"}} = RetryCache.get(scope, :p, "id1")
+      assert :error = RetryCache.get(scope, :p, "missing")
+    end
+
+    test "has no write side — Amarula never writes to the consumer's store" do
+      # The guarantee is structural: ReadOnly does not implement the optional
+      # put/4 callback, so there is no write path for Amarula to misuse.
+      refute function_exported?(Amarula.RetryCache.ReadOnly, :put, 4)
+
+      scope =
+        RetryCache.scope(%{
+          retry_cache: {Amarula.RetryCache.ReadOnly, get: fn _p, _id -> :error end}
+        })
+
+      # The facade `put` is a safe no-op for a read-only adapter (and must not raise).
+      assert :ok = RetryCache.put(scope, :p, "id", %{recipient_jid: "a@s", message: %{}, ts: 0})
+    end
+
+    test "new/1 rejects a non-arity-2 :get" do
+      assert_raise ArgumentError, ~r/arity 2/, fn ->
+        RetryCache.scope(%{retry_cache: {Amarula.RetryCache.ReadOnly, get: fn _ -> :error end}})
       end
     end
   end

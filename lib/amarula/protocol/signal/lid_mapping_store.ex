@@ -149,7 +149,6 @@ defmodule Amarula.Protocol.Signal.LIDMappingStore do
             pn_user = pn_decoded.user
             lid_user = lid_decoded.user
 
-            # Check if mapping already exists
             case get_cached_mapping(state.cache, "pn:#{pn_user}") do
               ^lid_user ->
                 Logger.debug("LID mapping already exists for #{pn_user} → #{lid_user}")
@@ -227,7 +226,6 @@ defmodule Amarula.Protocol.Signal.LIDMappingStore do
                   # Cache miss - check database
                   case get_database_mapping(state.key_store, pn_user) do
                     {:ok, lid_user} ->
-                      # Update cache and create mapping
                       update_cache(state.cache, %{pn_user => lid_user})
                       device_specific_lid = construct_device_lid(lid_user, device, decoded.domain)
                       device_specific_pn = construct_device_pn(pn_user, device, decoded.domain)
@@ -319,7 +317,6 @@ defmodule Amarula.Protocol.Signal.LIDMappingStore do
               # Cache miss - check database
               case get_database_mapping(state.key_store, "#{lid_user}_reverse") do
                 {:ok, pn_user} ->
-                  # Update cache and construct PN
                   update_cache(state.cache, %{lid_user => pn_user})
                   domain = if decoded.domain == "hosted.lid", do: "hosted", else: "s.whatsapp.net"
                   pn_jid = LIDMapping.construct_device_jid(pn_user, device, domain)

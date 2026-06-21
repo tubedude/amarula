@@ -38,24 +38,20 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
     # Initialize noise handler (this hashes protocol name and client ephemeral)
     noise_state = NoiseHandler.new(ephemeral_key_pair)
 
-    # Create ClientHello message
     client_hello = %Proto.HandshakeMessage.ClientHello{
       ephemeral: noise_state.ephemeral_key_pair.public,
       static: nil,
       payload: nil
     }
 
-    # Create HandshakeMessage
     handshake_message = %Proto.HandshakeMessage{
       clientHello: client_hello,
       serverHello: nil,
       clientFinish: nil
     }
 
-    # Encode message
     encoded_message = Proto.HandshakeMessage.encode(handshake_message)
 
-    # Create handshake state
     handshake_state = %{
       noise_state: noise_state,
       auth_creds: auth_creds,
@@ -127,13 +123,11 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
             {encrypted_payload, final_noise_state} =
               NoiseHandler.encrypt(preserved_noise_state, encoded_payload)
 
-            # Create ClientFinish message
             client_finish = %Proto.HandshakeMessage.ClientFinish{
               static: encrypted_key,
               payload: encrypted_payload
             }
 
-            # Create final HandshakeMessage
             final_message = %Proto.HandshakeMessage{
               clientHello: nil,
               serverHello: nil,

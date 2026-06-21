@@ -20,10 +20,11 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   ## Lifecycle & registry presence
 
-  **Identity.** A sender's identity *is* its recipient JID. It is registered in
-  the per-instance Registry under `{registry, recipient_jid}` — so at most one
-  sender per recipient exists at a time, and `deliver/2` is a find-or-start on
-  that key.
+  **Identity.** A sender's identity *is* its `{instance_id, recipient_jid}` pair.
+  It is registered in the app-level `Amarula.InstanceRegistry` under that key
+  (namespaced by `instance_id` so two connections don't collide on a shared
+  recipient) — so at most one sender per recipient per connection exists at a
+  time, and `deliver/2` is a find-or-start on that key.
 
   **Birth (lazy).** Started on the first `deliver/2` to a recipient with no live
   sender: find-or-start via `Registry.lookup` → else `DynamicSupervisor.start_child`.
@@ -42,7 +43,13 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   is parked in `Connection`. So a sender is cheap to lose and cheap to respawn.
 
   **Death (three ways).**
-    1. *Idle.* After `@idle_timeout_ms` with an empty mailbox it `{:stop, :normal}`s.
+    1. *Idle.* Each `:send` re-arms an idle timer (`idle_ms`, default 1s,
+       overridable via `config[:sender_idle_ms]`); after that long with no further
+       send it `{:stop, :normal}`s. It carries no durable state, so lingering buys
+       only warm reuse — a quick follow-up to the same recipient skips a respawn +
+       a session re-read from Storage. The short default keeps a fan-out to N
+       one-shot recipients from leaving a long-lived process tail; a disk-backed
+       store may want a larger value to cut re-reads under bursty traffic.
     2. *Crash.* A raise in the pipe (Signal error, USync blowup, bad bundle) kills
        it. `restart: :temporary` ⇒ the supervisor does NOT restart it; the next
        `deliver` respawns a fresh one. In-flight + queued sends are lost.
@@ -88,7 +95,12 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   alias Amarula.Connection
   alias Amarula.Protocol.USync
 
-  @idle_timeout_ms 5 * 60 * 1000
+  # Idle linger before a drained sender stops. Short (1s) so a fan-out to N
+  # one-shot recipients sheds its processes within a second, while still letting a
+  # quick follow-up to the same recipient reuse the warm sender (skipping a
+  # respawn + a re-read of the session from Storage). The sender holds no durable
+  # state, so stopping and respawning is cheap.
+  @idle_timeout_ms 1_000
 
   # --- API ---
 
@@ -97,15 +109,18 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   send runs on the per-recipient process — serialized per recipient, parallel
   across recipients — so the CALLING process (Connection) is not blocked.
 
-  `msg` carries `:msg_id`. The sender does NOT reply the consumer (ack-on-send,
-  Design 2): it runs the pipe and reports the PIPE result back to `Connection`
-  (`state.cm`), which owns the parked consumer `from` and replies it at ack time:
+  `msg` carries `:msg_id`. The sender does NOT reply the consumer: it runs the
+  pipe and, **only on failure**, reports back to `Connection` (`state.cm`), which
+  owns the parked consumer `from`:
 
-    * relay succeeded (frame written) → `{:send_relayed, msg_id}` — Connection
-      keeps the parked entry and awaits the server's `<ack>`.
+    * relay succeeded (frame written) → the sender reports **nothing**. Connection
+      already parked the `from` and armed an ack-timeout at dispatch, so it simply
+      awaits the server's `<ack>` (which resolves the caller) — a "frame went out"
+      signal would be inert, so we don't send one.
     * pipe failed (not_on_whatsapp / IQ timeout / encrypt error / plugin halt)
-      → `{:send_failed, msg_id, reason}` — no frame went out, so Connection
-      replies the parked caller the failure immediately.
+      → `{:send_failed, msg_id, reason}`. No frame went out, so no `<ack>` will
+      ever come; Connection replies the parked caller the failure immediately
+      (instead of letting it hang to the ack-timeout).
 
   Returns `{:ok, pid}` — the (started or reused) sender pid, so Connection can
   monitor it and fail the recipient's parked sends if it crashes mid-pipe — or
@@ -116,19 +131,25 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   @spec deliver(keyword(), map()) :: {:ok, pid()} | {:error, term()}
   def deliver(opts, msg) do
     registry = Keyword.fetch!(opts, :registry)
-    recipient = Keyword.fetch!(opts, :recipient_jid)
 
-    with {:ok, pid} <- find_or_start(registry, recipient, opts) do
+    with {:ok, pid} <- find_or_start(registry, opts) do
       GenServer.cast(pid, {:send, msg})
       {:ok, pid}
     end
   end
 
-  defp find_or_start(registry, recipient, opts) do
-    case Registry.lookup(registry, recipient) do
+  defp find_or_start(registry, opts) do
+    case Registry.lookup(registry, sender_key(opts)) do
       [{pid, _}] -> {:ok, pid}
       [] -> start_child(opts)
     end
+  end
+
+  # Sender identity in the (shared, app-level) registry: namespaced by the
+  # connection's `instance_id` so two connections sending to the same recipient
+  # don't collide on one key.
+  defp sender_key(opts) do
+    {Keyword.fetch!(opts, :instance_id), Keyword.fetch!(opts, :recipient_jid)}
   end
 
   # Normalize every DynamicSupervisor.start_child/2 outcome to a tagged tuple.
@@ -149,44 +170,62 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   def start_link(opts) do
     registry = Keyword.fetch!(opts, :registry)
-    recipient = Keyword.fetch!(opts, :recipient_jid)
-    GenServer.start_link(__MODULE__, opts, name: {:via, Registry, {registry, recipient}})
+    GenServer.start_link(__MODULE__, opts, name: {:via, Registry, {registry, sender_key(opts)}})
   end
 
   # --- GenServer ---
 
   @impl true
   def init(opts) do
+    conn = Keyword.fetch!(opts, :conn)
+
     state = %{
       recipient_jid: Keyword.fetch!(opts, :recipient_jid),
       cm: Keyword.fetch!(opts, :cm),
-      conn: Keyword.fetch!(opts, :conn),
-      creds: Keyword.fetch!(opts, :creds)
+      conn: conn,
+      creds: Keyword.fetch!(opts, :creds),
+      idle_ms: idle_ms(conn)
     }
 
-    {:ok, state, @idle_timeout_ms}
+    {:ok, state, state.idle_ms}
   end
+
+  # Idle linger, overridable per connection via `config[:sender_idle_ms]`
+  # (defaults to @idle_timeout_ms). A larger value keeps senders warm longer —
+  # useful with a disk-backed session store to avoid re-reading the ratchet on
+  # bursty traffic; a smaller one sheds processes faster after a fan-out.
+  defp idle_ms(%{config: %{sender_idle_ms: ms}}) when is_integer(ms) and ms >= 0, do: ms
+  defp idle_ms(_conn), do: @idle_timeout_ms
 
   @impl true
   def handle_cast({:send, %{msg_id: msg_id} = msg}, state) do
-    # Report the pipe result back to Connection — NOT the consumer. Connection
-    # holds the parked `from` (under msg_id) and replies it at ack time (relay
-    # ok) or immediately (pipe failure). A relayed frame awaits the server <ack>;
-    # a failure means no frame went out, so no ack will ever come.
-    send(state.cm, report(run_send(msg, state), msg_id))
-    {:noreply, state, @idle_timeout_ms}
-  end
+    # Report ONLY a failure back to Connection — NOT the consumer, and NOT on
+    # success. Connection holds the parked `from` (under msg_id) and an armed
+    # ack-timeout: a relayed frame just awaits the server <ack>, so "frame went
+    # out" needs no message. A failure means no frame went out (no ack will come),
+    # so Connection must reply the parked caller the failure immediately.
+    case report(run_send(msg, state), msg_id) do
+      :ok -> :noop
+      failure -> send(state.cm, failure)
+    end
 
-  # Map the pipe result to the message Connection expects.
-  defp report(:ok, msg_id), do: {:send_relayed, msg_id}
-  defp report({:error, reason}, msg_id), do: {:send_failed, msg_id, reason}
-  defp report({:halted, reason}, msg_id), do: {:send_failed, msg_id, {:halted, reason}}
+    # Re-arm the idle timer: stay warm `state.idle_ms` for a quick follow-up to
+    # this recipient, then stop (`handle_info(:timeout, …)`). While sends keep
+    # arriving, each cast resets the timer, so a busy recipient never idles out.
+    {:noreply, state, state.idle_ms}
+  end
 
   @impl true
   def handle_info(:timeout, state) do
     Logger.debug("ConversationSender for #{state.recipient_jid} idle — stopping")
     {:stop, :normal, state}
   end
+
+  # Map the pipe result to what Connection needs: nothing on success (`:ok`),
+  # a {:send_failed, …} message on failure.
+  defp report(:ok, _msg_id), do: :ok
+  defp report({:error, reason}, msg_id), do: {:send_failed, msg_id, reason}
+  defp report({:halted, reason}, msg_id), do: {:send_failed, msg_id, {:halted, reason}}
 
   # --- the send pipe ---
 

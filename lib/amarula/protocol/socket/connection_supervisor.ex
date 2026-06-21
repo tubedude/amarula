@@ -3,18 +3,24 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
   Per-connection supervision tree. One `ConnectionSupervisor` owns everything for
   a single WhatsApp connection instance:
 
-      ConnectionSupervisor (:one_for_one)
-      ├── Registry            (per-instance; keys = {instance_id, role})
-      ├── TableOwner          (per-connection retry-cache ETS)
-      ├── Connection          (THE socket: ws + cipher + IQ + sends + consumer API)
+      ConnectionSupervisor (:rest_for_one)
+      ├── Connection          (THE socket: ws + cipher + IQ + sends + consumer API;
+      │                        also owns the retry-cache ETS table)
       └── SenderSupervisor    (DynamicSupervisor) — ConversationSender…
 
   `Connection.make_socket/2` starts this supervisor and returns the `Connection`
   child pid — the consumer's handle, so the public API (`connect/send_text/...`
   on that pid) lands on Connection directly (no relay).
 
-  Siblings find each other through the per-instance `Registry` by role, via
-  `name/2` / `whereis/2` — no global atom names, no leaked atoms.
+  This tree has **no Registry child of its own**. The supervisor, its sibling
+  roles, and each `ConversationSender` are named in the app-level
+  `Amarula.InstanceRegistry`, keyed by the `instance_id` ref — so no atom is
+  minted per connection and two connections can never collide. Siblings find each
+  other by role via `name/2` / `whereis/2`.
+
+  `:rest_for_one` (not `:one_for_one`) because senders block on Connection's IQ
+  replies: if Connection restarts, the senders waiting on it must restart too. A
+  sender crash, conversely, never restarts Connection.
   """
 
   use Supervisor
@@ -37,7 +43,7 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
     init_arg = %{instance_id: instance_id, conn: conn, opts: opts}
 
     spec = %{
-      id: supervisor_name(instance_id),
+      id: instance_id,
       start:
         {Supervisor, :start_link, [__MODULE__, init_arg, [name: supervisor_name(instance_id)]]},
       type: :supervisor,
@@ -61,19 +67,22 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
   """
   @spec stop_instance(reference()) :: :ok | {:error, :not_found}
   def stop_instance(instance_id) do
-    case Process.whereis(supervisor_name(instance_id)) do
+    case GenServer.whereis(supervisor_name(instance_id)) do
       nil -> {:error, :not_found}
       sup -> Supervisor.stop(sup)
     end
   end
 
-  @doc "The supervisor's registered name, derived from the instance ref."
-  @spec supervisor_name(reference()) :: atom()
+  @doc """
+  The `:via` tuple naming the tree supervisor, keyed by `instance_id` in the
+  app-level `Amarula.InstanceRegistry`. No atom is minted per connection.
+  """
+  @spec supervisor_name(reference()) :: {:via, Registry, term()}
   def supervisor_name(instance_id) do
-    :"amarula_conn_sup_#{:erlang.phash2(instance_id)}"
+    {:via, Registry, {registry_name(instance_id), {:supervisor, instance_id}}}
   end
 
-  @doc "The `:via` tuple addressing a sibling `role` in this instance's Registry."
+  @doc "The `:via` tuple addressing a sibling `role` in this instance's registry."
   @spec name(reference(), atom()) :: {:via, Registry, {atom(), {reference(), atom()}}}
   def name(instance_id, role) do
     {:via, Registry, {registry_name(instance_id), {instance_id, role}}}
@@ -90,13 +99,7 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
 
   @impl true
   def init(%{instance_id: instance_id, conn: conn, opts: opts}) do
-    registry = registry_name(instance_id)
-
     children = [
-      {Registry, keys: :unique, name: registry},
-      # Owns the per-connection ETS caches; first child so the tables exist before
-      # Connection reads them (no lazy create, no race).
-      {Amarula.Protocol.Socket.TableOwner, profile: conn.profile},
       {Connection,
        {conn,
         name: name(instance_id, :connection),
@@ -105,14 +108,20 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
       {DynamicSupervisor, name: name(instance_id, :sender_supervisor), strategy: :one_for_one}
     ]
 
-    Supervisor.init(children, strategy: :one_for_one)
+    # `:rest_for_one`, ordered Connection → sender supervisor. Senders block on
+    # Connection's IQ replies, so if Connection restarts the senders (which may be
+    # mid-pipe waiting on it) must restart too. The reverse is not true — a sender
+    # crash is isolated and never restarts Connection. (Connection owns the retry
+    # cache's ETS itself, so there is no separate cache child to coordinate.)
+    Supervisor.init(children, strategy: :rest_for_one)
   end
 
   @doc """
-  The per-instance Registry's process name. Derived from the instance ref so it
-  is unique per instance and dies with the supervisor.
+  The app-level registry that names this instance's infrastructure. Constant
+  (`Amarula.InstanceRegistry`) — keys carry the `instance_id`, so no per-instance
+  Registry process and no minted atom.
   """
-  def registry_name(instance_id) do
-    :"sender_registry_#{:erlang.phash2(instance_id)}"
+  def registry_name(_instance_id) do
+    Amarula.InstanceRegistry
   end
 end

@@ -209,7 +209,6 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
             [] -> 0
           end
 
-        # Create pretty terminal formatting
         border_width = max(qr_width + 4, 66)
         border_line = String.duplicate("═", border_width)
         empty_line = "║" <> String.duplicate(" ", border_width) <> "║"

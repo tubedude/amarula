@@ -133,22 +133,24 @@ Each connection is an independent supervision tree (so many accounts run side by
 side), started by `ConnectionSupervisor`:
 
 ```
-ConnectionSupervisor (per instance)
-├── Registry (per-instance, keyed by {instance_id, role})
-├── TableOwner — per-connection retry-cache ETS
+ConnectionSupervisor (per instance, :rest_for_one)
 ├── Connection (GenServer) — owns the WebSocketClient + Noise/IQ state, the
-│     consumer API, and consumer-event delivery to parent_pid
+│     consumer API, consumer-event delivery to parent_pid, AND the
+│     per-connection retry-cache ETS table
 └── ConversationSender DynamicSupervisor — one sender GenServer per recipient
 ```
 
 `Connection` is both the websocket owner and the consumer's endpoint — the relay
 `Socket` GenServer was merged into it (one process per connection, no double hop).
-Storage is a config concern (a scope on the `Conn`), not a process.
+Storage is a config concern (a scope on the `Conn`), not a process. The retry-cache
+ETS table is owned by `Connection` (created in `init`), so it's recreated clean on a
+restart — no separate owner process.
 
-The per-instance Registry maps `recipient_jid → sender pid` (a registry, not atom
-names, because the recipient key space is unbounded/user-controlled). Senders are
-one-per-recipient, `:temporary`, lazily started, serialize a recipient's sends, and
-hold no durable state.
+The tree owns no Registry. The app-level `Amarula.InstanceRegistry` names every
+tree's processes by its `instance_id` ref, and maps `{instance_id, recipient_jid} →
+sender pid` (a registry, not atom names, because the recipient key space is
+unbounded/user-controlled). Senders are one-per-recipient, `:temporary`, lazily
+started, serialize a recipient's sends, and hold no durable state.
 
 **For the full, current infrastructure reference — supervision tree, registry
 rationale, the ConversationSender lifecycle, and the send/ack/crash-recovery

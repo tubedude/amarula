@@ -182,7 +182,6 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # Connection.send_* (below) thus exercises the real ack-parking path.
     instance_id = make_ref()
     registry = ConnectionSupervisor.registry_name(instance_id)
-    {:ok, _} = Registry.start_link(keys: :unique, name: registry)
 
     {:ok, sup} =
       DynamicSupervisor.start_link(
@@ -201,7 +200,12 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # Stable creds for the whole test (a fresh keypair per send would break
     # multi-send cases that reuse a session).
     {:ok,
-     pid: pid, conn: Amarula.Conn.new(config), registry: registry, supervisor: sup, creds: creds()}
+     pid: pid,
+     conn: Amarula.Conn.new(config),
+     registry: registry,
+     supervisor: sup,
+     instance_id: instance_id,
+     creds: creds()}
   end
 
   defp maybe_put(map, _key, nil), do: map
@@ -535,6 +539,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     opts = [
       registry: ctx.registry,
       supervisor: ctx.supervisor,
+      instance_id: ctx.instance_id,
       cm: self(),
       conn: conn,
       creds: ctx.creds,
@@ -956,7 +961,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
   # The per-recipient sender pid, looked up in the same Registry Connection uses.
   defp sender_pid(ctx, jid) do
-    case Registry.lookup(ctx.registry, jid) do
+    case Registry.lookup(ctx.registry, {ctx.instance_id, jid}) do
       [{pid, _}] -> pid
       [] -> flunk("no sender registered for #{jid}")
     end

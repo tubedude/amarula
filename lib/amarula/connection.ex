@@ -150,19 +150,18 @@ defmodule Amarula.Connection do
   the noise cipher, IQ correlation, login, sends, and consumer-event delivery.
 
   `opts`:
-    * `:name`       — registered name (default `__MODULE__`)
+    * `:name`       — registered name (a `:via` tuple into the instance's Registry,
+      passed by `ConnectionSupervisor`). Omit to start an unnamed process.
     * `:parent_pid` — process to receive `{:amarula, type, data}` events
   """
   def start_link(conn, opts \\ []) do
-    name = Keyword.get(opts, :name, __MODULE__)
-
     init_arg = %{
       conn: conn,
       parent_pid: Keyword.get(opts, :parent_pid),
       instance_id: Keyword.get(opts, :instance_id)
     }
 
-    GenServer.start_link(__MODULE__, init_arg, name: name)
+    GenServer.start_link(__MODULE__, init_arg, name: Keyword.get(opts, :name))
   end
 
   # Supervisor-friendly form: child spec {Connection, {conn, opts}}.
@@ -231,14 +230,14 @@ defmodule Amarula.Connection do
   @doc """
   Connects to the WebSocket server.
   """
-  def connect(pid \\ __MODULE__) do
+  def connect(pid) do
     GenServer.call(pid, :connect)
   end
 
   @doc """
   Disconnects from the WebSocket server.
   """
-  def disconnect(pid \\ __MODULE__) do
+  def disconnect(pid) do
     GenServer.call(pid, :disconnect)
   end
 
@@ -259,7 +258,7 @@ defmodule Amarula.Connection do
   @doc """
   Gets the current connection state.
   """
-  def get_connection_state(pid \\ __MODULE__) do
+  def get_connection_state(pid) do
     GenServer.call(pid, :get_connection_state)
   end
 
@@ -273,7 +272,7 @@ defmodule Amarula.Connection do
   internally; consumers no longer need to reach into `Protocol.Signal.*`.
   """
   @spec canonical_jid(GenServer.server(), String.t()) :: String.t()
-  def canonical_jid(pid \\ __MODULE__, jid) when is_binary(jid) do
+  def canonical_jid(pid, jid) when is_binary(jid) do
     GenServer.call(pid, {:canonical_jid, jid})
   end
 
@@ -294,7 +293,7 @@ defmodule Amarula.Connection do
   other — dedupe those cross-connection by the `msg_id` from the send.
   """
   @spec own_chat?(GenServer.server(), Amarula.Msg.t()) :: boolean()
-  def own_chat?(pid \\ __MODULE__, %Amarula.Msg{} = msg) do
+  def own_chat?(pid, %Amarula.Msg{} = msg) do
     GenServer.call(pid, {:own_chat?, msg})
   end
 
@@ -305,7 +304,7 @@ defmodule Amarula.Connection do
   by. Internal: consumers use the higher-level facade calls.
   """
   @spec get_conn(GenServer.server()) :: Amarula.Conn.t()
-  def get_conn(pid \\ __MODULE__), do: GenServer.call(pid, :conn)
+  def get_conn(pid), do: GenServer.call(pid, :conn)
 
   @doc """
   Send an IQ and block until the matching websocket reply arrives.
@@ -347,12 +346,12 @@ defmodule Amarula.Connection do
 
   @doc "Send global presence (`:available`/`:unavailable`). Needs `me.name`."
   @spec set_presence(GenServer.server(), :available | :unavailable) :: :ok | {:error, term()}
-  def set_presence(pid \\ __MODULE__, type), do: GenServer.call(pid, {:set_presence, type})
+  def set_presence(pid, type), do: GenServer.call(pid, {:set_presence, type})
 
   @doc "Send a chat-state to `jid` (`:composing`/`:recording`/`:paused`)."
   @spec send_chatstate(GenServer.server(), Amarula.jid(), :composing | :recording | :paused) ::
           :ok
-  def send_chatstate(pid \\ __MODULE__, jid, type),
+  def send_chatstate(pid, jid, type),
     do: GenServer.call(pid, {:send_chatstate, jid, type})
 
   @doc """
@@ -370,30 +369,30 @@ defmodule Amarula.Connection do
   """
   @spec request_pairing_code(GenServer.server(), String.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
-  def request_pairing_code(pid \\ __MODULE__, phone, opts \\ []) do
+  def request_pairing_code(pid, phone, opts \\ []) do
     digits = String.replace(phone, ~r/\D/, "")
     GenServer.call(pid, {:request_pairing_code, digits, Keyword.get(opts, :custom_code)})
   end
 
   @doc "Subscribe to a contact's presence."
   @spec presence_subscribe(GenServer.server(), Amarula.jid()) :: :ok
-  def presence_subscribe(pid \\ __MODULE__, jid),
+  def presence_subscribe(pid, jid),
     do: GenServer.call(pid, {:presence_subscribe, jid})
 
   @doc "Send a read receipt for `message_ids` in chat `jid` (optional `participant`)."
   @spec mark_read(GenServer.server(), Amarula.jid(), [String.t(), ...], Amarula.jid() | nil) ::
           :ok
-  def mark_read(pid \\ __MODULE__, jid, message_ids, participant \\ nil),
+  def mark_read(pid, jid, message_ids, participant \\ nil),
     do: GenServer.call(pid, {:mark_read, jid, message_ids, participant})
 
   @doc "Fetch one group's metadata. `group` is an `Address` or the `@g.us` jid string."
   @spec group_metadata(GenServer.server(), Amarula.jid()) ::
           {:ok, Amarula.Group.t()} | {:error, term()}
-  def group_metadata(pid \\ __MODULE__, group), do: GenServer.call(pid, {:group_metadata, group})
+  def group_metadata(pid, group), do: GenServer.call(pid, {:group_metadata, group})
 
   @doc "Fetch all groups we participate in."
   @spec list_groups(GenServer.server()) :: {:ok, [Amarula.Group.t()]} | {:error, term()}
-  def list_groups(pid \\ __MODULE__), do: GenServer.call(pid, :list_groups, 30_000)
+  def list_groups(pid), do: GenServer.call(pid, :list_groups, 30_000)
 
   @doc """
   Run a group management op: send the IQ `Groups.Ops.<builder>` produced and run
@@ -401,12 +400,12 @@ defmodule Amarula.Connection do
   result end`. Used by the `Amarula` group_* API.
   """
   @spec group_op(GenServer.server(), Node.t(), (term() -> term())) :: term()
-  def group_op(pid \\ __MODULE__, %Node{} = iq, transform),
+  def group_op(pid, %Node{} = iq, transform),
     do: GenServer.call(pid, {:group_op, iq, transform}, 30_000)
 
   @doc "Unlink this companion server-side, wipe ALL local storage, then disconnect. Destructive."
   @spec wipe_credentials(GenServer.server()) :: :ok | {:error, term()}
-  def wipe_credentials(pid \\ __MODULE__), do: GenServer.call(pid, :wipe_credentials)
+  def wipe_credentials(pid), do: GenServer.call(pid, :wipe_credentials)
 
   @doc """
   Remember a just-sent message (id → content + recipient) so it can be
@@ -422,7 +421,7 @@ defmodule Amarula.Connection do
   Send a 1:1/group text message to `jid`. Encrypts and relays (fetching the
   recipient's prekey bundle first if we have no session). Returns `{:ok, msg_id}`.
   """
-  def send_text(pid \\ __MODULE__, jid, text, opts \\ []) do
+  def send_text(pid, jid, text, opts \\ []) do
     GenServer.call(pid, {:send_text, jid, text, opts}, @send_call_timeout)
   end
 
@@ -430,17 +429,17 @@ defmodule Amarula.Connection do
   Send a pre-built `%Proto.Message{}` to `jid` (1:1 or group). Used for
   reactions, edits, deletes and media. Returns `{:ok, msg_id}`.
   """
-  def send_message(pid \\ __MODULE__, jid, %Proto.Message{} = message) do
+  def send_message(pid, jid, %Proto.Message{} = message) do
     GenServer.call(pid, {:send_message, jid, message}, @send_call_timeout)
   end
 
   @doc "Ask the phone to re-deliver a message by key (PEER_DATA_OPERATION resend)."
-  def request_resend(pid \\ __MODULE__, %Proto.MessageKey{} = message_key) do
+  def request_resend(pid, %Proto.MessageKey{} = message_key) do
     GenServer.call(pid, {:request_resend, message_key}, @send_call_timeout)
   end
 
   @doc "Ask the phone for older history of a chat (PEER_DATA_OPERATION on-demand)."
-  def fetch_history(pid \\ __MODULE__, %Proto.MessageKey{} = oldest_key, oldest_ts, count) do
+  def fetch_history(pid, %Proto.MessageKey{} = oldest_key, oldest_ts, count) do
     GenServer.call(pid, {:fetch_history, oldest_key, oldest_ts, count}, @send_call_timeout)
   end
 
@@ -448,22 +447,22 @@ defmodule Amarula.Connection do
   Send a poll to `jid`. Returns `{:ok, msg_id, message_secret}` — keep the secret
   to tally incoming votes. `opts`: `:selectable`, `:announcement`, `:message_secret`.
   """
-  def send_poll(pid \\ __MODULE__, jid, name, options, opts \\ []) do
+  def send_poll(pid, jid, name, options, opts \\ []) do
     GenServer.call(pid, {:send_poll, jid, name, options, opts}, @send_call_timeout)
   end
 
   @doc "Send a contact (`display_name` + vCard string) to `jid`."
-  def send_contact(pid \\ __MODULE__, jid, display_name, vcard) do
+  def send_contact(pid, jid, display_name, vcard) do
     send_message(pid, jid, MessageEncoder.contact(display_name, vcard))
   end
 
   @doc "Send multiple contacts: `pairs` is `[{display_name, vcard}, ...]`."
-  def send_contacts(pid \\ __MODULE__, jid, display_name, pairs) do
+  def send_contacts(pid, jid, display_name, pairs) do
     send_message(pid, jid, MessageEncoder.contacts(display_name, pairs))
   end
 
   @doc "Send a location to `jid`. `opts`: `:name`, `:address`, `:url`, `:is_live`."
-  def send_location(pid \\ __MODULE__, jid, lat, lng, opts \\ []) do
+  def send_location(pid, jid, lat, lng, opts \\ []) do
     send_message(pid, jid, MessageEncoder.location(lat, lng, opts))
   end
 
@@ -471,17 +470,17 @@ defmodule Amarula.Connection do
   React to a message with `emoji` (pass "" to remove the reaction). `target_key`
   is the `%Proto.MessageKey{}` of the message being reacted to.
   """
-  def send_reaction(pid \\ __MODULE__, %Proto.MessageKey{remoteJid: jid} = target_key, emoji) do
+  def send_reaction(pid, %Proto.MessageKey{remoteJid: jid} = target_key, emoji) do
     send_message(pid, jid, MessageEncoder.reaction(target_key, emoji))
   end
 
   @doc "Delete a message for everyone (revoke). `target_key` is its `%Proto.MessageKey{}`."
-  def send_revoke(pid \\ __MODULE__, %Proto.MessageKey{remoteJid: jid} = target_key) do
+  def send_revoke(pid, %Proto.MessageKey{remoteJid: jid} = target_key) do
     send_message(pid, jid, MessageEncoder.revoke(target_key))
   end
 
   @doc "Edit a previously-sent message, replacing its text with `new_text`."
-  def send_edit(pid \\ __MODULE__, %Proto.MessageKey{remoteJid: jid} = target_key, new_text) do
+  def send_edit(pid, %Proto.MessageKey{remoteJid: jid} = target_key, new_text) do
     send_message(pid, jid, MessageEncoder.edit(target_key, new_text))
   end
 
@@ -490,13 +489,13 @@ defmodule Amarula.Connection do
   `:document`/`:sticker`; `data` is the raw bytes. `opts` may carry `:mimetype`
   plus per-type extras. Encrypts + uploads + sends. `{:ok, msg_id}` or `{:error, _}`.
   """
-  def send_media(pid \\ __MODULE__, jid, type, data, opts \\ [])
+  def send_media(pid, jid, type, data, opts \\ [])
       when type in [:image, :video, :audio, :document, :sticker] and is_binary(data) do
     GenServer.call(pid, {:send_media, jid, type, data, opts}, @send_call_timeout)
   end
 
   @doc "Convenience: `send_media(pid, jid, :image, ...)`."
-  def send_image(pid \\ __MODULE__, jid, data, opts \\ []) when is_binary(data) do
+  def send_image(pid, jid, data, opts \\ []) when is_binary(data) do
     send_media(pid, jid, :image, data, opts)
   end
 
@@ -559,6 +558,13 @@ defmodule Amarula.Connection do
       qr_refs: [],
       qr_timer: nil
     }
+
+    # Own the retry cache's local resource (the ETS table, for the default
+    # adapter) here, so it is owned by *this* process: it dies with the Connection
+    # and is recreated empty on restart — a poisoned cached value can never
+    # outlive the crash it triggers. A no-op for adapters with no process-owned
+    # resource (DETS, Redis).
+    :ok = Amarula.RetryCache.ensure_local(conn.retry_cache, conn.profile)
 
     # Register under the profile in the app-level registry (the one-per-profile
     # guard + the consumer's restart-safe handle). On a restart this re-registers
@@ -915,7 +921,6 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_info({:ws_event, _ws_pid, {:frame, <<138, _::binary>>}}, state) do
     Logger.debug("Received WebSocket pong frame")
-    # Update last received time
     {:noreply, %{state | last_recv_time: System.monotonic_time(:millisecond)}}
   end
 
@@ -1041,15 +1046,12 @@ defmodule Amarula.Connection do
     {:noreply, handle_iq_timeout(state, id)}
   end
 
-  # --- Ack-on-send (Design 2): the per-recipient Sender reports its pipe result
-  # back here; the consumer's `from` was parked under msg_id at dispatch.
-
-  # The frame went out — keep the parked entry and let the ack-timeout run. The
-  # consumer is replied later, when the server's <ack> arrives (or on timeout).
-  @impl GenServer
-  def handle_info({:send_relayed, _msg_id}, state) do
-    {:noreply, state}
-  end
+  # --- Ack-on-send: the per-recipient Sender reports its pipe result back here;
+  # the consumer's `from` was parked under msg_id at dispatch.
+  #
+  # On SUCCESS the Sender reports nothing: the parked entry + ack-timeout armed at
+  # dispatch already handle it — the consumer is replied when the server's <ack>
+  # arrives (or on the ack-timeout). Only failure needs a message:
 
   # The pipe failed before any frame went out (not_on_whatsapp, IQ timeout,
   # encrypt error, plugin halt). No ack will ever come, so reply the parked caller
@@ -1283,12 +1285,12 @@ defmodule Amarula.Connection do
 
   # Dispatch a message to the per-recipient ConversationSender and DON'T block.
   # Connection mints the msg_id and PARKS the caller's `from` under it in
-  # `pending_acks`, then returns `{:noreply, state}` and is immediately free for
-  # other sends. The reply to the caller is deferred to ack time (Design 2): the
-  # Sender reports its pipe result back to Connection (`{:send_relayed, …}` /
-  # `{:send_failed, …}`), and the consumer's `from` is answered only when the
-  # server's <ack class="message" id=msg_id> arrives (a plain ack → `shape.(:ok)`)
-  # — or sooner on a pipe failure, or never-confirmed → `:ack_timeout`.
+  # `pending_acks` (arming an ack-timeout), then returns `{:noreply, state}` and is
+  # immediately free for other sends. The reply to the caller is deferred to ack
+  # time: on success the Sender reports nothing — the consumer's `from` is answered
+  # when the server's <ack class="message" id=msg_id> arrives (a plain ack →
+  # `shape.(:ok)`), or on the ack-timeout (`:ack_timeout`). On a pipe failure the
+  # Sender reports `{:send_failed, …}`, which replies the caller the error at once.
   #
   # `from` nil = fire-and-forget (a retry resend, no caller waiting) → nothing is
   # parked. `shape` maps a successful ack to the caller's reply (default:
@@ -1335,6 +1337,7 @@ defmodule Amarula.Connection do
     opts = [
       registry: ConnectionSupervisor.registry_name(instance_id),
       supervisor: ConnectionSupervisor.whereis(instance_id, :sender_supervisor),
+      instance_id: instance_id,
       cm: self(),
       conn: state.conn,
       creds: state.auth_creds,
@@ -2261,13 +2264,11 @@ defmodule Amarula.Connection do
       Logger.info("Pairing device (platform=#{platform})")
       Logger.debug("Pairing jid=#{jid} lid=#{lid}")
 
-      # Create signal identity
       signal_identity = DeviceIdentity.signal_identity(lid, verified_account.accountSignatureKey)
 
-      # Encode signed device identity (without account signature key)
+      # Encode without the account signature key
       account_enc = DeviceIdentity.encode(verified_account, false)
 
-      # Build and send reply
       reply_node = Pairing.pair_device_sign_reply(msg_id, device_identity.keyIndex, account_enc)
 
       Logger.debug(
@@ -2276,7 +2277,6 @@ defmodule Amarula.Connection do
 
       state = send_binary_node(state, reply_node)
 
-      # Update credentials
       updated_creds =
         Pairing.update_credentials_after_pairing(
           state.auth_creds,
@@ -2365,7 +2365,6 @@ defmodule Amarula.Connection do
   end
 
   defp handle_ping_response(state, _node) do
-    # Update last received time
     %{state | last_recv_time: System.monotonic_time(:millisecond)}
   end
 
@@ -2504,7 +2503,6 @@ defmodule Amarula.Connection do
   defp child(tag, content), do: %Node{tag: tag, attrs: [], content: content}
 
   defp start_server_response_timeout(state) do
-    # Set a 15-second timeout for server response
     timer = Process.send_after(self(), :server_response_timeout, 15_000)
     %{state | server_response_timeout_timer: timer}
   end

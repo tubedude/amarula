@@ -284,7 +284,6 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
         length_bytes <> processed_data
       end
 
-    # Update state
     new_state = %{state | sent_intro: true}
 
     {frame, new_state}

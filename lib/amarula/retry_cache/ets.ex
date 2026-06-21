@@ -2,14 +2,24 @@ defmodule Amarula.RetryCache.ETS do
   @moduledoc """
   In-memory `Amarula.RetryCache` adapter — the default.
 
-  One public, named ETS table per connection profile, holding
+  One `:public`, named ETS table per connection profile, holding
   `{msg_id, entry}`. Bounded to `@max_entries`; on overflow the oldest entries
-  (by `entry.ts`) are evicted. State is lost on VM restart, which is acceptable:
+  (by `entry.ts`) are evicted. State is lost on restart, which is acceptable:
   a retry receipt arrives within seconds of the original send.
 
-  The table is created lazily on first use and named by profile, so any process
-  on the node can reach it. (A retry cache is shared, low-contention state; ETS's
-  concurrent read/write suffices.)
+  ## Ownership
+
+  The table is created by `ensure_local/2`, called from `Connection.init`, so it
+  is **owned by the Connection process** and named by profile. Because the table
+  dies with its owner, a Connection crash/restart recreates it **empty** — so a
+  poisoned entry can never outlive the restart it triggers (no crash-loop on a
+  bad cached value).
+
+  It must be `:public`, not `:protected`: it is written from **two** processes —
+  `Connection` itself (on a retry receipt) and each per-recipient
+  `ConversationSender` (the `Amarula.RetryCache.Step` in the send pipe records the
+  sent message there) — while ownership (and thus the restart-clearing lifetime
+  above) stays with Connection.
 
   ## Options
 
@@ -25,7 +35,7 @@ defmodule Amarula.RetryCache.ETS do
 
   @impl true
   def put(%{max_entries: max}, profile, msg_id, entry) do
-    table = ensure_table(profile)
+    table = table(profile)
     :ets.insert(table, {msg_id, entry})
     evict(table, max)
     :ok
@@ -50,18 +60,21 @@ defmodule Amarula.RetryCache.ETS do
   end
 
   @doc """
-  Create the profile's table. Called once by the supervised `TableOwner` at
-  connection start (before any reader), so we never create lazily on first use —
-  no create race, no rescue. Idempotent.
+  Create the profile's table, owned by the calling process (`Connection`). Called
+  from `Connection.init` before any reader, so we never create lazily on first
+  use — no create race, no rescue. Idempotent.
   """
-  @spec ensure_table(atom() | String.t()) :: atom()
-  def ensure_table(profile) do
+  @impl true
+  @spec ensure_local(map(), atom() | String.t()) :: :ok
+  def ensure_local(_state, profile) do
     name = table(profile)
 
     case :ets.whereis(name) do
       :undefined -> :ets.new(name, [:set, :public, :named_table, read_concurrency: true])
       _ -> name
     end
+
+    :ok
   end
 
   # --- internals ---

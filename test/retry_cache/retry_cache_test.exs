@@ -18,6 +18,9 @@ defmodule Amarula.RetryCacheTest do
         # Unique profile per test so the ETS named table / DETS file don't collide.
         profile = :"p_#{System.unique_integer([:positive])}"
         scope = RetryCache.scope(%{retry_cache: {unquote(adapter), opts(unquote(adapter), dir)}})
+        # Mirror Connection.init: create the adapter's process-owned resource (the
+        # ETS table) owned by the test process before any put/get. No-op for DETS.
+        :ok = RetryCache.ensure_local(scope, profile)
         {:ok, scope: scope, profile: profile}
       end
 

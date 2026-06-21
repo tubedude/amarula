@@ -7,6 +7,11 @@ phone-number link code), then send and receive messages from Elixir.
 These rules describe how to **use** the `Amarula.*` public API correctly. They are for
 agents writing consumer code against the library, not for working on the library itself.
 
+These rules track Amarula **0.2.3**. They are a curated subset, not the full API — do
+not assume an undocumented function exists. When a signature, return shape, or option is
+unclear, **read the `@doc`/`@spec` on the relevant `Amarula.*` module (hexdocs) before
+calling it** rather than guessing.
+
 ## Core mental model
 
 - **There is no global connection.** Every call takes a `conn` handle (first argument).
@@ -93,9 +98,9 @@ recipients complete independently.
 ```elixir
 Amarula.send_text(conn, jid, "hello")
 Amarula.send_media(conn, jid, :image, File.read!("pic.jpg"), caption: "hi")   # raw bytes, not a path/base64; :image|:video|:audio|:document|:sticker
-Amarula.send_reaction(conn, message_key, "👍")   # "" removes the reaction
-Amarula.send_edit(conn, message_key, "fixed typo")
-Amarula.send_revoke(conn, message_key)            # delete for everyone
+Amarula.send_reaction(conn, msg, "👍")   # "" removes the reaction
+Amarula.send_edit(conn, msg, "fixed typo")
+Amarula.send_revoke(conn, msg)           # delete for everyone
 Amarula.send_location(conn, jid, lat, lng, name: "...")
 Amarula.send_contact(conn, jid, display_name, vcard)
 
@@ -103,8 +108,10 @@ Amarula.send_contact(conn, jid, display_name, vcard)
 # Keep `secret` to tally votes (Amarula.Protocol.Messages.Poll).
 ```
 
-A `message_key` (for reactions/edits/deletes) is the **`key` field of a message you
-received** — that is how you point at a specific message.
+Reactions/edits/deletes point at a message via a **`message_ref`** — pass either the
+**`%Amarula.Msg{}` you received** as-is, or a **`{jid, msg_id}` tuple**. (Distinct from
+`message_key`, the `Proto.MessageKey` value that `mark_read/4` and `fetch_history/4`
+take.)
 
 Presence/typing: `set_presence/2` (`:available`/`:unavailable`),
 `send_chatstate/3` (`:composing`/`:recording`/`:paused`), `subscribe_presence/2`,
@@ -125,8 +132,8 @@ end
 
 Event types (see `t:Amarula.event/0` for the full list): `:connection_update`,
 `:messages_upsert`, `:chats_update`, `:contacts_update`, `:group_update`,
-`:receipt_update`, `:presence_update`, `:blocklist_update`, `:pairing_code`,
-`:pairing_success`, `:history_sync`, `:error`.
+`:receipt_update`, `:presence_update`, `:blocklist_update`, `:lid_mapping_update`,
+`:pairing_code`, `:pairing_success`, `:history_sync`, `:error`.
 
 There is **no `:creds_update`** — Amarula persists credentials itself, scoped to the
 profile. Do not write credential-saving code; name a profile and it reloads on connect.

@@ -56,6 +56,18 @@ defmodule Amarula.RetryCache do
   @doc "Number of cached entries for `profile` (for tests/introspection)."
   @callback count(adapter_state(), profile()) :: non_neg_integer()
 
+  @doc """
+  Optional. Create any **process-owned local resource** the adapter needs, owned
+  by the *calling* process — for the ETS adapter, the named table. Called from
+  `Connection.init`, so the table is owned by Connection and dies (and is
+  recreated empty) with it: a poisoned entry can never survive the Connection
+  restart it triggers. Adapters with no process-owned resource (DETS, Redis)
+  don't implement this and it is a no-op.
+  """
+  @callback ensure_local(adapter_state(), profile()) :: :ok
+
+  @optional_callbacks ensure_local: 2
+
   @doc "The adapter used when config gives bare opts / no `:retry_cache`."
   @spec default_adapter() :: module()
   def default_adapter do
@@ -93,4 +105,14 @@ defmodule Amarula.RetryCache do
   @doc "Number of cached entries for `profile`."
   @spec count(Scope.t(), profile()) :: non_neg_integer()
   def count(%Scope{adapter: a, state: s}, profile), do: a.count(s, profile)
+
+  @doc """
+  Create the adapter's process-owned local resource (the ETS table, for the
+  default adapter), owned by the caller — call this from `Connection.init`.
+  A no-op for adapters that don't own such a resource.
+  """
+  @spec ensure_local(Scope.t(), profile()) :: :ok
+  def ensure_local(%Scope{adapter: a, state: s}, profile) do
+    if function_exported?(a, :ensure_local, 2), do: a.ensure_local(s, profile), else: :ok
+  end
 end

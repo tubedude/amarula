@@ -58,6 +58,8 @@ defmodule Amarula.PluginTest do
     test "records the outgoing message in the cache" do
       scope = RetryCache.scope(%{retry_cache: Amarula.RetryCache.ETS})
       profile = :"p_#{System.unique_integer([:positive])}"
+      # Mirror Connection.init: create the ETS table before the step writes to it.
+      :ok = RetryCache.ensure_local(scope, profile)
 
       ctx = %{
         message: %{conversation: "hi"},

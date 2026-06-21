@@ -24,6 +24,7 @@ defmodule Amarula.Config do
   | `:retry_delay` | `1000` | base reconnect backoff (ms) |
   | `:connect_timeout_ms` | `30_000` | WebSocket connect timeout |
   | `:keep_alive_interval_ms` | `30_000` | WA-level keep-alive ping interval |
+  | `:sender_idle_ms` | `1_000` | how long a per-recipient `ConversationSender` stays warm after its last send before stopping. Larger = fewer respawns/session re-reads under bursty traffic (useful with a disk-backed store); smaller = sheds processes faster after a fan-out |
   | `:sync_full_history` | `true` | request full history on link |
   | `:mark_online_on_connect` | `true` | send presence-available on connect. `false` keeps this session **unavailable** — it appears offline to others and the **primary phone keeps receiving push notifications** (live messages are then queued offline rather than pushed to this session). |
   | `:fire_init_queries` | `true` | run the post-login init IQ queries |

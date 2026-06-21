@@ -130,7 +130,7 @@ defmodule Amarula.Protocol.Auth.BaileysCredentialLoader do
       nil ->
         # Generate default signed pre-key if missing
         identity_key = extract_identity_key_pair(creds_map, "signedIdentityKey")
-        # Call the private function from AuthUtils module
+
         signed_pre_key =
           case Code.ensure_loaded(Amarula.Protocol.Auth.AuthUtils) do
             {:module, _} ->

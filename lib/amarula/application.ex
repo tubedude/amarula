@@ -6,6 +6,12 @@ defmodule Amarula.Application do
       registry that enforces one connection per profile (per node) and gives
       consumers a restart-safe handle (refer to a connection by its `:profile`,
       not a raw pid).
+    * `Amarula.InstanceRegistry` — the app-level registry that names every
+      per-connection tree's *infrastructure* by the connection's `instance_id`
+      ref: the tree supervisor, the sibling roles (Connection, sender
+      supervisor), and each recipient's `ConversationSender`. Keying by the ref
+      directly (not a hashed atom) means no atom is minted per connection and two
+      connections can never collide.
     * `Amarula.ConnectionsSupervisor` — a `DynamicSupervisor` that owns every
       per-connection tree. Connection trees are started *here* (not linked to the
       caller of `connect/2`), so a connection crash is observable by the consumer
@@ -26,6 +32,7 @@ defmodule Amarula.Application do
   def start(_type, _args) do
     children = [
       {Registry, keys: :unique, name: Amarula.ProfileRegistry},
+      {Registry, keys: :unique, name: Amarula.InstanceRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: connections_supervisor()}
     ]
 

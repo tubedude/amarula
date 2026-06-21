@@ -92,14 +92,11 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
   """
   @spec generate_registration_node(any(), socket_config()) :: %Proto.ClientPayload{}
   def generate_registration_node(creds, config) do
-    # Create app version hash (MD5 of version string)
     app_version_hash = :crypto.hash(:md5, Enum.join(config.version, "."))
 
-    # Create device properties
     device_props = create_device_props(config)
     device_props_binary = Proto.DeviceProps.encode(device_props)
 
-    # Create registration payload
     # IMPORTANT: Baileys explicitly sets passive=false and pull=false for registration
     # These MUST be included to match the expected payload size and structure
     registration_payload = %Proto.ClientPayload{

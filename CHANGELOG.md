@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-06-21
+
+An internals and robustness pass over the per-connection process tree, prompted
+by an external review. No public API or behaviour changes — the `Amarula` facade
+is untouched; everything here is below it. A new optional `:sender_idle_ms` knob
+is the only consumer-visible addition.
+
+### Changed
+
+- **Per-connection process naming moved to an app-level `Amarula.InstanceRegistry`.**
+  The connection tree no longer owns a per-instance `Registry`, and the tree
+  supervisor, sibling roles, and each `ConversationSender` are now named by the
+  connection's `instance_id` ref in one shared registry. Previously these were
+  named by atoms derived from `:erlang.phash2(ref)` — which both leaked an atom
+  per connection and could collide (two connections hashing to the same atom
+  would fail to start). No atom is minted per connection now, and collisions are
+  impossible.
+- **Per-connection supervisor strategy is now `:rest_for_one` (was `:one_for_one`).**
+  The children share fate — senders block on Connection's replies — so a
+  Connection restart now restarts the senders waiting on it instead of leaving a
+  half-dead tree.
+- **The retry cache's ETS table is owned by the `Connection` process directly.**
+  The dedicated `TableOwner` process is gone; `Connection` creates the table in
+  `init` via the new `RetryCache.ensure_local/2` (adapter-aware — a no-op for
+  non-ETS adapters). Because the table now dies with Connection, a crash/restart
+  recreates it empty, so a poisoned cached entry can no longer outlive — and loop
+  — the restart it triggers.
+- **`ConversationSender` idle linger is now 1s and configurable** via
+  `config[:sender_idle_ms]` (was a hardcoded 5 minutes). A fan-out to many
+  one-shot recipients no longer leaves a long-lived process tail; a disk-backed
+  session store can raise it to keep senders warm under bursty traffic.
+
+### Fixed
+
+- **Removed the dead `\\ __MODULE__` default argument** from `Connection.start_link/2`
+  and ~28 `Connection` client functions. These delegate to a process started under
+  the registry (never under the module name), so the default was never reachable
+  and would have errored if hit. The public `Amarula` facade always passes the pid,
+  so consumers are unaffected.
+- **Dropped the inert `{:send_relayed, …}` message.** On a successful relay the
+  sender now reports nothing back to `Connection`: the consumer's reply is already
+  driven by the server `<ack>` armed at dispatch, so the message was a signal
+  `Connection` only ever ignored. Failures still report `{:send_failed, …}`.
+
 ## [0.2.3] - 2026-06-20
 
 A big batch of new message and group capabilities — replies, mentions, poll

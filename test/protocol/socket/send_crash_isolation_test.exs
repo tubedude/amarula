@@ -25,7 +25,6 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
     test "returns {:error, reason} instead of raising when the supervisor is full" do
       instance_id = make_ref()
       registry = ConnectionSupervisor.registry_name(instance_id)
-      {:ok, _} = Registry.start_link(keys: :unique, name: registry)
 
       # A sender DynamicSupervisor that refuses every child.
       {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one, max_children: 0)
@@ -33,6 +32,7 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
       opts = [
         registry: registry,
         supervisor: sup,
+        instance_id: instance_id,
         recipient_jid: "10000000001@s.whatsapp.net",
         cm: self(),
         conn: %{},

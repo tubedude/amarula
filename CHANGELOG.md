@@ -9,9 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.5] - 2026-06-22
 
-Documentation, validation, and retry-cache flexibility — plus an explicit
-boundary around the crypto layer. One behaviour change to note (option
-validation); otherwise additive.
+Documentation, validation, and retry-cache flexibility, a couple of process-level
+performance fixes, and an explicit boundary around the crypto layer. Two things to
+note when upgrading: option keys are now validated (unknown ones raise), and
+`fetch_history/4` no longer accepts a raw protobuf key.
+
+### Breaking
+
+- **`fetch_history/4` takes a `message_ref`, not a raw `%Proto.MessageKey{}`.**
+  Front-facing functions should never make you construct an internal protobuf. It
+  now takes the `%Amarula.Msg{}` you received or a `{jid, msg_id}` tuple (consistent
+  with `send_reaction`/`send_edit`/`pin_message`/…). If you were passing a
+  `%Proto.MessageKey{}`, switch to `{jid, msg_id}` or the received `%Amarula.Msg{}`.
+  (The public `message_key` type, which aliased `Proto.MessageKey`, is removed — no
+  protobuf type remains in any public spec.)
 
 ### Changed
 
@@ -42,6 +53,10 @@ validation); otherwise additive.
   question entirely.
 - **`:max_entries` is documented** in the `Amarula.Config` option table and the
   `Amarula.RetryCache` docs (it already existed; it was just undiscoverable).
+- **`:quoted` accepts a `{msg_id, participant}` tuple** (in addition to an
+  `%Amarula.Msg{}`) — a lightweight quote that threads by id when you have the id
+  but not the original message. It renders when the recipient still has the quoted
+  message; otherwise the reply may show without a quote preview.
 
 ### Fixed
 
@@ -52,6 +67,17 @@ validation); otherwise additive.
   protocol state machine — it self-restarts for the post-pairing 515 handshake — so
   the library owns its lifecycle; consumers control naming/distribution via the
   `:registry` config.)
+- **Replies no longer grow with the quote chain.** A reply inlined the full quoted
+  message verbatim, including *its* nested `contextInfo` — so quoting a reply
+  re-embedded the whole quote ancestry each hop (the proto grew quadratically in
+  chain depth). The quoted message is now stripped of its nested `contextInfo`
+  before inlining, keeping a quote to one level (matching the Baileys reference).
+- **Stopped copying the one-time-prekey map into every send.** The credentials
+  handed to each per-recipient sender carried `:pre_keys` (up to ~812 entries,
+  ~100 KB+ on a fresh account) — which the send/encrypt path never reads (it's only
+  used on the receive/decrypt path, in `Connection`). It was being deep-copied into
+  every sender, multiplied per recipient in a group fan-out. It's now dropped before
+  the copy.
 
 ### Documentation
 

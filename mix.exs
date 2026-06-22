@@ -88,6 +88,9 @@ defmodule Amarula.MixProject do
       # Telemetry events (operators attach handlers / a metrics reporter)
       {:telemetry, "~> 1.0"},
 
+      # Option schemas: validate + auto-document the `opts` on facade send_* fns
+      {:nimble_options, "~> 1.0"},
+
       # WebSocket client
       {:websockex, "~> 0.5.1"},
 

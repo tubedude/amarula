@@ -122,6 +122,21 @@ defmodule Amarula do
   # case. Mirrors Connection's own bound — the facade calls the process directly.
   @send_call_timeout 90_000
 
+  # Reusable option fragments shared across the send_* schemas (NimbleOptions
+  # keyword schemas compose by list concatenation).
+  @quoted_opt [
+    quoted: [
+      type: {:struct, Amarula.Msg},
+      doc: "reply to an `%Amarula.Msg{}` (threads the quote)."
+    ]
+  ]
+  @mentions_opt [
+    mentions: [
+      type: {:list, {:or, [:string, {:struct, Amarula.Address}]}},
+      doc: "jids / `%Amarula.Address{}` to tag (`@mention`)."
+    ]
+  ]
+
   @typedoc """
   A connection handle: the pid from `connect/2`, a registered name, or the `:via`
   tuple from `via/1` (resolve a profile to a restart-safe handle with `whereis/1`).
@@ -464,15 +479,20 @@ defmodule Amarula do
   @spec own_chat?(conn(), Amarula.Msg.t()) :: boolean()
   def own_chat?(conn, msg), do: GenServer.call(conn, {:own_chat?, msg})
 
-  @doc """
-  Send a 1:1/group text message to `jid`. `opts`:
+  @send_text_opts NimbleOptions.new!(@quoted_opt ++ @mentions_opt)
 
-    * `:quoted` — reply to an `%Amarula.Msg{}` (threads the quote).
-    * `:mentions` — list of jids/`%Amarula.Address{}` to tag (`@mention`).
+  @doc """
+  Send a 1:1/group text message to `jid`.
+
+  ## Options
+
+  #{NimbleOptions.docs(@send_text_opts)}
   """
   @spec send_text(conn(), jid(), String.t(), keyword()) :: send_result()
-  def send_text(conn, jid, text, opts \\ []),
-    do: GenServer.call(conn, {:send_text, jid, text, opts}, @send_call_timeout)
+  def send_text(conn, jid, text, opts \\ []) do
+    opts = NimbleOptions.validate!(opts, @send_text_opts)
+    GenServer.call(conn, {:send_text, jid, text, opts}, @send_call_timeout)
+  end
 
   @doc "Set your global presence: `:available` (online) or `:unavailable`. Needs a profile name."
   @spec set_presence(conn(), :available | :unavailable) :: :ok | {:error, term()}
@@ -486,6 +506,10 @@ defmodule Amarula do
   @spec subscribe_presence(conn(), jid()) :: :ok
   def subscribe_presence(conn, jid), do: GenServer.call(conn, {:presence_subscribe, jid})
 
+  @request_pairing_code_opts [
+    custom_code: [type: :string, doc: "a fixed 8-char code to use instead of a random one."]
+  ]
+
   @doc """
   Request a link-code (phone-number) pairing code for `phone` (E.164 digits;
   any `+`, spaces, or dashes are stripped).
@@ -497,11 +521,14 @@ defmodule Amarula do
   (watch for `:pairing_success` then `connection: :open`). The same code is also
   delivered as a `:pairing_code` event.
 
-  `opts`: `:custom_code` — a fixed 8-char code to use instead of a random one.
+  ## Options
+
+  #{NimbleOptions.docs(NimbleOptions.new!(@request_pairing_code_opts))}
   """
   @spec request_pairing_code(conn(), String.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def request_pairing_code(conn, phone, opts \\ []) do
+    opts = NimbleOptions.validate!(opts, @request_pairing_code_opts)
     digits = String.replace(phone, ~r/\D/, "")
     GenServer.call(conn, {:request_pairing_code, digits, Keyword.get(opts, :custom_code)})
   end
@@ -514,15 +541,41 @@ defmodule Amarula do
   def mark_read(conn, jid, message_ids, participant \\ nil),
     do: GenServer.call(conn, {:mark_read, jid, message_ids, participant})
 
+  @send_poll_opts NimbleOptions.new!(
+                    selectable: [
+                      type: :non_neg_integer,
+                      default: 1,
+                      doc: "max options a voter may pick."
+                    ],
+                    announcement: [type: :boolean, doc: "send as an announcement-group poll."],
+                    message_secret: [
+                      type: :string,
+                      doc: "32-byte secret to encrypt votes under (generated if omitted)."
+                    ]
+                  )
+
   @doc """
   Send a poll to `jid`. Returns `{:ok, msg_id, message_secret}` — keep the
   `message_secret` to tally incoming votes (`Amarula.Protocol.Messages.Poll`).
-  `opts`: `:selectable` (max picks, default 1), `:announcement`, `:message_secret`.
+
+  ## Options
+
+  #{NimbleOptions.docs(@send_poll_opts)}
   """
   @spec send_poll(conn(), jid(), String.t(), [String.t(), ...], keyword()) ::
           {:ok, String.t(), binary()} | {:error, term()}
-  def send_poll(conn, jid, name, options, opts \\ []),
-    do: GenServer.call(conn, {:send_poll, jid, name, options, opts}, @send_call_timeout)
+  def send_poll(conn, jid, name, options, opts \\ []) do
+    opts = NimbleOptions.validate!(opts, @send_poll_opts)
+    GenServer.call(conn, {:send_poll, jid, name, options, opts}, @send_call_timeout)
+  end
+
+  @send_poll_vote_opts NimbleOptions.new!(
+                         creator: [
+                           type: {:or, [:string, {:struct, Amarula.Address}]},
+                           doc:
+                             "poll creator's jid / `%Amarula.Address{}` (required for a group poll given as a `{jid, msg_id}` tuple)."
+                         ]
+                       )
 
   @doc """
   Cast a vote on an existing poll. `poll` is a `message_ref` for the poll-creation
@@ -531,11 +584,15 @@ defmodule Amarula do
   `option_names` are the chosen options. The vote is encrypted under the secret.
 
   The poll's creator is taken from the ref (a `%Amarula.Msg{}`'s sender, or the
-  `{jid, _}` chat for a 1:1 poll). For a group poll referenced by tuple, pass the
-  creator explicitly with `:creator` in `opts`.
+  `{jid, _}` chat for a 1:1 poll).
+
+  ## Options
+
+  #{NimbleOptions.docs(@send_poll_vote_opts)}
   """
   @spec send_poll_vote(conn(), message_ref(), binary(), [String.t()], keyword()) :: send_result()
   def send_poll_vote(conn, poll, message_secret, option_names, opts \\ []) do
+    opts = NimbleOptions.validate!(opts, @send_poll_vote_opts)
     {jid, key} = message_key(poll)
     creator = opts[:creator] |> resolve_creator(key)
     voter = Amarula.Address.to_jid!(own_address(conn))
@@ -557,10 +614,25 @@ defmodule Amarula do
   def send_contacts(conn, jid, display_name, pairs),
     do: send_built(conn, jid, MessageEncoder.contacts(display_name, pairs))
 
-  @doc "Send a location to `jid`. `opts`: `:name`, `:address`, `:url`, `:is_live`."
+  @send_location_opts NimbleOptions.new!(
+                        name: [type: :string, doc: "place name shown on the card."],
+                        address: [type: :string, doc: "street address shown under the name."],
+                        url: [type: :string, doc: "link attached to the location."],
+                        is_live: [type: :boolean, doc: "send as a live (updating) location."]
+                      )
+
+  @doc """
+  Send a location to `jid`.
+
+  ## Options
+
+  #{NimbleOptions.docs(@send_location_opts)}
+  """
   @spec send_location(conn(), jid(), float(), float(), keyword()) :: send_result()
-  def send_location(conn, jid, lat, lng, opts \\ []),
-    do: send_built(conn, jid, MessageEncoder.location(lat, lng, opts))
+  def send_location(conn, jid, lat, lng, opts \\ []) do
+    opts = NimbleOptions.validate!(opts, @send_location_opts)
+    send_built(conn, jid, MessageEncoder.location(lat, lng, opts))
+  end
 
   # Contacts, profile and groups live in their own modules:
   #   * `Amarula.Contacts` — on_whatsapp/2, fetch_status/2, resolve_lid/2
@@ -670,13 +742,26 @@ defmodule Amarula do
     send_built(conn, jid, MessageEncoder.pin(key, true))
   end
 
+  @send_group_invite_opts NimbleOptions.new!(
+                            group_name: [type: :string, doc: "group name shown on the card."],
+                            caption: [type: :string, doc: "text shown with the invite."],
+                            expiration: [
+                              type: :non_neg_integer,
+                              doc: "invite expiry (unix ms)."
+                            ]
+                          )
+
   @doc """
   Send a group-invite message to `jid` — a tap-to-join card for `group_jid` using
-  `code` (from `Amarula.Group.invite_code/2`). `opts`: `:group_name`, `:caption`,
-  `:expiration` (unix ms).
+  `code` (from `Amarula.Group.invite_code/2`).
+
+  ## Options
+
+  #{NimbleOptions.docs(@send_group_invite_opts)}
   """
   @spec send_group_invite(conn(), jid(), String.t(), String.t(), keyword()) :: send_result()
   def send_group_invite(conn, jid, group_jid, code, opts \\ []) do
+    opts = NimbleOptions.validate!(opts, @send_group_invite_opts)
     group_jid = Amarula.Address.to_jid!(group_jid)
 
     send_built(
@@ -723,17 +808,36 @@ defmodule Amarula do
     end)
   end
 
+  @send_event_opts NimbleOptions.new!(
+                     description: [type: :string, doc: "event description."],
+                     location: [
+                       type: :any,
+                       doc: "`{lat, lng}` or `[lat:, lng:, name:, address:]`."
+                     ],
+                     join_link: [type: :string, doc: "a call/meeting link to join."],
+                     start_time: [type: :integer, doc: "event start (unix seconds)."],
+                     end_time: [type: :integer, doc: "event end (unix seconds)."],
+                     extra_guests_allowed: [
+                       type: :boolean,
+                       doc: "whether guests may invite others."
+                     ]
+                   )
+
   @doc """
-  Send an event to `jid` (a group or 1:1). `name` is the title. `opts`:
-  `:description`, `:location` (`{lat, lng}` or `[lat:, lng:, name:, address:]`),
-  `:join_link`, `:start_time` / `:end_time` (unix seconds), `:extra_guests_allowed`.
+  Send an event to `jid` (a group or 1:1). `name` is the title.
+
+  ## Options
+
+  #{NimbleOptions.docs(@send_event_opts)}
 
   > Responding to an event (RSVP) is not yet supported — the response is an
   > encrypted `EncEventResponseMessage`, a separate crypto seam (like poll votes).
   """
   @spec send_event(conn(), jid(), String.t(), keyword()) :: send_result()
-  def send_event(conn, jid, name, opts \\ []),
-    do: send_built(conn, Amarula.Address.to_jid!(jid), MessageEncoder.event(name, opts))
+  def send_event(conn, jid, name, opts \\ []) do
+    opts = NimbleOptions.validate!(opts, @send_event_opts)
+    send_built(conn, Amarula.Address.to_jid!(jid), MessageEncoder.event(name, opts))
+  end
 
   @doc "Unpin a previously pinned message. `ref` is a `%Amarula.Msg{}` or `{jid, msg_id}`."
   @spec unpin_message(conn(), message_ref()) :: send_result()
@@ -759,6 +863,37 @@ defmodule Amarula do
     send_built(conn, jid, MessageEncoder.keep(key, false))
   end
 
+  @send_media_opts NimbleOptions.new!(
+                     [
+                       mimetype: [
+                         type: :string,
+                         doc: "content type; auto-detected per `type` if omitted."
+                       ],
+                       caption: [type: :string, doc: "text shown under the media."],
+                       width: [type: :non_neg_integer, doc: "image/video width in px."],
+                       height: [type: :non_neg_integer, doc: "image/video height in px."],
+                       seconds: [
+                         type: :non_neg_integer,
+                         doc: "duration; **required for `:audio`** (see the warning above)."
+                       ],
+                       ptt: [type: :boolean, doc: "send `:audio` as a voice note."],
+                       waveform: [
+                         type: :string,
+                         doc: "amplitude preview (raw bytes) for a voice note."
+                       ],
+                       file_name: [type: :string, doc: "document file name."],
+                       title: [type: :string, doc: "document title."],
+                       view_once: [
+                         type: :boolean,
+                         doc: "send as view-once (the recipient can open it once)."
+                       ],
+                       ptv: [
+                         type: :boolean,
+                         doc: "for `:video`, send as a round video note (PTV)."
+                       ]
+                     ] ++ @quoted_opt ++ @mentions_opt
+                   )
+
   @doc """
   Send media of `type` (`:image`/`:video`/`:audio`/`:document`/`:sticker`).
 
@@ -768,26 +903,28 @@ defmodule Amarula do
       bytes = File.read!("photo.jpg")
       Amarula.send_media(conn, jid, :image, bytes, caption: "hi")
 
-  Amarula encrypts and uploads the bytes for you. `opts` may carry `:mimetype`
-  (auto-detected per type if omitted), `:caption`, `:width`, `:height`,
-  `:seconds`, `:ptt` (voice note), `:file_name`, `:title`, plus:
-
-    * `:quoted` / `:mentions` — reply to / tag (see `send_text/4`).
-    * `:view_once` — send as view-once (the recipient can open it once).
-    * `:ptv` — for `:video`, send as a round video note (PTV).
+  Amarula encrypts and uploads the bytes for you.
 
   > #### Audio needs `:seconds` {: .warning}
   >
   > Amarula does no media processing — it won't compute an audio clip's duration
   > for you. **Pass `:seconds` (the clip length) for `:audio`.** Without it, clips
   > longer than ~10s may fail to play on iPhone recipients (WhatsApp rejects the
-  > playback and asks the sender to resend — Baileys #2646). Voice notes (`:ptt`)
-  > can also carry a `:waveform` (bytes) for the amplitude preview.
+  > playback and asks the sender to resend — Baileys #2646).
+
+  ## Options
+
+  #{NimbleOptions.docs(@send_media_opts)}
   """
   @spec send_media(conn(), jid(), media_type(), binary(), keyword()) :: send_result()
   def send_media(conn, jid, type, data, opts \\ [])
-      when type in [:image, :video, :audio, :document, :sticker] and is_binary(data),
-      do: GenServer.call(conn, {:send_media, jid, type, data, opts}, @send_call_timeout)
+      when type in [:image, :video, :audio, :document, :sticker] and is_binary(data) do
+    # `:album_parent` is an internal threading key (set by send_album), not a public
+    # option — split it off so it doesn't trip the strict schema, then re-attach.
+    {internal, public} = Keyword.split(opts, [:album_parent])
+    public = NimbleOptions.validate!(public, @send_media_opts)
+    GenServer.call(conn, {:send_media, jid, type, data, public ++ internal}, @send_call_timeout)
+  end
 
   ## Receiving -----------------------------------------------------------------
   #

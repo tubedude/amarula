@@ -2866,18 +2866,37 @@ defmodule Amarula.Connection do
     # session/sender key) then <ack error="500"> nack.
     cond do
       messages != [] ->
-        # Pure Signal plumbing (a bare senderKeyDistributionMessage) has already had
-        # its side effect applied in MessageDecryptor; it is group-session-key plumbing,
-        # not a user message, so it must NOT surface to the consumer. Build each %Msg{}
-        # (classifying once) and drop the :sender_key ones — but keep them counting as a
-        # successful decrypt, so we still send the delivery receipt (drain the offline
-        # queue) and never nack a node whose only enc was an SKDM.
+        # Classify each decrypted message once, then split the stream so the
+        # consumer's `:messages_upsert` carries only real user messages:
+        #   * :sender_key — a bare senderKeyDistributionMessage (group-session-key
+        #     plumbing whose side effect MessageDecryptor already applied). Dropped
+        #     entirely; not user-visible in any form.
+        #   * :protocol — a bare protocolMessage (the residue of control frames:
+        #     ephemeral/setting changes and other types Amarula doesn't handle
+        #     specially; the important ones — history-sync, app-state key-share — are
+        #     already extracted to their own events/handlers upstream). Re-emitted on
+        #     a separate `:protocol_update` event rather than dropped, so a consumer
+        #     CAN react without it polluting `messages_upsert`.
+        # User-meaningful protocolMessages (edit/revoke/member-tag) classify into
+        # their own types upstream, so they stay in `messages_upsert`. We keep all of
+        # them counting as a successful decrypt (we split `msgs`, not `messages`), so
+        # the delivery receipt fires and we never nack a control-only node.
         to_addr = own_address(state)
 
-        msgs =
+        classified =
           messages
           |> Enum.map(&build_msg(state, &1, node, from, msg_id, to_addr))
           |> Enum.reject(&(&1.type == :sender_key))
+
+        {protocol_msgs, msgs} = Enum.split_with(classified, &(&1.type == :protocol))
+
+        if protocol_msgs != [] do
+          emit_to_subscribers(state, :protocol_update, %{
+            from: Amarula.Address.parse(from),
+            id: msg_id,
+            messages: protocol_msgs
+          })
+        end
 
         if msgs != [] do
           kinds = Enum.map(msgs, & &1.type)

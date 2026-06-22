@@ -48,6 +48,19 @@ defmodule Amarula.TestingTest do
     assert_receive {:amarula, :messages_upsert, %{messages: [%Amarula.Msg{pushname: "Alice"}]}}
   end
 
+  test "a bare protocolMessage goes to :protocol_update, not :messages_upsert", %{conn: conn} do
+    proto = %Proto.Message{
+      protocolMessage: %Proto.Message.ProtocolMessage{type: :PEER_DATA_OPERATION_REQUEST_MESSAGE}
+    }
+
+    Amarula.Testing.deliver(conn, proto, from: @peer)
+
+    # It surfaces on its own event for consumers who want it...
+    assert_receive {:amarula, :protocol_update, %{messages: [%Amarula.Msg{type: :protocol}]}}
+    # ...and never pollutes the real-message stream.
+    refute_received {:amarula, :messages_upsert, _}
+  end
+
   test "no network: outbound frames go to the sink, not a socket", %{conn: conn} do
     # The only outbound frame for an inbound message is the delivery receipt.
     Amarula.Testing.deliver_text(conn, from: @peer, text: "hi")

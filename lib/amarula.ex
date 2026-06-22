@@ -174,7 +174,14 @@ defmodule Amarula do
   Events delivered to `parent_pid` as `{:amarula, type, data}`:
 
     * `:connection_update` — `%{connection: state, qr: qr | nil, ...}` (partial map)
-    * `:messages_upsert`   — `%{from: jid, id: id, messages: [%Amarula.Msg{}]}`
+    * `:messages_upsert`   — `%{from: jid, id: id, messages: [%Amarula.Msg{}]}`.
+      Real user messages only — control frames are split off (see `:protocol_update`).
+    * `:protocol_update`   — `%{from: jid, id: id, messages: [%Amarula.Msg{}]}` whose
+      `type` is `:protocol`: control frames Amarula doesn't surface as messages
+      (ephemeral/setting changes and other unhandled `protocolMessage` types). Most
+      consumers can ignore this; it exists so control frames don't pollute
+      `:messages_upsert`. (The important ones — history-sync, app-state — arrive on
+      their own events.)
     * `:chats_update`      — `[%Amarula.Chat{}]` (from history/app-state sync)
     * `:contacts_update`   — `[%Amarula.Contact{}]`
     * `:group_update`      — `%{group: Address, author: Address | nil, action: ..}`
@@ -205,6 +212,7 @@ defmodule Amarula do
   @type event ::
           :connection_update
           | :messages_upsert
+          | :protocol_update
           | :chats_update
           | :contacts_update
           | :group_update
@@ -943,10 +951,19 @@ defmodule Amarula do
   *metadata* (directPath/mediaKey), not the bytes — call this to fetch them
   lazily, passing a `%Amarula.Msg{type: :media}` (or its `content.media` struct
   + kind). Returns `{:ok, bytes}` or `{:error, reason}` (`:bad_mac` on a failed
-  integrity check).
+  integrity check, `:invalid_media` on a malformed descriptor).
 
       %Amarula.Msg{type: :media} = msg
       {:ok, bytes} = Amarula.download_media(msg)
+
+  > #### No live connection required {: .tip}
+  >
+  > This fetches from WhatsApp's CDN and decrypts with keys carried in the media
+  > struct — it does **not** use the socket or need an open `conn`. So you can hand
+  > a `%Amarula.Msg{}` off to a `Task` (or a job queue) and download it later,
+  > off the connection process. Use `content.media.mimetype` to pick the file
+  > extension / `<img>` vs `<video>` (don't infer it from `kind` — WhatsApp sends
+  > webp stickers, mp4 "gifs", etc.).
   """
   @spec download_media(Amarula.Msg.t()) :: {:ok, binary()} | {:error, term()}
   def download_media(%Amarula.Msg{type: :media, content: %{kind: kind, media: m}}),

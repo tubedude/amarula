@@ -121,6 +121,12 @@ lib/amarula/protocol/
 - `Repository` (sessions/keys), `SessionStore`, `SessionInjector`, `SessionCipher`,
   `PreKeys`, `DeviceListCache`, `LidMappingFileStore` (LID↔PN), `group/`
   (sender-key cipher).
+- **The crypto is a pure, self-contained layer with an explicit boundary** — the
+  Core (Noise + Signal cipher/ratchet) depends on no app/storage/WhatsApp code; a
+  small set of Glue modules (`SessionStore`, `SessionInjector`, `DeviceListCache`,
+  `LidMapping*Store`, `group/SenderKeyStore`) is the only bridge to
+  `Amarula.Conn`/`Amarula.Storage`. The rule: **Core must never depend on the app.**
+  See [`docs/CRYPTO_BOUNDARY.md`](docs/CRYPTO_BOUNDARY.md).
 
 **Storage** (`lib/amarula/storage*`): pluggable `Amarula.Storage` behaviour scoped
 by `{profile, namespace, key}`; `File` + `DETS` adapters. Holds creds, sessions,

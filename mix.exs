@@ -51,6 +51,7 @@ defmodule Amarula.MixProject do
       extras: [
         "README.md",
         "docs/INFRASTRUCTURE.md",
+        "docs/CRYPTO_BOUNDARY.md",
         "docs/GOING_PROD.md",
         "docs/PARITY.md",
         "usage-rules.md",

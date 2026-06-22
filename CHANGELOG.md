@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-06-22
+
+Documentation, validation, and retry-cache flexibility — plus an explicit
+boundary around the crypto layer. One behaviour change to note (option
+validation); otherwise additive.
+
+### Changed
+
+- **`send_*` options are now validated** (`NimbleOptions`). The option keywords on
+  the facade send functions (`send_text`, `send_media`, `send_location`,
+  `send_poll`, `send_poll_vote`, `send_event`, `send_group_invite`,
+  `request_pairing_code`) are now validated against a schema, and each function's
+  `## Options` docs are generated from that same schema (so they can't drift).
+  **Behaviour change:** an unknown or mistyped option key now raises
+  `NimbleOptions.ValidationError` instead of being silently ignored. This catches
+  typos at the call site; if you were passing an undocumented key that happened to
+  be tolerated, remove it. (`nimble_options` is a new direct dependency, but it was
+  already in the tree via `Req`, so it adds no weight.)
+- **Retry-cache built-ins are bounded the way the protocol is.** The ETS and DETS
+  adapters now evict on a **5-minute TTL** (a retry receipt that hasn't arrived by
+  then won't) in addition to a hard `:max_entries` cap, and that cap's default is
+  raised **200 → 512** (matching the Baileys reference). Size `:max_entries` to your
+  peak sends-per-5-minutes.
+
+### Added
+
+- **`Amarula.RetryCache.ReadOnly`** — back the retry cache with **your own message
+  store** instead of a second copy. If your app already persists sent messages,
+  supply `retry_cache: {Amarula.RetryCache.ReadOnly, get: fn profile, msg_id -> …}`;
+  Amarula then only **reads** on a retry and never writes, evicts, or deletes
+  anything in your store (the `put` callback is optional and this adapter doesn't
+  implement it — there is no write path). Removes the `:max_entries`/TTL sizing
+  question entirely.
+- **`:max_entries` is documented** in the `Amarula.Config` option table and the
+  `Amarula.RetryCache` docs (it already existed; it was just undiscoverable).
+
+### Fixed
+
+- **`Amarula.Connection.start_link/2` and `child_spec/1` are marked internal.** They
+  start only the bare Connection process, not its supervision tree, so a consumer
+  who put `{Amarula.Connection, …}` under their own supervisor got a non-functional
+  connection. The supported entry point is `Amarula.connect/2`. (The connection is a
+  protocol state machine — it self-restarts for the post-pairing 515 handshake — so
+  the library owns its lifecycle; consumers control naming/distribution via the
+  `:registry` config.)
+
+### Documentation
+
+- **`docs/CRYPTO_BOUNDARY.md`** — the Noise/Signal crypto is a pure,
+  self-contained layer; this draws the explicit line between the Core (no
+  app/storage/WhatsApp coupling) and the thin Glue that bridges it to
+  `Amarula.Storage`. Verified: no Core module depends on the app. The Core is
+  extraction-ready in principle (a standalone Signal/Noise library), though
+  extraction is not planned.
+- Corrected the `ConversationSender` rationale across the docs: it is a per-recipient
+  **serialization point**, not a holder of crypto state — the Signal session lives in
+  Storage. (A test, `session_race_test`, documents a known concurrency gap between the
+  send and inline-decrypt paths on that shared session; a fix is planned —
+  `docs/plans/SESSION_WORKER.plan.md`.)
+- README: fixed a stale module reference and the QR-render example (now `qr_code`,
+  the actual dependency).
+
 ## [0.2.4] - 2026-06-21
 
 An internals and robustness pass over the per-connection process tree, prompted

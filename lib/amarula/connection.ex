@@ -1354,7 +1354,14 @@ defmodule Amarula.Connection do
       instance_id: instance_id,
       cm: self(),
       conn: state.conn,
-      creds: state.auth_creds,
+      # Drop :pre_keys before handing creds to the sender — it's the one-time-prekey
+      # map (up to ~812 entries on a fresh account, ~100 KB+) read *only* on the
+      # responder/decrypt path (`SessionBuilder.init_incoming`), which runs in
+      # Connection, never in the sender (the sender is always the encrypt/initiator
+      # side). Passing it would deep-copy ~100 KB into every sender, per recipient
+      # on a fan-out. `Map.delete` is cheap (structural sharing); creds still go
+      # per-send so they stay fresh as they mutate after login.
+      creds: Map.delete(state.auth_creds, :pre_keys),
       recipient_jid: jid
     ]
 

@@ -7,19 +7,33 @@ defmodule Amarula.Msg do
 
   `type` + `content` are derived from the message body:
 
+  `content` is always **proto-free** — a clean struct/value, never a raw protobuf.
+  (The raw `%Proto.Message{}` is on `raw`, the escape hatch.) A `key` is a
+  `{jid, msg_id}` reference — the same form the send API takes, so you can pass a
+  received reaction's `key` straight back to `Amarula.send_reaction/3`.
+
   | `type`        | `content`                                              |
   |---------------|--------------------------------------------------------|
   | `:text`       | the text `String.t()`                                  |
-  | `:media`      | `%{kind: :image\|:video\|:audio\|:document\|:sticker, media: struct}` — pass to `Amarula.download_media/2` |
-  | `:reaction`   | `%{key: MessageKey, emoji: String.t()}` (`""` = removed) |
-  | `:edit`       | `%{key: MessageKey, text: String.t()}`                 |
-  | `:revoke`     | `%{key: MessageKey}`                                    |
-  | `:contact`    | the contact message struct                             |
-  | `:location`   | the location message struct                            |
-  | `:poll`       | the poll-creation struct                               |
-  | `:poll_vote`  | the poll-update struct                                 |
-  | `:protocol`   | `%{type: atom, message: struct}` (app-state keys, …)   |
-  | `:other`      | `nil`                                                  |
+  | `:media`      | `%{kind: :image\|:video\|:audio\|:document\|:sticker, media: %Amarula.Media{}}` — pass the `%Msg{}` to `Amarula.download_media/1` |
+  | `:reaction`   | `%{key: {jid, msg_id}, emoji: String.t()}` (`""` = removed) |
+  | `:edit`       | `%{key: {jid, msg_id}, text: String.t()}`              |
+  | `:revoke`     | `%{key: {jid, msg_id}}`                                |
+  | `:pin`        | `%{key: {jid, msg_id}, pinned?: boolean()}`            |
+  | `:keep`       | `%{key: {jid, msg_id}, kept?: boolean()}`              |
+  | `:member_tag` | `%{label: String.t(), timestamp: integer()}`           |
+  | `:contact`    | `%Amarula.Content.Contact{}`                           |
+  | `:contacts`   | `%{display_name, contacts: [%Amarula.Content.Contact{}]}` |
+  | `:location`   | `%Amarula.Content.Location{}`                          |
+  | `:poll`       | `%Amarula.Content.Poll{}`                              |
+  | `:poll_vote`  | `%{poll_key: {jid, msg_id}, enc_vote: %{payload, iv}, timestamp}` (decrypt with `PollCrypto`) |
+  | `:event`      | `%Amarula.Content.Event{}`                             |
+  | `:group_invite` | `%Amarula.Content.GroupInvite{}`                     |
+  | `:product`    | `%Amarula.Content.Product{}` (minimal — detail on `raw`) |
+  | `:order`      | `%Amarula.Content.Order{}` (minimal — detail on `raw`) |
+  | `:button_response` / `:list_response` / `:template_reply` / `:interactive_response` | `%Amarula.Content.Response{}` |
+  | `:protocol`   | `%{type: atom}` (control frame; detail on `raw`) — arrives on `:protocol_update` |
+  | `:other`      | `nil` (read `raw`)                                     |
 
   `raw` is always the underlying `%Proto.Message{}` — the escape hatch for
   anything not surfaced here.
@@ -90,6 +104,7 @@ defmodule Amarula.Msg do
   """
 
   alias Amarula.Address
+  alias Amarula.Content
   alias Amarula.Protocol.Messages.MessageContent
   alias Amarula.Protocol.Proto
 
@@ -219,16 +234,111 @@ defmodule Amarula.Msg do
   defp address(""), do: nil
   defp address(jid) when is_binary(jid), do: Address.parse(jid)
 
-  # Map the internal classify tuple to a {type, friendly-content} pair.
+  # Map the internal classify tuple to a {type, proto-free content} pair. Every
+  # branch here MUST yield content with no `%Proto.*{}` value (the raw proto is on
+  # `msg.raw`); see `Amarula.Content.*` and the guard test.
   defp classify(proto) do
     case MessageContent.classify(proto) do
-      {:text, body} -> {:text, body}
-      {:media, kind, m} -> {:media, %{kind: kind, media: m}}
-      {:reaction, key, emoji} -> {:reaction, %{key: key, emoji: emoji}}
-      {:edit, key, text} -> {:edit, %{key: key, text: text}}
-      {:revoke, key} -> {:revoke, %{key: key}}
-      {:protocol, t, m} -> {:protocol, %{type: t, message: m}}
-      {tag, payload} -> {tag, payload}
+      {:text, body} ->
+        {:text, body}
+
+      {:media, kind, m} ->
+        {:media, %{kind: kind, media: Amarula.Media.from_proto(kind, m)}}
+
+      # key-bearing types: surface the target key as a {jid, msg_id} ref.
+      {:reaction, key, emoji} ->
+        {:reaction, %{key: ref(key), emoji: emoji}}
+
+      {:edit, key, text} ->
+        {:edit, %{key: ref(key), text: text}}
+
+      {:revoke, key} ->
+        {:revoke, %{key: ref(key)}}
+
+      {:pin, %{key: key, pinned?: p}} ->
+        {:pin, %{key: ref(key), pinned?: p}}
+
+      {:keep, %{key: key, kept?: k}} ->
+        {:keep, %{key: ref(key), kept?: k}}
+
+      {:member_tag, m} ->
+        {:member_tag, m}
+
+      # structured types: normalized Content structs.
+      {:contact, m} ->
+        {:contact, Content.Contact.from_proto(m)}
+
+      {:contacts, m} ->
+        {:contacts, contacts(m)}
+
+      {:location, m} ->
+        {:location, Content.Location.from_proto(m)}
+
+      {:poll, m} ->
+        {:poll, Content.Poll.from_proto(m)}
+
+      {:poll_vote, m} ->
+        {:poll_vote, poll_vote(m)}
+
+      {:event, m} ->
+        {:event, Content.Event.from_proto(m)}
+
+      {:group_invite, m} ->
+        {:group_invite, Content.GroupInvite.from_proto(m)}
+
+      # business / interactive: minimal structs; full detail via msg.raw.
+      {:product, m} ->
+        {:product, Content.Product.from_proto(m)}
+
+      {:order, m} ->
+        {:order, Content.Order.from_proto(m)}
+
+      {:button_response, m} ->
+        {:button_response, Content.Response.from_proto(:button, m)}
+
+      {:list_response, m} ->
+        {:list_response, Content.Response.from_proto(:list, m)}
+
+      {:template_reply, m} ->
+        {:template_reply, Content.Response.from_proto(:template, m)}
+
+      {:interactive_response, m} ->
+        {:interactive_response, Content.Response.from_proto(:interactive, m)}
+
+      # control: the type tag only; detail (and the proto) stays on msg.raw.
+      {:protocol, t, _pm} ->
+        {:protocol, %{type: t}}
+
+      # :other (and anything unmapped) carries no content — read msg.raw.
+      {:other, _proto} ->
+        {:other, nil}
+
+      {tag, _payload} ->
+        {tag, nil}
     end
+  end
+
+  # A %Proto.MessageKey{} → a {jid, msg_id} message_ref (the form the send API
+  # takes), or nil. Drops fromMe/participant — available on msg.raw if needed.
+  defp ref(%Proto.MessageKey{remoteJid: jid, id: id}), do: {jid, id}
+  defp ref(_), do: nil
+
+  defp contacts(%{} = m) do
+    %{
+      display_name: Map.get(m, :displayName),
+      contacts: m |> Map.get(:contacts, []) |> Enum.map(&Content.Contact.from_proto/1)
+    }
+  end
+
+  # PollUpdateMessage: the poll being voted on + the encrypted vote payload. Decrypt
+  # with Amarula.Protocol.Messages.PollCrypto + the poll's enc_key.
+  defp poll_vote(%{} = m) do
+    enc = Map.get(m, :vote) || %{}
+
+    %{
+      poll_key: ref(Map.get(m, :pollCreationMessageKey)),
+      enc_vote: %{payload: Map.get(enc, :encPayload), iv: Map.get(enc, :encIv)},
+      timestamp: Map.get(m, :senderTimestampMs)
+    }
   end
 end

@@ -126,8 +126,11 @@ defmodule Amarula do
   # keyword schemas compose by list concatenation).
   @quoted_opt [
     quoted: [
-      type: {:struct, Amarula.Msg},
-      doc: "reply to an `%Amarula.Msg{}` (threads the quote)."
+      type: {:or, [{:struct, Amarula.Msg}, {:tuple, [:string, :any]}]},
+      doc:
+        "reply to a message: an `%Amarula.Msg{}` (full quote), or a " <>
+          "`{msg_id, participant}` tuple (lightweight — threads by id, no inline " <>
+          "preview if the recipient lacks the original)."
     ]
   ]
   @mentions_opt [
@@ -160,9 +163,6 @@ defmodule Amarula do
   which takes the `%Amarula.Msg{}` directly.)
   """
   @type message_ref :: Amarula.Msg.t() | {jid(), String.t()}
-
-  @typedoc "A raw message key — used by the low-level on-demand history request."
-  @type message_key :: Proto.MessageKey.t()
 
   @typedoc "Result of a send: the assigned message id, or an error."
   @type send_result :: {:ok, msg_id :: String.t()} | {:error, term()}
@@ -643,14 +643,21 @@ defmodule Amarula do
 
   @doc """
   Ask the phone for older history of a chat (a PEER_DATA_OPERATION on-demand
-  request). `oldest_key` is the oldest message you already have, `oldest_ts` its
-  millisecond timestamp, and `count` how many older messages to request. The
-  history arrives **asynchronously** later via the normal `:history_sync` event.
-  Returns `{:ok, request_msg_id}` or `{:error, :not_authenticated}`.
+  request). `oldest` identifies the oldest message you already have — pass the
+  `%Amarula.Msg{}` you received (most accurate) or a `{jid, msg_id}` tuple.
+  `oldest_ts` is that message's millisecond timestamp and `count` how many older
+  messages to request. The history arrives
+  **asynchronously** later via the normal `:history_sync` event. Returns
+  `{:ok, request_msg_id}` or `{:error, :not_authenticated}`.
+
+  > A `{jid, msg_id}` tuple can't know `from_me`/`participant`, so prefer the
+  > `%Amarula.Msg{}` for a message you sent or a group message.
   """
-  @spec fetch_history(conn(), message_key(), integer(), non_neg_integer()) :: send_result()
-  def fetch_history(conn, oldest_key, oldest_ts, count),
-    do: GenServer.call(conn, {:fetch_history, oldest_key, oldest_ts, count}, @send_call_timeout)
+  @spec fetch_history(conn(), message_ref(), integer(), non_neg_integer()) :: send_result()
+  def fetch_history(conn, oldest, oldest_ts, count) do
+    {_jid, key} = message_key(oldest)
+    GenServer.call(conn, {:fetch_history, key, oldest_ts, count}, @send_call_timeout)
+  end
 
   @doc """
   Resolve the original message a reply quotes.

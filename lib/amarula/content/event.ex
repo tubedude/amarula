@@ -1,6 +1,6 @@
 defmodule Amarula.Content.Event do
   @moduledoc """
-  A received event (the `content` of a `%Amarula.Msg{type: :event}`).
+  A received event (`content` of a `%Amarula.Msg{type: :event}`).
 
     * `:name` — the event title.
     * `:description` — its description (`nil` if none).
@@ -24,14 +24,16 @@ defmodule Amarula.Content.Event do
           canceled?: boolean()
         }
 
-  defstruct name: nil,
-            description: nil,
-            location: nil,
-            join_link: nil,
-            start_time: nil,
-            end_time: nil,
-            extra_guests_allowed?: false,
-            canceled?: false
+  defstruct [
+    :name,
+    :description,
+    :location,
+    :join_link,
+    :start_time,
+    :end_time,
+    extra_guests_allowed?: false,
+    canceled?: false
+  ]
 
   @doc "Normalize a `%Proto.Message.EventMessage{}` into a `%Amarula.Content.Event{}`."
   @spec from_proto(struct()) :: t()

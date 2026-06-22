@@ -7,18 +7,20 @@ defmodule Amarula.Content.Order do
     * `:title` — the order title.
     * `:item_count` — number of items.
     * `:message` — an accompanying message.
-    * `:seller_jid` — the seller's jid.
+    * `:seller` — the seller as an `%Amarula.Address{}`.
   """
+
+  alias Amarula.Address
 
   @type t :: %__MODULE__{
           order_id: String.t() | nil,
           title: String.t() | nil,
           item_count: integer() | nil,
           message: String.t() | nil,
-          seller_jid: String.t() | nil
+          seller: Address.t() | nil
         }
 
-  defstruct [:order_id, :title, :item_count, :message, :seller_jid]
+  defstruct [:order_id, :title, :item_count, :message, :seller]
 
   @doc "Normalize a `%Proto.Message.OrderMessage{}` into a minimal `%Amarula.Content.Order{}`."
   @spec from_proto(struct()) :: t()
@@ -28,7 +30,7 @@ defmodule Amarula.Content.Order do
       title: Map.get(m, :orderTitle),
       item_count: Map.get(m, :itemCount),
       message: Map.get(m, :message),
-      seller_jid: Map.get(m, :sellerJid)
+      seller: Address.parse(Map.get(m, :sellerJid))
     }
   end
 end

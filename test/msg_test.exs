@@ -16,11 +16,12 @@ defmodule Amarula.MsgTest do
     assert msg.raw.conversation == "hello"
   end
 
-  test "media message exposes kind + a normalized %Amarula.Media{} (not the proto)" do
+  test "media message exposes kind + a normalized %Amarula.Content.Media{} (not the proto)" do
     img = %Proto.Message.ImageMessage{directPath: "/x", mediaKey: <<1>>, mimetype: "image/jpeg"}
     msg = build(%Proto.Message{imageMessage: img})
     assert msg.type == :media
-    assert %{kind: :image, media: %Amarula.Media{} = m} = msg.content
+    # content IS the %Content.Media{} struct directly (it carries :kind).
+    assert %Amarula.Content.Media{kind: :image} = m = msg.content
     assert m.direct_path == "/x"
     assert m.media_key == <<1>>
     assert m.mimetype == "image/jpeg"
@@ -33,7 +34,7 @@ defmodule Amarula.MsgTest do
       build(%Proto.Message{reactionMessage: %Proto.Message.ReactionMessage{key: key, text: "👍"}})
 
     assert msg.type == :reaction
-    assert msg.content == %{key: {"x@s.whatsapp.net", "ABC"}, emoji: "👍"}
+    assert msg.content == %Amarula.Content.Reaction{key: {"x@s.whatsapp.net", "ABC"}, emoji: "👍"}
   end
 
   test "envelope fields are carried (channel/from/to)" do
@@ -108,7 +109,7 @@ defmodule Amarula.MsgTest do
     pm = %Proto.Message.ProtocolMessage{type: :APP_STATE_SYNC_KEY_SHARE}
     msg = build(%Proto.Message{protocolMessage: pm})
     assert msg.type == :protocol
-    assert msg.content == %{type: :APP_STATE_SYNC_KEY_SHARE}
+    assert msg.content == %Amarula.Content.Protocol{type: :APP_STATE_SYNC_KEY_SHARE}
   end
 
   describe "quoted replies + mentions" do

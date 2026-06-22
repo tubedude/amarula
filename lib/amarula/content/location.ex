@@ -1,6 +1,6 @@
 defmodule Amarula.Content.Location do
   @moduledoc """
-  A received location (the `content` of a `%Amarula.Msg{type: :location}`, and the
+  A received location (`content` of a `%Amarula.Msg{type: :location}`, and the
   `:location` of an event).
 
     * `:latitude` / `:longitude` — coordinates (degrees).

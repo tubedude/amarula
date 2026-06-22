@@ -7,17 +7,19 @@ defmodule Amarula.Content.Product do
     * `:product_id` — the catalog product id.
     * `:title` — the product title.
     * `:description` — the product description.
-    * `:business_owner_jid` — the seller's jid.
+    * `:business_owner` — the seller as an `%Amarula.Address{}`.
   """
+
+  alias Amarula.Address
 
   @type t :: %__MODULE__{
           product_id: String.t() | nil,
           title: String.t() | nil,
           description: String.t() | nil,
-          business_owner_jid: String.t() | nil
+          business_owner: Address.t() | nil
         }
 
-  defstruct [:product_id, :title, :description, :business_owner_jid]
+  defstruct [:product_id, :title, :description, :business_owner]
 
   @doc "Normalize a `%Proto.Message.ProductMessage{}` into a minimal `%Amarula.Content.Product{}`."
   @spec from_proto(struct()) :: t()
@@ -28,7 +30,7 @@ defmodule Amarula.Content.Product do
       product_id: Map.get(snapshot, :productId),
       title: Map.get(snapshot, :title),
       description: Map.get(snapshot, :description),
-      business_owner_jid: Map.get(m, :businessOwnerJid)
+      business_owner: Address.parse(Map.get(m, :businessOwnerJid))
     }
   end
 end

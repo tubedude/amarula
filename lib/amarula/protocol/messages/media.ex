@@ -52,7 +52,7 @@ defmodule Amarula.Protocol.Messages.Media do
   """
   @spec download(map(), media_type()) :: {:ok, binary()} | {:error, term()}
   def download(%{} = ref, type) do
-    # The descriptor is a canonical snake_case shape (`%Amarula.Media{}` for inbound
+    # The descriptor is a canonical snake_case shape (`%Amarula.Content.Media{}` for inbound
     # messages; `HistorySync` and tests build the same keys). Surface its required
     # shape in the head: a valid one yields a URL and a media key; an invalid one
     # falls through to `{:error, :invalid_media}` — honouring the {:ok | :error}

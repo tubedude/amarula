@@ -45,13 +45,18 @@ defmodule Amarula.Protocol.Messages.MediaTest do
       assert {:ok, ^data} = Media.download(ref, :image)
     end
 
-    test "accepts a normalized %Amarula.Media{} descriptor (the inbound shape)" do
+    test "accepts a normalized %Amarula.Content.Media{} descriptor (the inbound shape)" do
       data = :crypto.strong_rand_bytes(64)
       {:ok, e} = Media.encrypt(data, :video)
 
       Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, e.enc) end)
 
-      ref = %Amarula.Media{kind: :video, direct_path: "/v/t62/enc", media_key: e.media_key}
+      ref = %Amarula.Content.Media{
+        kind: :video,
+        direct_path: "/v/t62/enc",
+        media_key: e.media_key
+      }
+
       assert {:ok, ^data} = Media.download(ref, :video)
     end
 

@@ -1,50 +1,70 @@
 defmodule Amarula.Msg do
   @moduledoc """
-  A received message, in consumer terms — the friendly view of a decrypted
-  `%Proto.Message{}`. This is what `{:amarula, :messages_upsert, %{messages:
-  [%Msg{}]}}` carries, so a consumer never has to pattern-match the (large) WA
-  protobuf.
+  A received message in consumer terms — the friendly view of a decrypted
+  `%Proto.Message{}`. Delivered in `{:amarula, :messages_upsert, %{messages:
+  [%Msg{}]}}`, so consumers never pattern-match the large WA protobuf.
 
-  `type` + `content` are derived from the message body:
+  `type` + `content` are derived from the message body.
 
-  `content` is always **proto-free** — a clean struct/value, never a raw protobuf.
-  (The raw `%Proto.Message{}` is on `raw`, the escape hatch.) A `key` is a
-  `{jid, msg_id}` reference — the same form the send API takes, so you can pass a
-  received reaction's `key` straight back to `Amarula.send_reaction/3`.
+  **The rule:** `content` is an `Amarula.Content.*` struct (never a raw protobuf),
+  except `:text` (a `String.t()`) and `:other` (`nil`). The raw `%Proto.Message{}`
+  is always on `raw`. Any `key`/`poll_key` is a `{jid, msg_id}` reference — the same
+  form the send API takes, so you can pass a received reaction's `key` straight to
+  `Amarula.send_reaction/3`.
 
   | `type`        | `content`                                              |
   |---------------|--------------------------------------------------------|
   | `:text`       | the text `String.t()`                                  |
-  | `:media`      | `%{kind: :image\|:video\|:audio\|:document\|:sticker, media: %Amarula.Media{}}` — pass the `%Msg{}` to `Amarula.download_media/1` |
-  | `:reaction`   | `%{key: {jid, msg_id}, emoji: String.t()}` (`""` = removed) |
-  | `:edit`       | `%{key: {jid, msg_id}, text: String.t()}`              |
-  | `:revoke`     | `%{key: {jid, msg_id}}`                                |
-  | `:pin`        | `%{key: {jid, msg_id}, pinned?: boolean()}`            |
-  | `:keep`       | `%{key: {jid, msg_id}, kept?: boolean()}`              |
-  | `:member_tag` | `%{label: String.t(), timestamp: integer()}`           |
+  | `:media`      | `%Amarula.Content.Media{}`                             |
+  | `:reaction`   | `%Amarula.Content.Reaction{}` (`emoji: ""` = removed)  |
+  | `:edit`       | `%Amarula.Content.Edit{}`                              |
+  | `:revoke`     | `%Amarula.Content.Revoke{}`                            |
+  | `:pin`        | `%Amarula.Content.Pin{}`                               |
+  | `:keep`       | `%Amarula.Content.Keep{}`                              |
+  | `:member_tag` | `%Amarula.Content.MemberTag{}`                         |
   | `:contact`    | `%Amarula.Content.Contact{}`                           |
-  | `:contacts`   | `%{display_name, contacts: [%Amarula.Content.Contact{}]}` |
+  | `:contacts`   | `%Amarula.Content.Contacts{}`                          |
   | `:location`   | `%Amarula.Content.Location{}`                          |
   | `:poll`       | `%Amarula.Content.Poll{}`                              |
-  | `:poll_vote`  | `%{poll_key: {jid, msg_id}, enc_vote: %{payload, iv}, timestamp}` (decrypt with `PollCrypto`) |
+  | `:poll_vote`  | `%Amarula.Content.PollVote{}`                          |
   | `:event`      | `%Amarula.Content.Event{}`                             |
   | `:group_invite` | `%Amarula.Content.GroupInvite{}`                     |
   | `:product`    | `%Amarula.Content.Product{}` (minimal — detail on `raw`) |
   | `:order`      | `%Amarula.Content.Order{}` (minimal — detail on `raw`) |
   | `:button_response` / `:list_response` / `:template_reply` / `:interactive_response` | `%Amarula.Content.Response{}` |
-  | `:protocol`   | `%{type: atom}` (control frame; detail on `raw`) — arrives on `:protocol_update` |
+  | `:protocol`   | `%Amarula.Content.Protocol{}` (control frame) — arrives on `:protocol_update` |
   | `:other`      | `nil` (read `raw`)                                     |
-
-  `raw` is always the underlying `%Proto.Message{}` — the escape hatch for
-  anything not surfaced here.
 
   Pure Signal-protocol plumbing (a bare `senderKeyDistributionMessage`) is applied
   internally and never emitted as a `%Msg{}` — consumers do not see it.
 
+  ## Replying in kind
+
+  Most received types have a matching `send_*` to reproduce or respond:
+
+  | received `type`        | send with                                            |
+  |------------------------|------------------------------------------------------|
+  | `:text`                | `Amarula.send_text/4`                                |
+  | `:media`               | `Amarula.send_media/5`                               |
+  | `:reaction`            | `Amarula.send_reaction/3` (pass `content.key`)       |
+  | `:edit` / `:revoke`    | `Amarula.send_edit/3` / `send_revoke/2`              |
+  | `:pin` / `:keep`       | `Amarula.pin_message/2` / `keep_message/2`           |
+  | `:location`            | `Amarula.send_location/5`                            |
+  | `:poll`                | `Amarula.send_poll/5`                                |
+  | `:poll_vote`           | `Amarula.send_poll_vote/5`                           |
+  | `:contact` / `:contacts` | `Amarula.send_contact/4` / `send_contacts/4`       |
+  | `:event`               | `Amarula.send_event/4`                               |
+  | `:group_invite`        | `Amarula.send_group_invite/5`                        |
+  | `:member_tag`          | `Amarula.update_member_tag/3` (group is `msg.channel`) |
+
+  **Receive-only** (no originating send): `:product`, `:order`, and the interactive
+  replies (`:button_response`/`:list_response`/`:template_reply`/`:interactive_response`
+  — you receive a user's choice, but originating the buttons/list isn't supported).
+  Event RSVP responses are not yet supported either.
+
   ## Addressing — `channel`, `from`, `to`
 
-  Every message carries three address roles, each an `Amarula.Address` (terms chosen
-  to read across chat / PubSub / generic messaging, not just WhatsApp):
+  Every message carries three address roles, each an `Amarula.Address`:
 
   | role      | meaning                                                  | 1:1 DM       | group         | self-chat       |
   |-----------|----------------------------------------------------------|--------------|---------------|-----------------|
@@ -243,33 +263,33 @@ defmodule Amarula.Msg do
         {:text, body}
 
       {:media, kind, m} ->
-        {:media, %{kind: kind, media: Amarula.Media.from_proto(kind, m)}}
+        {:media, Content.Media.from_proto(kind, m)}
 
       # key-bearing types: surface the target key as a {jid, msg_id} ref.
       {:reaction, key, emoji} ->
-        {:reaction, %{key: ref(key), emoji: emoji}}
+        {:reaction, %Content.Reaction{key: ref(key), emoji: emoji}}
 
       {:edit, key, text} ->
-        {:edit, %{key: ref(key), text: text}}
+        {:edit, %Content.Edit{key: ref(key), text: text}}
 
       {:revoke, key} ->
-        {:revoke, %{key: ref(key)}}
+        {:revoke, %Content.Revoke{key: ref(key)}}
 
       {:pin, %{key: key, pinned?: p}} ->
-        {:pin, %{key: ref(key), pinned?: p}}
+        {:pin, %Content.Pin{key: ref(key), pinned?: p}}
 
       {:keep, %{key: key, kept?: k}} ->
-        {:keep, %{key: ref(key), kept?: k}}
+        {:keep, %Content.Keep{key: ref(key), kept?: k}}
 
-      {:member_tag, m} ->
-        {:member_tag, m}
+      {:member_tag, %{label: label, timestamp: ts}} ->
+        {:member_tag, %Content.MemberTag{label: label, timestamp: ts}}
 
       # structured types: normalized Content structs.
       {:contact, m} ->
         {:contact, Content.Contact.from_proto(m)}
 
       {:contacts, m} ->
-        {:contacts, contacts(m)}
+        {:contacts, Content.Contacts.from_proto(m)}
 
       {:location, m} ->
         {:location, Content.Location.from_proto(m)}
@@ -307,7 +327,7 @@ defmodule Amarula.Msg do
 
       # control: the type tag only; detail (and the proto) stays on msg.raw.
       {:protocol, t, _pm} ->
-        {:protocol, %{type: t}}
+        {:protocol, %Content.Protocol{type: t}}
 
       # :other (and anything unmapped) carries no content — read msg.raw.
       {:other, _proto} ->
@@ -323,19 +343,12 @@ defmodule Amarula.Msg do
   defp ref(%Proto.MessageKey{remoteJid: jid, id: id}), do: {jid, id}
   defp ref(_), do: nil
 
-  defp contacts(%{} = m) do
-    %{
-      display_name: Map.get(m, :displayName),
-      contacts: m |> Map.get(:contacts, []) |> Enum.map(&Content.Contact.from_proto/1)
-    }
-  end
-
-  # PollUpdateMessage: the poll being voted on + the encrypted vote payload. Decrypt
-  # with Amarula.Protocol.Messages.PollCrypto + the poll's enc_key.
+  # PollUpdateMessage → %Content.PollVote{}: the poll being voted on + the encrypted
+  # vote payload. Decrypt with PollCrypto + the poll's enc_key (see Content.PollVote).
   defp poll_vote(%{} = m) do
     enc = Map.get(m, :vote) || %{}
 
-    %{
+    %Content.PollVote{
       poll_key: ref(Map.get(m, :pollCreationMessageKey)),
       enc_vote: %{payload: Map.get(enc, :encPayload), iv: Map.get(enc, :encIv)},
       timestamp: Map.get(m, :senderTimestampMs)

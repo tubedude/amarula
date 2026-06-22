@@ -179,9 +179,9 @@ defmodule Amarula do
     * `:protocol_update`   — `%{from: jid, id: id, messages: [%Amarula.Msg{}]}` whose
       `type` is `:protocol`: control frames Amarula doesn't surface as messages
       (ephemeral/setting changes and other unhandled `protocolMessage` types). Most
-      consumers can ignore this; it exists so control frames don't pollute
-      `:messages_upsert`. (The important ones — history-sync, app-state — arrive on
-      their own events.)
+      consumers can ignore it; it exists so control frames don't pollute
+      `:messages_upsert`. The important ones (history-sync, app-state) arrive on
+      their own events.
     * `:chats_update`      — `[%Amarula.Chat{}]` (from history/app-state sync)
     * `:contacts_update`   — `[%Amarula.Contact{}]`
     * `:group_update`      — `%{group: Address, author: Address | nil, action: ..}`
@@ -514,9 +514,12 @@ defmodule Amarula do
   @spec subscribe_presence(conn(), jid()) :: :ok
   def subscribe_presence(conn, jid), do: GenServer.call(conn, {:presence_subscribe, jid})
 
-  @request_pairing_code_opts [
-    custom_code: [type: :string, doc: "a fixed 8-char code to use instead of a random one."]
-  ]
+  @request_pairing_code_opts NimbleOptions.new!(
+                               custom_code: [
+                                 type: :string,
+                                 doc: "a fixed 8-char code to use instead of a random one."
+                               ]
+                             )
 
   @doc """
   Request a link-code (phone-number) pairing code for `phone` (E.164 digits;
@@ -531,7 +534,7 @@ defmodule Amarula do
 
   ## Options
 
-  #{NimbleOptions.docs(NimbleOptions.new!(@request_pairing_code_opts))}
+  #{NimbleOptions.docs(@request_pairing_code_opts)}
   """
   @spec request_pairing_code(conn(), String.t(), keyword()) ::
           {:ok, String.t()} | {:error, term()}
@@ -737,8 +740,8 @@ defmodule Amarula do
   Set your own **member tag** (per-group self-label) in `group`, or clear it with
   `""`. The tag is capped at 30 characters — a longer one is rejected with
   `{:error, :member_tag_too_long}` (we don't silently truncate). Relayed to the
-  group; other members see it via a `{:member_tag, _}` message (label `""` =
-  removed).
+  group; other members see it via a `%Amarula.Content.MemberTag{}` message (label
+  `""` = removed). Also available as `Amarula.Group.update_member_tag/3`.
   """
   @spec update_member_tag(conn(), jid(), String.t()) ::
           send_result() | {:error, :member_tag_too_long}
@@ -949,9 +952,10 @@ defmodule Amarula do
   @doc """
   Download + decrypt an incoming media file. Inbound messages carry only media
   *metadata* (directPath/mediaKey), not the bytes — call this to fetch them
-  lazily, passing a `%Amarula.Msg{type: :media}` (or its `content.media` struct
-  + kind). Returns `{:ok, bytes}` or `{:error, reason}` (`:bad_mac` on a failed
-  integrity check, `:invalid_media` on a malformed descriptor).
+  lazily, passing a `%Amarula.Msg{type: :media}` (or its `content`, an
+  `%Amarula.Content.Media{}`). Returns `{:ok, bytes}` or `{:error, reason}`
+  (`:bad_mac` on a failed integrity check, `:invalid_media` on a malformed
+  descriptor).
 
       %Amarula.Msg{type: :media} = msg
       {:ok, bytes} = Amarula.download_media(msg)
@@ -960,19 +964,17 @@ defmodule Amarula do
   >
   > This fetches from WhatsApp's CDN and decrypts with keys carried in the media
   > struct — it does **not** use the socket or need an open `conn`. So you can hand
-  > a `%Amarula.Msg{}` off to a `Task` (or a job queue) and download it later,
-  > off the connection process. Use `content.media.mimetype` to pick the file
-  > extension / `<img>` vs `<video>` (don't infer it from `kind` — WhatsApp sends
-  > webp stickers, mp4 "gifs", etc.).
+  > a `%Amarula.Msg{}` off to a `Task` (or a job queue) and download it later, off
+  > the connection process.
   """
-  @spec download_media(Amarula.Msg.t()) :: {:ok, binary()} | {:error, term()}
-  def download_media(%Amarula.Msg{type: :media, content: %{kind: kind, media: m}}),
-    do: Media.download(m, kind)
+  @spec download_media(Amarula.Msg.t() | Amarula.Content.Media.t()) ::
+          {:ok, binary()} | {:error, term()}
+  def download_media(%Amarula.Msg{type: :media, content: %Amarula.Content.Media{} = m}),
+    do: Media.download(m, m.kind)
 
   def download_media(%Amarula.Msg{}), do: {:error, :not_media}
 
-  @spec download_media(map(), media_type()) :: {:ok, binary()} | {:error, term()}
-  def download_media(media_struct, type), do: Media.download(media_struct, type)
+  def download_media(%Amarula.Content.Media{} = m), do: Media.download(m, m.kind)
 
   # Send an already-built %Proto.Message{} to `jid`. The shared tail of the
   # message-building send helpers (contact/location/reaction/edit/revoke), which

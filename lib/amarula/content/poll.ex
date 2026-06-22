@@ -1,10 +1,11 @@
 defmodule Amarula.Content.Poll do
   @moduledoc """
-  A received poll (the `content` of a `%Amarula.Msg{type: :poll}`).
+  A received poll (`content` of a `%Amarula.Msg{type: :poll}`).
 
     * `:name` — the poll question.
     * `:options` — the answer option names, in order (a list of strings).
-    * `:selectable_count` — how many options a voter may pick (`1` = single-choice).
+    * `:selectable` — how many options a voter may pick (`1` = single-choice);
+      mirrors the `:selectable` option on `Amarula.send_poll/5`.
     * `:enc_key` — the poll's encryption key (votes arrive encrypted under it; see
       `Amarula.Protocol.Messages.PollCrypto`).
   """
@@ -12,11 +13,11 @@ defmodule Amarula.Content.Poll do
   @type t :: %__MODULE__{
           name: String.t() | nil,
           options: [String.t()],
-          selectable_count: non_neg_integer() | nil,
+          selectable: non_neg_integer() | nil,
           enc_key: binary() | nil
         }
 
-  defstruct name: nil, options: [], selectable_count: nil, enc_key: nil
+  defstruct [:name, :selectable, :enc_key, options: []]
 
   @doc "Normalize a `%Proto.Message.PollCreationMessage{}` (any version) into a `%Amarula.Content.Poll{}`."
   @spec from_proto(struct()) :: t()
@@ -24,7 +25,7 @@ defmodule Amarula.Content.Poll do
     %__MODULE__{
       name: Map.get(m, :name),
       options: m |> Map.get(:options, []) |> Enum.map(&option_name/1),
-      selectable_count: Map.get(m, :selectableOptionsCount),
+      selectable: Map.get(m, :selectableOptionsCount),
       enc_key: Map.get(m, :encKey)
     }
   end

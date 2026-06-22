@@ -7,15 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.5] - 2026-06-22
+## [0.3.0] - 2026-06-22
 
-Documentation, validation, and retry-cache flexibility, a couple of process-level
-performance fixes, and an explicit boundary around the crypto layer. Two things to
-note when upgrading: option keys are now validated (unknown ones raise), and
-`fetch_history/4` no longer accepts a raw protobuf key.
+The headline is the **receive side**: a `%Amarula.Msg{}`'s `content` is now always a
+clean, proto-free `Amarula.Content.*` struct — you never pattern-match a raw
+protobuf again. Plus validated `send_*` options, a normalized media struct (with
+mimetype), retry-cache flexibility, and an explicit crypto boundary. This is a
+breaking release; the migration is mechanical (struct fields instead of maps/protos).
 
 ### Breaking
 
+- **`%Amarula.Msg{}.content` is now an `Amarula.Content.*` struct for every type**
+  (except `:text` → `String.t()` and `:other` → `nil`). Previously `content` handed
+  back raw protobufs and bare maps. Now: `:reaction` → `%Content.Reaction{}`,
+  `:location` → `%Content.Location{}`, `:poll` → `%Content.Poll{}`, etc. — see the
+  table in `Amarula.Msg`. Any `key`/`poll_key` is a `{jid, msg_id}` ref (the form the
+  send API takes, so a received reaction feeds straight back into `send_reaction/3`).
+  The full proto is still on `msg.raw`. **Migration:** replace map/proto field access
+  on `content` with the documented struct fields.
+- **Media is `%Amarula.Content.Media{}`** (moved from `Amarula.Media`), and `:media`
+  content **is that struct directly** — no more `%{kind:, media:}` wrapper. It
+  surfaces `:mimetype` (use it for the file extension, not `:kind`). Inbound jids on
+  the new structs (`GroupInvite.group`, `Product.business_owner`, `Order.seller`) are
+  `%Amarula.Address{}`, not strings.
+- **Control frames moved off `:messages_upsert` to a new `:protocol_update` event.**
+  Bare `protocolMessage`s (ephemeral/setting changes and other unhandled types) no
+  longer arrive as junk messages; subscribe to `:protocol_update` if you want them.
 - **`fetch_history/4` takes a `message_ref`, not a raw `%Proto.MessageKey{}`.**
   Front-facing functions should never make you construct an internal protobuf. It
   now takes the `%Amarula.Msg{}` you received or a `{jid, msg_id}` tuple (consistent
@@ -78,6 +95,10 @@ note when upgrading: option keys are now validated (unknown ones raise), and
   used on the receive/decrypt path, in `Connection`). It was being deep-copied into
   every sender, multiplied per recipient in a group fan-out. It's now dropped before
   the copy.
+- **`download_media/1` honours its `{:ok | :error}` contract.** A malformed/empty
+  media descriptor now returns `{:error, :invalid_media}` instead of letting the
+  HTTP layer raise (which forced consumers to wrap the call in rescue). It also
+  works with no live connection — documented now — so you can download from a `Task`.
 
 ### Documentation
 

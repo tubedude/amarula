@@ -1,6 +1,6 @@
 defmodule Amarula.Content.Contact do
   @moduledoc """
-  A received contact card (the `content` of a `%Amarula.Msg{type: :contact}`, and
+  A received contact card (`content` of a `%Amarula.Msg{type: :contact}`, and
   each element of a `:contacts` array).
 
     * `:display_name` — the contact's shown name.
@@ -10,7 +10,6 @@ defmodule Amarula.Content.Contact do
 
   @type t :: %__MODULE__{display_name: String.t() | nil, vcard: String.t() | nil}
 
-  @enforce_keys []
   defstruct [:display_name, :vcard]
 
   @doc "Normalize a `%Proto.Message.ContactMessage{}` into a `%Amarula.Content.Contact{}`."

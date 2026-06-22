@@ -2,7 +2,7 @@ defmodule Amarula.Content.Response do
   @moduledoc """
   A reply a user made to an interactive message — a button tap, list selection,
   template-button reply, or interactive response. Unified into one shape since they
-  all boil down to "the user picked an option identified by `id`, shown as `text`".
+  all share one shape: the user picked an option identified by `id`, shown as `text`.
 
     * `:kind` — `:button | :list | :template | :interactive`.
     * `:id` — the selected option's id (what your app keys off).

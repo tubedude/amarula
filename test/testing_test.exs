@@ -38,8 +38,8 @@ defmodule Amarula.TestingTest do
     Amarula.Testing.deliver(conn, proto, from: @peer)
 
     assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
-    assert %Amarula.Msg{type: :media, content: %{kind: :image}} = msg
-    assert msg.content.media.caption == "look"
+    assert %Amarula.Msg{type: :media, content: %Amarula.Content.Media{kind: :image}} = msg
+    assert msg.content.caption == "look"
   end
 
   test "pushname rides on the stanza notify attr", %{conn: conn} do

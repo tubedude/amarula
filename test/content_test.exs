@@ -35,7 +35,7 @@ defmodule Amarula.ContentTest do
         }
       })
 
-    assert %Content.Poll{name: "Lunch?", options: ["Pizza", "Sushi"], selectable_count: 1} = c
+    assert %Content.Poll{name: "Lunch?", options: ["Pizza", "Sushi"], selectable: 1} = c
   end
 
   test "event nests a normalized %Content.Location{} (not the proto)" do
@@ -64,7 +64,7 @@ defmodule Amarula.ContentTest do
       })
 
     assert %Content.GroupInvite{
-             group_jid: "123@g.us",
+             group: %Amarula.Address{user: "123", kind: :group},
              code: "ABCD",
              group_name: "Team",
              caption: "join"
@@ -84,7 +84,7 @@ defmodule Amarula.ContentTest do
         }
       })
 
-    assert %{
+    assert %Content.Contacts{
              display_name: "Team",
              contacts: [
                %Content.Contact{display_name: "Bob"},
@@ -102,14 +102,14 @@ defmodule Amarula.ContentTest do
         pinInChatMessage: %Proto.Message.PinInChatMessage{key: key, type: :PIN_FOR_ALL}
       })
 
-    assert pin == %{key: {"x@s", "A"}, pinned?: true}
+    assert pin == %Content.Pin{key: {"x@s", "A"}, pinned?: true}
 
     keep =
       content(%Proto.Message{
         keepInChatMessage: %Proto.Message.KeepInChatMessage{key: key, keepType: :KEEP_FOR_ALL}
       })
 
-    assert keep == %{key: {"x@s", "A"}, kept?: true}
+    assert keep == %Content.Keep{key: {"x@s", "A"}, kept?: true}
   end
 
   test "interactive responses unify into %Content.Response{kind, id, text}" do

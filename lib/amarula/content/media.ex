@@ -1,21 +1,17 @@
-defmodule Amarula.Media do
+defmodule Amarula.Content.Media do
   @moduledoc """
-  A received media attachment — the normalized, consumer-facing view of an inbound
-  image / video / audio / document / sticker.
-
-  This is what `%Amarula.Msg{type: :media}` carries in `content.media`. It is a
-  plain snake_case struct (not the raw protobuf), so consumers read one consistent
-  shape — including the **`:mimetype`**, which is what you need to pick the right
-  file extension or `<img>` vs `<video>`. Pass it (or the whole `%Amarula.Msg{}`)
-  to `Amarula.download_media/1` to fetch and decrypt the bytes — no live connection
-  required; the keys ride in this struct.
+  A received media attachment (`content` of a `%Amarula.Msg{type: :media}`) — an
+  inbound image / video / audio / document / sticker. A plain snake_case struct,
+  not the raw protobuf. Pass it (or the whole `%Amarula.Msg{}`) to
+  `Amarula.download_media/1` to fetch and decrypt the bytes — no live connection
+  needed; the keys ride in this struct.
 
   ## Fields
 
     * `:kind` — `:image | :video | :audio | :document | :sticker`.
     * `:mimetype` — the content type (e.g. `"image/jpeg"`, `"video/mp4"`,
-      `"image/webp"` for a sticker). **Use this for the extension / element type**,
-      not `:kind` — WhatsApp sends webp stickers, mp4 "gifs", etc.
+      `"image/webp"` for a sticker). **Use this** for the file extension / `<img>`
+      vs `<video>`, not `:kind` — WhatsApp sends webp stickers, mp4 "gifs", etc.
     * `:caption` — text shown with the media (`nil` if none).
     * `:file_length` — size in bytes (`nil` if absent).
     * `:width` / `:height` — pixel dimensions for image/video/sticker (`nil` otherwise).
@@ -64,29 +60,29 @@ defmodule Amarula.Media do
 
   @doc """
   Normalize a raw media proto (`%Proto.Message.ImageMessage{}` etc.) into a
-  `%Amarula.Media{}` of the given `kind`. Snake-cases the camelCase proto fields
-  and surfaces the type-relevant metadata; missing fields are `nil`.
+  `%Amarula.Content.Media{}`. `kind` says which proto it is — several distinct media
+  protos map to this one struct, so the kind can't be recovered from the proto
+  alone. Snake-cases the camelCase fields and surfaces the type-relevant metadata;
+  missing fields are `nil`.
   """
   @spec from_proto(kind(), struct()) :: t()
   def from_proto(kind, %{} = m) do
+    # `Map.get` per field — a given media proto only declares some of these (only
+    # audio/video carry :seconds, etc.); the rest are absent and read as nil.
     %__MODULE__{
       kind: kind,
-      mimetype: get(m, :mimetype),
-      caption: get(m, :caption),
-      file_length: get(m, :fileLength),
-      width: get(m, :width),
-      height: get(m, :height),
-      seconds: get(m, :seconds),
-      file_name: get(m, :fileName),
-      url: get(m, :url),
-      direct_path: get(m, :directPath),
-      media_key: get(m, :mediaKey),
-      file_sha256: get(m, :fileSha256),
-      file_enc_sha256: get(m, :fileEncSha256)
+      mimetype: Map.get(m, :mimetype),
+      caption: Map.get(m, :caption),
+      file_length: Map.get(m, :fileLength),
+      width: Map.get(m, :width),
+      height: Map.get(m, :height),
+      seconds: Map.get(m, :seconds),
+      file_name: Map.get(m, :fileName),
+      url: Map.get(m, :url),
+      direct_path: Map.get(m, :directPath),
+      media_key: Map.get(m, :mediaKey),
+      file_sha256: Map.get(m, :fileSha256),
+      file_enc_sha256: Map.get(m, :fileEncSha256)
     }
   end
-
-  # Read a field that a given media proto may or may not declare (e.g. only
-  # audio/video carry :seconds), tolerating its absence.
-  defp get(m, key), do: Map.get(m, key)
 end

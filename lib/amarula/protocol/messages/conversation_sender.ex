@@ -1,9 +1,28 @@
 defmodule Amarula.Protocol.Messages.ConversationSender do
   @moduledoc """
   Per-recipient send process. One `ConversationSender` exists per recipient JID;
-  all sends to that recipient funnel through it and run **one at a time**, which
-  serializes Signal ratchet advance for that recipient's session (no per-address
-  lock needed). Different recipients run in parallel under the DynamicSupervisor.
+  all sends to that recipient funnel through it and run **one at a time**.
+  Different recipients run in parallel under the DynamicSupervisor.
+
+  ## Why a process per recipient — it is a *lock*, not a cache
+
+  The Sender holds **no state of its own** — not even the ratchet. Encrypting a
+  message is a `load → advance → store` against the **shared** Signal session in
+  Storage (see `encrypt_for_device/2`): load the session record, advance the
+  ratchet (pure), write the advanced record back. That read-modify-write is **not
+  atomic**. If two sends to the *same* recipient ran concurrently, both could load
+  the same record, advance from the same point, and store — a lost update that
+  **forks the ratchet** and corrupts the session.
+
+  So the Sender exists to **serialize** that read-modify-write, not to hold it. Its
+  mailbox is the lock: cast #2's `load` can't begin until cast #1's `store` has
+  finished. One process per recipient gives exactly the right granularity — serial
+  *within* a recipient (ratchet-safe), parallel *across* recipients (throughput).
+  This is why a bare `Task` per send would be wrong (no per-recipient mutual
+  exclusion → forked ratchets) and why a single shared process would be wrong (no
+  cross-recipient parallelism). Because it holds nothing, a Sender is cheap to lose
+  and respawn, and current credentials are handed to it per send (creds mutate
+  after login, so a cached snapshot would encrypt stale).
 
   A send is a branchless pipe of `ctx -> ctx` steps that block on IQ round-trips
   through `Connection` (the sole websocket owner):
@@ -37,10 +56,11 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   pid). So a dead sender's key vanishes; there are never stale registry entries to
   reap.
 
-  **Life.** Serializes all sends to its recipient (one pipe at a time → ordered
-  ratchet advance, no per-address lock). Different recipients run in parallel.
-  Holds no durable state: sessions/keys live in Storage, the consumer's `from`
-  is parked in `Connection`. So a sender is cheap to lose and cheap to respawn.
+  **Life.** Serializes all sends to its recipient — one pipe at a time, so the
+  ratchet's load-modify-store can't interleave (see the lock note above).
+  Different recipients run in parallel. Holds no durable state: sessions/keys live
+  in Storage, the consumer's `from` is parked in `Connection`. So a sender is cheap
+  to lose and cheap to respawn.
 
   **Death (three ways).**
     1. *Idle.* Each `:send` re-arms an idle timer (`idle_ms`, default 1s,

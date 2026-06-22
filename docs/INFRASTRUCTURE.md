@@ -171,6 +171,19 @@ resolve_devices    (device cache, else USync)
       → relay        (build the frame, send the <participants> stanza)
 ```
 
+**Why a process per recipient — it is a lock, not a cache.** The sender holds no
+state of its own, not even the ratchet. `encrypt` is a `load → advance → store`
+against the **shared** Signal session in Storage, and that read-modify-write is not
+atomic: two concurrent sends to one recipient could both load the same record,
+advance from the same point, and store — a lost update that **forks the ratchet**
+and corrupts the session. The per-recipient process serializes that read-modify-write
+(its mailbox is the lock), giving the exact granularity needed — serial *within* a
+recipient, parallel *across* recipients. A bare `Task` per send would lose the
+mutual exclusion (forked ratchets); a single shared process would lose the
+cross-recipient parallelism. Because it holds nothing, the sender is cheap to lose
+and respawn, and gets current credentials handed to it per send (creds change after
+login, so a cached snapshot would encrypt stale).
+
 ### ConversationSender lifecycle
 
 One sender per recipient JID, `restart: :temporary`.
@@ -183,10 +196,10 @@ One sender per recipient JID, `restart: :temporary`.
   `Connection` calls `deliver`, so starts for one recipient are already
   serialized).
 - **Life.** It serializes that recipient's sends — one pipe at a time, so the
-  Signal ratchet advances in order with no per-address lock. Different recipients
-  run in parallel. It holds no durable state: sessions and keys live in Storage,
-  and the consumer's `from` is parked in `Connection`. Cheap to lose, cheap to
-  respawn.
+  ratchet's load-modify-store can't interleave (the lock described above).
+  Different recipients run in parallel. It holds no durable state: sessions and
+  keys live in Storage, and the consumer's `from` is parked in `Connection`. Cheap
+  to lose, cheap to respawn.
 - **Death.** Three ways, all of which auto-unregister the registry key:
   1. *Idle* — each send re-arms an idle timer (`idle_ms`, default 1s, overridable
      via `config[:sender_idle_ms]`); after that long with no further send →

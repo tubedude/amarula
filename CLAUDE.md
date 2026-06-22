@@ -150,7 +150,11 @@ The tree owns no Registry. The app-level `Amarula.InstanceRegistry` names every
 tree's processes by its `instance_id` ref, and maps `{instance_id, recipient_jid} →
 sender pid` (a registry, not atom names, because the recipient key space is
 unbounded/user-controlled). Senders are one-per-recipient, `:temporary`, lazily
-started, serialize a recipient's sends, and hold no durable state.
+started, and hold no durable state — not even the ratchet (sessions live in
+Storage). A sender is a *lock*, not a cache: `encrypt` is a non-atomic
+load-modify-store of the shared Signal session, so one process per recipient
+serializes it (serial within a recipient, parallel across). See
+`Amarula.Protocol.Messages.ConversationSender`.
 
 **For the full, current infrastructure reference — supervision tree, registry
 rationale, the ConversationSender lifecycle, and the send/ack/crash-recovery

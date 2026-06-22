@@ -2797,8 +2797,8 @@ defmodule Amarula.Connection do
     Enum.each(msgs, fn msg ->
       {media?, media_kind, bytes} =
         case msg do
-          %{type: :media, content: %{kind: kind, media: m}} ->
-            {true, kind, Map.get(m, :fileLength) || 0}
+          %{type: :media, content: %Amarula.Content.Media{kind: kind, file_length: len}} ->
+            {true, kind, len || 0}
 
           _ ->
             {false, nil, 0}

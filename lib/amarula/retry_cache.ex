@@ -63,8 +63,17 @@ defmodule Amarula.RetryCache do
   @typedoc "The connection identity (its `:profile`)."
   @type profile :: atom() | String.t()
 
-  @typedoc "A cached entry: the recipient + the sent message + a ms timestamp."
-  @type entry :: %{recipient_jid: String.t(), message: struct(), ts: integer()}
+  @typedoc """
+  A cached entry: the recipient, the sent message, and a ms timestamp. The send
+  pipe also carries `:stanza_attrs` (replayed verbatim on a retry resend so a
+  peer/edit stanza keeps its attrs); it's optional since not every producer sets it.
+  """
+  @type entry :: %{
+          :recipient_jid => String.t(),
+          :message => struct(),
+          :ts => integer(),
+          optional(:stanza_attrs) => map()
+        }
 
   @doc "Initialise adapter state from `opts`. Called once per connection."
   @callback new(opts :: keyword()) :: adapter_state()

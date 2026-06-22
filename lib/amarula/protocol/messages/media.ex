@@ -51,30 +51,37 @@ defmodule Amarula.Protocol.Messages.Media do
   compressed — history blobs are zlib-deflated; the caller inflates).
   """
   @spec download(map(), media_type()) :: {:ok, binary()} | {:error, term()}
-  def download(ref, type) do
-    media_key = media_key(ref)
-    url = download_url(ref)
-
-    case Req.get(url, [decode_body: false] ++ req_options()) do
-      {:ok, %{status: 200, body: enc}} when is_binary(enc) -> decrypt(enc, media_key, type)
-      {:ok, %{status: status}} -> {:error, {:http, status}}
-      {:error, reason} -> {:error, reason}
+  def download(%{} = ref, type) do
+    # The descriptor is a canonical snake_case shape (`%Amarula.Media{}` for inbound
+    # messages; `HistorySync` and tests build the same keys). Surface its required
+    # shape in the head: a valid one yields a URL and a media key; an invalid one
+    # falls through to `{:error, :invalid_media}` — honouring the {:ok | :error}
+    # contract instead of letting Req raise up through a typed caller.
+    with url when is_binary(url) <- download_url(ref),
+         media_key when is_binary(media_key) <- Map.get(ref, :media_key) do
+      case Req.get(url, [decode_body: false] ++ req_options()) do
+        {:ok, %{status: 200, body: enc}} when is_binary(enc) -> decrypt(enc, media_key, type)
+        {:ok, %{status: status}} -> {:error, {:http, status}}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      _ -> {:error, :invalid_media}
     end
   end
+
+  def download(_ref, _type), do: {:error, :invalid_media}
 
   # Extra Req options merged into every request. Empty in prod; tests set
   #   config :amarula, :req_options, plug: {Req.Test, Amarula.Protocol.Messages.Media}
   # to route HTTP through a Req.Test stub instead of the network.
   defp req_options, do: Application.get_env(:amarula, :req_options, [])
 
-  defp media_key(ref), do: Map.get(ref, :media_key) || Map.get(ref, :mediaKey)
+  # The full CDN URL from the descriptor's `:direct_path` (preferred) or `:url`.
+  defp download_url(%{direct_path: path}) when is_binary(path),
+    do: "https://#{@default_media_host}#{path}"
 
-  defp download_url(ref) do
-    case Map.get(ref, :direct_path) || Map.get(ref, :directPath) do
-      nil -> Map.get(ref, :url)
-      path -> "https://#{@default_media_host}#{path}"
-    end
-  end
+  defp download_url(%{url: url}) when is_binary(url), do: url
+  defp download_url(_), do: nil
 
   @doc """
   Encrypt `plaintext` for media `type`. Returns the uploadable blob plus the

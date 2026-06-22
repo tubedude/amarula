@@ -42,7 +42,8 @@ defmodule Amarula.Protocol.Messages.HistorySync do
     do: {:ok, inline}
 
   defp raw_blob(%{directPath: dp, mediaKey: mk} = n) when is_binary(dp) and is_binary(mk) do
-    Media.download(%{directPath: dp, url: Map.get(n, :url), mediaKey: mk}, :history)
+    # `n` is a raw proto node (camelCase); build the canonical snake_case descriptor.
+    Media.download(%{direct_path: dp, url: Map.get(n, :url), media_key: mk}, :history)
   end
 
   defp raw_blob(_notification), do: {:error, :no_history_payload}

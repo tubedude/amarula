@@ -45,13 +45,13 @@ defmodule Amarula.Protocol.Messages.MediaTest do
       assert {:ok, ^data} = Media.download(ref, :image)
     end
 
-    test "accepts a ref keyed with camelCase (directPath/mediaKey)" do
+    test "accepts a normalized %Amarula.Media{} descriptor (the inbound shape)" do
       data = :crypto.strong_rand_bytes(64)
       {:ok, e} = Media.encrypt(data, :video)
 
       Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, e.enc) end)
 
-      ref = %{directPath: "/v/t62/enc", mediaKey: e.media_key}
+      ref = %Amarula.Media{kind: :video, direct_path: "/v/t62/enc", media_key: e.media_key}
       assert {:ok, ^data} = Media.download(ref, :video)
     end
 
@@ -60,6 +60,22 @@ defmodule Amarula.Protocol.Messages.MediaTest do
 
       ref = %{direct_path: "/v/t62/expired", media_key: :crypto.strong_rand_bytes(32)}
       assert {:error, {:http, 404}} = Media.download(ref, :image)
+    end
+
+    # Contract: a malformed descriptor must return {:error, _} per the @spec — not
+    # raise a Req/BadMapError up through a typed caller (which forced consumers to
+    # wrap the call in rescue). No HTTP stub needed; these short-circuit before Req.
+    test "a descriptor missing the URL/path returns {:error, :invalid_media}" do
+      assert {:error, :invalid_media} = Media.download(%{media_key: "k"}, :image)
+    end
+
+    test "a descriptor missing the media key returns {:error, :invalid_media}" do
+      assert {:error, :invalid_media} = Media.download(%{direct_path: "/v/x"}, :image)
+    end
+
+    test "a nil / non-map descriptor returns {:error, :invalid_media} (does not raise)" do
+      assert {:error, :invalid_media} = Media.download(nil, :image)
+      assert {:error, :invalid_media} = Media.download(%{}, :image)
     end
 
     test "a corrupt blob fails the MAC check" do

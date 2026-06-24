@@ -1321,12 +1321,21 @@ defmodule Amarula.Connection do
     emit_event(new_state, :error, error)
 
     # Schedule reconnection if within retry limit
-    if new_state.retry_count < new_state.max_retries do
-      schedule_reconnect(new_state)
-    else
-      Logger.error("Max retry attempts reached, giving up")
-      %{new_state | connection_state: :closed}
-    end
+    new_state =
+      if new_state.retry_count < new_state.max_retries do
+        schedule_reconnect(new_state)
+      else
+        Logger.error("Max retry attempts reached, giving up")
+        %{new_state | connection_state: :closed}
+      end
+
+    # Announce the down-transition. Previously the error paths emitted only
+    # :error, never the :connection_update the clean-close path emits — so a
+    # consumer tracking connection state never saw the drop and its UI went stale
+    # on the last "open". Emit the resulting state (:disconnected, or :closed once
+    # retries are exhausted).
+    emit_connection_update(new_state, new_state.connection_state)
+    new_state
   end
 
   defp schedule_reconnect(state) do

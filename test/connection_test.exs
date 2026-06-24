@@ -283,6 +283,22 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "down-transition on a connection error" do
+    test "a ws error emits :connection_update :disconnected, not just :error", %{config: config} do
+      # The error paths used to emit only :error, never the :connection_update the
+      # clean-close path emits — so a consumer tracking connection state never saw
+      # the drop and its UI went stale on the last "open". Every handled error must
+      # announce the down-transition.
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      send(pid, {:ws_event, nil, {:error, :econnreset}})
+
+      assert_receive {:amarula, :error, :econnreset}
+      assert_receive {:amarula, :connection_update, %{connection: :disconnected}}
+      GenServer.stop(pid)
+    end
+  end
+
   describe "re-attaching the event sink (set_parent/2 + sink monitor)" do
     # A process that forwards everything it receives to `dest`, tagged — lets a
     # test prove WHICH sink an event reached.

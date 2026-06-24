@@ -15,7 +15,7 @@ defmodule Amarula.Config do
   |-----|---------|---------|
   | `:profile` | — (**required**) | names + scopes this account's stored state |
   | `:storage` | `{Amarula.Storage.File, root: AMARULA_DATA_DIR || "./amarula_data"}` | storage backend `{module, opts}` |
-  | `:retry_cache` | ETS (see `Amarula.RetryCache`) | sent-message cache backend |
+  | `:retry_cache` | ETS (see `Amarula.RetryCache`) | sent-message cache backend + opts, e.g. `{Amarula.RetryCache.ETS, max_entries: 1000}` to raise the cap (default 200, evicts oldest). See `Amarula.RetryCache` |
   | `:registry` | `Amarula.ProfileRegistry` (local) | `{module, name}` or bare `name` for the profile→connection registry; swap for `Horde.Registry` to enforce one-conn-per-profile cluster-wide (default: per node). See `Amarula.ProfileRegistry` |
   | `:auth` | loaded from storage | explicit creds (advanced; normally Amarula loads/persists these itself) |
   | `:version` | `#{inspect(@wa_version)}` | WhatsApp Web *protocol* version — MUST track `src/Defaults/index.ts` or the handshake is rejected. (Distinct from Baileys *source* parity — see `Amarula.Baileys` / `docs/PARITY.md`.) |

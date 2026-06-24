@@ -199,7 +199,7 @@ pointer (and the `kind`), not the raw bytes in your row.
 - **Reply by `channel`.** Put `msg.channel` straight into a send target — routes
   back to the same conversation. Don't reconstruct from `from`/`to`.
 - **Media is lazy.** A `:media` message's `content` is a descriptor; call
-  `Amarula.download_media/2` to fetch bytes. Store the descriptor if you want to
+  `Amarula.download_media/1` to fetch bytes. Store the descriptor if you want to
   download later; bytes aren't kept by the library.
 - **Edits/revokes/reactions point at an earlier `id`** via a `MessageKey` in
   `content`. To apply them you need the original stored — another reason to keep an

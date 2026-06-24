@@ -210,7 +210,69 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
 
       assert ctx.stanzaId == "ORIG1"
       assert ctx.participant == "1@s.whatsapp.net"
+      # A plain conversation message has no nested contextInfo, so it's inlined as-is.
       assert ctx.quotedMessage == msg.raw
+    end
+
+    test "quoting a reply strips the nested contextInfo (no quote-chain growth)" do
+      # The quoted message is ITSELF a reply: its extendedTextMessage carries a
+      # contextInfo with its own quotedMessage. Inlining that verbatim would
+      # re-embed the whole ancestry; strip_quoted must clear it.
+      nested = %Proto.ContextInfo{
+        stanzaId: "OLDER",
+        quotedMessage: %Proto.Message{conversation: "grandparent"}
+      }
+
+      raw = %Proto.Message{
+        extendedTextMessage: %Proto.Message.ExtendedTextMessage{
+          text: "parent",
+          contextInfo: nested
+        }
+      }
+
+      msg =
+        Amarula.Msg.from_proto(raw, %{
+          id: "P",
+          channel: Amarula.Address.parse("g@g.us"),
+          from: Amarula.Address.parse("1@s.whatsapp.net")
+        })
+
+      ctx = MessageEncoder.context_info(quoted: msg)
+
+      # Content kept, but the nested contextInfo (and its quoted ancestry) is gone.
+      assert ctx.quotedMessage.extendedTextMessage.text == "parent"
+      assert ctx.quotedMessage.extendedTextMessage.contextInfo == nil
+    end
+
+    test "quoted clears top-level messageContextInfo but keeps the content" do
+      raw = %Proto.Message{conversation: "hi", messageContextInfo: %Proto.MessageContextInfo{}}
+
+      msg =
+        Amarula.Msg.from_proto(raw, %{
+          id: "P",
+          channel: Amarula.Address.parse("g@g.us"),
+          from: Amarula.Address.parse("1@s.whatsapp.net")
+        })
+
+      stripped = MessageEncoder.context_info(quoted: msg).quotedMessage
+      assert stripped.conversation == "hi"
+      assert stripped.messageContextInfo == nil
+    end
+
+    test "quoted as {msg_id, participant} is a lightweight quote (no inline content)" do
+      ctx = MessageEncoder.context_info(quoted: {"ORIG1", "1@s.whatsapp.net"})
+
+      assert ctx.stanzaId == "ORIG1"
+      assert ctx.participant == "1@s.whatsapp.net"
+      assert ctx.quotedMessage == nil
+    end
+
+    test "quoted tuple accepts an %Address{} participant" do
+      ctx =
+        MessageEncoder.context_info(quoted: {"ORIG1", Amarula.Address.parse("1@s.whatsapp.net")})
+
+      assert ctx.stanzaId == "ORIG1"
+      assert ctx.participant == "1@s.whatsapp.net"
     end
 
     test "mentions map to mentionedJid (jids or Address)" do

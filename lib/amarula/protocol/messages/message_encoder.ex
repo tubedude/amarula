@@ -45,8 +45,15 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
   Build a `%Proto.ContextInfo{}` from reply/mention opts, or `nil` when neither
   is present (so a message stays a plain `conversation`/bare media):
 
-    * `:quoted` — an `%Amarula.Msg{}` being replied to. Fills `stanzaId` (its id),
-      `participant` (its sender jid), and inlines its raw proto as `quotedMessage`.
+    * `:quoted` — the message being replied to, either:
+      * an `%Amarula.Msg{}` — fills `stanzaId`, `participant`, and inlines the
+        original's proto as `quotedMessage` (a full quote — renders even if the
+        recipient no longer has the original), or
+      * a `{msg_id, participant}` tuple (`participant` a jid or `%Amarula.Address{}`)
+        — a **lightweight** quote: threads by `stanzaId` + `participant` with no
+        inline `quotedMessage`. Use this when you have the id but not the original
+        message. It renders when the recipient still has the quoted message; if
+        they don't, the reply may show without a quote preview.
     * `:mentions` — a list of jids or `%Amarula.Address{}` to tag (`mentionedJid`).
   """
   @spec context_info(keyword()) :: Proto.ContextInfo.t() | nil
@@ -63,7 +70,13 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
             %Proto.ContextInfo{
               stanzaId: msg.id,
               participant: msg.from && Amarula.Address.to_jid!(msg.from),
-              quotedMessage: msg.raw
+              quotedMessage: strip_quoted(msg.raw)
+            }
+
+          {msg_id, participant} when is_binary(msg_id) ->
+            %Proto.ContextInfo{
+              stanzaId: msg_id,
+              participant: Amarula.Address.to_jid!(participant)
             }
 
           nil ->
@@ -73,6 +86,30 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
       %{base | mentionedJid: Enum.map(mentions, &Amarula.Address.to_jid!/1)}
     end
   end
+
+  # Minimize a quoted message before inlining it as `quotedMessage`. The important
+  # cut (matching Baileys, `src/Utils/messages.ts`) is clearing the **nested**
+  # `contextInfo` on the quoted content: that's where a quote's own `quotedMessage`
+  # lives, so leaving it in means replying down a quote chain re-embeds the whole
+  # ancestry each hop — the proto grows quadratically in chain depth. We clear the
+  # per-content `contextInfo` of every populated content field (each content type
+  # carries its own), plus the top-level `messageContextInfo`, which keeps a quote
+  # to a single level without having to guess which field is "the" content.
+  defp strip_quoted(%Proto.Message{} = raw) do
+    cleared =
+      raw
+      |> Map.from_struct()
+      |> Enum.map(fn
+        {:__unknown_fields__, v} -> {:__unknown_fields__, v}
+        {:messageContextInfo, _} -> {:messageContextInfo, nil}
+        {k, %{contextInfo: _} = content} -> {k, %{content | contextInfo: nil}}
+        kv -> kv
+      end)
+
+    struct(Proto.Message, cleared)
+  end
+
+  defp strip_quoted(other), do: other
 
   @doc """
   Build a contact message from a `display_name` + `vcard` string. Pass a list of

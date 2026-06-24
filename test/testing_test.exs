@@ -38,14 +38,52 @@ defmodule Amarula.TestingTest do
     Amarula.Testing.deliver(conn, proto, from: @peer)
 
     assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
-    assert %Amarula.Msg{type: :media, content: %{kind: :image}} = msg
-    assert msg.content.media.caption == "look"
+    assert %Amarula.Msg{type: :media, content: %Amarula.Content.Media{kind: :image}} = msg
+    assert msg.content.caption == "look"
+  end
+
+  test "media telemetry reports media?/kind/bytes from the %Content.Media{} struct", %{conn: conn} do
+    # Regression guard: emit_message_telemetry must read the new Content.Media struct
+    # (kind + file_length), not the old %{kind:, media:} wrapper — otherwise media
+    # silently reports media?: false.
+    ref = make_ref()
+    parent = self()
+
+    :telemetry.attach(
+      "media-tel-#{inspect(ref)}",
+      [:amarula, :message, :received],
+      fn _event, meas, meta, _ -> send(parent, {:tel, ref, meas, meta}) end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach("media-tel-#{inspect(ref)}") end)
+
+    proto = %Proto.Message{
+      imageMessage: %Proto.Message.ImageMessage{caption: "look", fileLength: 4242}
+    }
+
+    Amarula.Testing.deliver(conn, proto, from: @peer)
+
+    assert_receive {:tel, ^ref, %{media_bytes: 4242}, %{media?: true, media_kind: :image}}
   end
 
   test "pushname rides on the stanza notify attr", %{conn: conn} do
     Amarula.Testing.deliver_text(conn, from: @peer, text: "hi", notify: "Alice")
 
     assert_receive {:amarula, :messages_upsert, %{messages: [%Amarula.Msg{pushname: "Alice"}]}}
+  end
+
+  test "a bare protocolMessage goes to :protocol_update, not :messages_upsert", %{conn: conn} do
+    proto = %Proto.Message{
+      protocolMessage: %Proto.Message.ProtocolMessage{type: :PEER_DATA_OPERATION_REQUEST_MESSAGE}
+    }
+
+    Amarula.Testing.deliver(conn, proto, from: @peer)
+
+    # It surfaces on its own event for consumers who want it...
+    assert_receive {:amarula, :protocol_update, %{messages: [%Amarula.Msg{type: :protocol}]}}
+    # ...and never pollutes the real-message stream.
+    refute_received {:amarula, :messages_upsert, _}
   end
 
   test "no network: outbound frames go to the sink, not a socket", %{conn: conn} do

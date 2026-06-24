@@ -7,6 +7,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-22
+
+The headline is the **receive side**: a `%Amarula.Msg{}`'s `content` is now always a
+clean, proto-free `Amarula.Content.*` struct — you never pattern-match a raw
+protobuf again. Plus validated `send_*` options, a normalized media struct (with
+mimetype), retry-cache flexibility, and an explicit crypto boundary. This is a
+breaking release; the migration is mechanical (struct fields instead of maps/protos).
+
+### Breaking
+
+- **`%Amarula.Msg{}.content` is now an `Amarula.Content.*` struct for every type**
+  (except `:text` → `String.t()` and `:other` → `nil`). Previously `content` handed
+  back raw protobufs and bare maps. Now: `:reaction` → `%Content.Reaction{}`,
+  `:location` → `%Content.Location{}`, `:poll` → `%Content.Poll{}`, etc. — see the
+  table in `Amarula.Msg`. Any `key`/`poll_key` is a `{jid, msg_id}` ref (the form the
+  send API takes, so a received reaction feeds straight back into `send_reaction/3`).
+  The full proto is still on `msg.raw`. **Migration:** replace map/proto field access
+  on `content` with the documented struct fields.
+- **Media is `%Amarula.Content.Media{}`** (moved from `Amarula.Media`), and `:media`
+  content **is that struct directly** — no more `%{kind:, media:}` wrapper. It
+  surfaces `:mimetype` (use it for the file extension, not `:kind`). Inbound jids on
+  the new structs (`GroupInvite.group`, `Product.business_owner`, `Order.seller`) are
+  `%Amarula.Address{}`, not strings.
+- **Control frames moved off `:messages_upsert` to a new `:protocol_update` event.**
+  Bare `protocolMessage`s (ephemeral/setting changes and other unhandled types) no
+  longer arrive as junk messages; subscribe to `:protocol_update` if you want them.
+- **`fetch_history/4` takes a `message_ref`, not a raw `%Proto.MessageKey{}`.**
+  Front-facing functions should never make you construct an internal protobuf. It
+  now takes the `%Amarula.Msg{}` you received or a `{jid, msg_id}` tuple (consistent
+  with `send_reaction`/`send_edit`/`pin_message`/…). If you were passing a
+  `%Proto.MessageKey{}`, switch to `{jid, msg_id}` or the received `%Amarula.Msg{}`.
+  (The public `message_key` type, which aliased `Proto.MessageKey`, is removed — no
+  protobuf type remains in any public spec.)
+
+### Changed
+
+- **`send_*` options are now validated** (`NimbleOptions`). The option keywords on
+  the facade send functions (`send_text`, `send_media`, `send_location`,
+  `send_poll`, `send_poll_vote`, `send_event`, `send_group_invite`,
+  `request_pairing_code`) are now validated against a schema, and each function's
+  `## Options` docs are generated from that same schema (so they can't drift).
+  **Behaviour change:** an unknown or mistyped option key now raises
+  `NimbleOptions.ValidationError` instead of being silently ignored. This catches
+  typos at the call site; if you were passing an undocumented key that happened to
+  be tolerated, remove it. (`nimble_options` is a new direct dependency, but it was
+  already in the tree via `Req`, so it adds no weight.)
+- **Retry-cache built-ins are bounded the way the protocol is.** The ETS and DETS
+  adapters now evict on a **5-minute TTL** (a retry receipt that hasn't arrived by
+  then won't) in addition to a hard `:max_entries` cap, and that cap's default is
+  raised **200 → 512** (matching the Baileys reference). Size `:max_entries` to your
+  peak sends-per-5-minutes.
+
+### Added
+
+- **Re-attachable consumer event sink — `Amarula.set_parent/2`.** The event sink
+  (where `{:amarula, …}` events go) is no longer frozen at `connect/2`. If the
+  process that called `connect/2` restarts while the connection survives in the
+  registry, re-point the sink on the live connection instead of forcing a
+  stop+reconnect: `Amarula.set_parent(Amarula.via(:primary), self())`. There is
+  still exactly one sink — no subscriber registry, no relay hop.
+- **The sink may be a name, not just a pid** (`connect(:parent)` /
+  `set_parent/2` accept a `t:Amarula.Connection.sink/0`: pid, registered name,
+  `{:via, …}`, or `{name, node}`). A **name re-resolves per event**, so it
+  re-attaches to the consumer's current pid automatically — surviving both the
+  consumer's restart *and* the connection's own restart, the same way a `:profile`
+  handle survives where a raw pid goes stale. A raw pid is not restart-safe; recover
+  it with `set_parent/2`. `:parent` is the preferred connect option; `:parent_pid`
+  remains a legacy alias.
+- **`[:amarula, :sink, :down]` telemetry.** The connection monitors its sink, so a
+  dead consumer is observable instead of events vanishing silently. A name sink's
+  monitor self-heals off the keep-alive once a holder reappears.
+- **`Amarula.RetryCache.ReadOnly`** — back the retry cache with **your own message
+  store** instead of a second copy. If your app already persists sent messages,
+  supply `retry_cache: {Amarula.RetryCache.ReadOnly, get: fn profile, msg_id -> …}`;
+  Amarula then only **reads** on a retry and never writes, evicts, or deletes
+  anything in your store (the `put` callback is optional and this adapter doesn't
+  implement it — there is no write path). Removes the `:max_entries`/TTL sizing
+  question entirely.
+- **`:max_entries` is documented** in the `Amarula.Config` option table and the
+  `Amarula.RetryCache` docs (it already existed; it was just undiscoverable).
+- **`:quoted` accepts a `{msg_id, participant}` tuple** (in addition to an
+  `%Amarula.Msg{}`) — a lightweight quote that threads by id when you have the id
+  but not the original message. It renders when the recipient still has the quoted
+  message; otherwise the reply may show without a quote preview.
+
+### Fixed
+
+- **`Amarula.Connection.start_link/2` and `child_spec/1` are marked internal.** They
+  start only the bare Connection process, not its supervision tree, so a consumer
+  who put `{Amarula.Connection, …}` under their own supervisor got a non-functional
+  connection. The supported entry point is `Amarula.connect/2`. (The connection is a
+  protocol state machine — it self-restarts for the post-pairing 515 handshake — so
+  the library owns its lifecycle; consumers control naming/distribution via the
+  `:registry` config.)
+- **Replies no longer grow with the quote chain.** A reply inlined the full quoted
+  message verbatim, including *its* nested `contextInfo` — so quoting a reply
+  re-embedded the whole quote ancestry each hop (the proto grew quadratically in
+  chain depth). The quoted message is now stripped of its nested `contextInfo`
+  before inlining, keeping a quote to one level (matching the Baileys reference).
+- **Stopped copying the one-time-prekey map into every send.** The credentials
+  handed to each per-recipient sender carried `:pre_keys` (up to ~812 entries,
+  ~100 KB+ on a fresh account) — which the send/encrypt path never reads (it's only
+  used on the receive/decrypt path, in `Connection`). It was being deep-copied into
+  every sender, multiplied per recipient in a group fan-out. It's now dropped before
+  the copy.
+- **`download_media/1` honours its `{:ok | :error}` contract.** A malformed/empty
+  media descriptor now returns `{:error, :invalid_media}` instead of letting the
+  HTTP layer raise (which forced consumers to wrap the call in rescue). It also
+  works with no live connection — documented now — so you can download from a `Task`.
+
+### Documentation
+
+- **`docs/CRYPTO_BOUNDARY.md`** — the Noise/Signal crypto is a pure,
+  self-contained layer; this draws the explicit line between the Core (no
+  app/storage/WhatsApp coupling) and the thin Glue that bridges it to
+  `Amarula.Storage`. Verified: no Core module depends on the app. The Core is
+  extraction-ready in principle (a standalone Signal/Noise library), though
+  extraction is not planned.
+- Corrected the `ConversationSender` rationale across the docs: it is a per-recipient
+  **serialization point**, not a holder of crypto state — the Signal session lives in
+  Storage. (A test, `session_race_test`, documents a known concurrency gap between the
+  send and inline-decrypt paths on that shared session; a fix is planned —
+  `docs/plans/SESSION_WORKER.plan.md`.)
+- README: fixed a stale module reference and the QR-render example (now `qr_code`,
+  the actual dependency).
+
 ## [0.2.4] - 2026-06-21
 
 An internals and robustness pass over the per-connection process tree, prompted

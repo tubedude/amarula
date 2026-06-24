@@ -121,6 +121,12 @@ lib/amarula/protocol/
 - `Repository` (sessions/keys), `SessionStore`, `SessionInjector`, `SessionCipher`,
   `PreKeys`, `DeviceListCache`, `LidMappingFileStore` (LID↔PN), `group/`
   (sender-key cipher).
+- **The crypto is a pure, self-contained layer with an explicit boundary** — the
+  Core (Noise + Signal cipher/ratchet) depends on no app/storage/WhatsApp code; a
+  small set of Glue modules (`SessionStore`, `SessionInjector`, `DeviceListCache`,
+  `LidMapping*Store`, `group/SenderKeyStore`) is the only bridge to
+  `Amarula.Conn`/`Amarula.Storage`. The rule: **Core must never depend on the app.**
+  See [`docs/CRYPTO_BOUNDARY.md`](docs/CRYPTO_BOUNDARY.md).
 
 **Storage** (`lib/amarula/storage*`): pluggable `Amarula.Storage` behaviour scoped
 by `{profile, namespace, key}`; `File` + `DETS` adapters. Holds creds, sessions,
@@ -150,7 +156,11 @@ The tree owns no Registry. The app-level `Amarula.InstanceRegistry` names every
 tree's processes by its `instance_id` ref, and maps `{instance_id, recipient_jid} →
 sender pid` (a registry, not atom names, because the recipient key space is
 unbounded/user-controlled). Senders are one-per-recipient, `:temporary`, lazily
-started, serialize a recipient's sends, and hold no durable state.
+started, and hold no durable state — not even the ratchet (sessions live in
+Storage). A sender is a *lock*, not a cache: `encrypt` is a non-atomic
+load-modify-store of the shared Signal session, so one process per recipient
+serializes it (serial within a recipient, parallel across). See
+`Amarula.Protocol.Messages.ConversationSender`.
 
 **For the full, current infrastructure reference — supervision tree, registry
 rationale, the ConversationSender lifecycle, and the send/ack/crash-recovery

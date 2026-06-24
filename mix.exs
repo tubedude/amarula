@@ -4,7 +4,7 @@ defmodule Amarula.MixProject do
   def project do
     [
       app: :amarula,
-      version: "0.2.4",
+      version: "0.3.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -51,6 +51,7 @@ defmodule Amarula.MixProject do
       extras: [
         "README.md",
         "docs/INFRASTRUCTURE.md",
+        "docs/CRYPTO_BOUNDARY.md",
         "docs/GOING_PROD.md",
         "docs/PARITY.md",
         "usage-rules.md",
@@ -87,6 +88,9 @@ defmodule Amarula.MixProject do
     [
       # Telemetry events (operators attach handlers / a metrics reporter)
       {:telemetry, "~> 1.0"},
+
+      # Option schemas: validate + auto-document the `opts` on facade send_* fns
+      {:nimble_options, "~> 1.0"},
 
       # WebSocket client
       {:websockex, "~> 0.5.1"},

@@ -44,8 +44,22 @@ defmodule Amarula.Connection do
   # Baileys NACK_REASONS (decode-wa-message.ts)
   @nack_unhandled_error 500
   @nack_parsing_error 487
-  # libsignal error text for an already-consumed ratchet counter (duplicate).
-  @missing_keys_error_text "Key used already or never filled"
+  # libsignal error texts that all mean "this stanza was already decrypted, the
+  # key material it references is gone" — i.e. a duplicate redelivery, not a real
+  # failure:
+  #   * "Key used already or never filled" — the ratchet counter was consumed
+  #     (a repeated <enc type="msg">/whisper message).
+  #   * "Invalid PreKey ID" — the one-time prekey a <enc type="pkmsg"> references
+  #     was consumed + deleted by the first decrypt (see remove_used_pre_keys/2),
+  #     so the redelivered pkmsg can no longer find it.
+  # These are stateless string matches on purpose: the redelivery loop recurs on
+  # every reconnect (the server re-fans the undrained stanza), so recognising the
+  # error each time is what terminates it — an in-memory "seen msg_ids" set would
+  # be wiped by the 515 restart and miss the cross-reconnect duplicates.
+  @duplicate_decrypt_error_texts [
+    "Key used already or never filled",
+    "Invalid PreKey ID"
+  ]
   # Baileys maxMsgRetryCount default — cap on retry-resends per message.
   @max_msg_retry_count 5
 
@@ -74,6 +88,7 @@ defmodule Amarula.Connection do
     :retry_delay,
     :retry_timer,
     :parent_pid,
+    :parent_monitor,
     :instance_id,
     :connection_timeout_timer,
     :last_error,
@@ -96,6 +111,19 @@ defmodule Amarula.Connection do
     sender_monitors: %{}
   ]
 
+  @typedoc """
+  The consumer event sink — where `{:amarula, type, data}` events are delivered.
+
+  A raw `pid()` is the simplest form, but it is **not restart-safe**: if the
+  consumer process restarts under a new pid, a pid sink points at a corpse (only
+  `set_parent/2` recovers it). Any name `GenServer.whereis/1` resolves — a
+  registered atom, a `{:via, mod, term}` tuple (e.g. `Amarula.via(profile)` of
+  *another* registry), or a `{name, node}` for a remote consumer — re-resolves to
+  the current holder on every event, so it survives the consumer's restart and
+  even this `Connection`'s own restart automatically. `nil` drops events.
+  """
+  @type sink :: pid() | atom() | {:via, module(), term()} | {atom(), node()} | nil
+
   @type t :: %__MODULE__{
           websocket_client: pid() | nil,
           config: Types.socket_config(),
@@ -104,7 +132,8 @@ defmodule Amarula.Connection do
           max_retries: non_neg_integer(),
           retry_delay: non_neg_integer(),
           retry_timer: reference() | nil,
-          parent_pid: pid() | nil,
+          parent_pid: sink(),
+          parent_monitor: reference() | nil,
           instance_id: reference() | nil,
           connection_timeout_timer: reference() | nil,
           last_error: term() | nil,
@@ -146,11 +175,22 @@ defmodule Amarula.Connection do
   # Client API
 
   @doc """
-  Starts the connection — the per-connection process that owns the websocket,
-  the noise cipher, IQ correlation, login, sends, and consumer-event delivery.
+  **Internal.** Starts the bare Connection process only.
+
+  This starts *just* this GenServer — **not** a working connection. A functional
+  connection needs the surrounding per-connection tree (its sender supervisor and
+  the `InstanceRegistry` wiring its siblings resolve through); without that, the
+  first send fails. `ConnectionSupervisor` calls this as the tree's child.
+
+  Consumers must **not** put `{Amarula.Connection, …}` in their own supervisor —
+  that yields a half-wired connection. The supported entry point is
+  `Amarula.connect/2`, which builds the whole tree (and owns the protocol-driven
+  restarts — e.g. the 515 reconnect after QR pairing — that the consumer should
+  not have to manage). To control *naming/distribution*, pass a `:registry` in the
+  connection config (e.g. `Horde.Registry`); see `Amarula.ProfileRegistry`.
 
   `opts`:
-    * `:name`       — registered name (a `:via` tuple into the instance's Registry,
+    * `:name`       — registered name (a `:via` tuple into `InstanceRegistry`,
       passed by `ConnectionSupervisor`). Omit to start an unnamed process.
     * `:parent_pid` — process to receive `{:amarula, type, data}` events
   """
@@ -164,7 +204,10 @@ defmodule Amarula.Connection do
     GenServer.start_link(__MODULE__, init_arg, name: Keyword.get(opts, :name))
   end
 
-  # Supervisor-friendly form: child spec {Connection, {conn, opts}}.
+  @doc false
+  # Internal: used by ConnectionSupervisor to start Connection as a tree child.
+  # NOT a consumer "supervise-it-yourself" hook — a bare Connection is non-functional
+  # (see start_link/2). Use Amarula.connect/2.
   def child_spec({conn, opts}) do
     %{id: __MODULE__, start: {__MODULE__, :start_link, [conn, opts]}}
   end
@@ -260,6 +303,21 @@ defmodule Amarula.Connection do
   """
   def get_connection_state(pid) do
     GenServer.call(pid, :get_connection_state)
+  end
+
+  @doc """
+  Re-point the consumer event sink to `sink` (a `t:sink/0` — pid, registered name,
+  `{:via, …}`, `{name, node}`, or `nil`) on a live connection, without bouncing the
+  websocket. The old sink is demonitored and the new one monitored.
+
+  This is the recovery path when the process that called `connect/2` restarts while
+  the connection survives: the new consumer re-attaches instead of forcing a
+  stop+reconnect. For a sink that should survive *both* the consumer's and this
+  connection's restarts, pass a name rather than a raw pid (see `t:sink/0`).
+  """
+  @spec set_parent(GenServer.server(), sink()) :: :ok
+  def set_parent(pid, sink) do
+    GenServer.call(pid, {:set_parent, sink})
   end
 
   @doc """
@@ -542,6 +600,9 @@ defmodule Amarula.Connection do
       retry_delay: config.retry_delay || 1000,
       retry_timer: nil,
       parent_pid: parent_pid,
+      # Watch the sink so a dead consumer is observable (telemetry) instead of a
+      # silent send into the void; a raw-pid sink is also cleared on its :DOWN.
+      parent_monitor: monitor_sink(parent_pid),
       instance_id: instance_id,
       connection_timeout_timer: nil,
       last_error: nil,
@@ -597,6 +658,11 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call(:instance_id, _from, state) do
     {:reply, state.instance_id, state}
+  end
+
+  @impl GenServer
+  def handle_call({:set_parent, sink}, _from, state) do
+    {:reply, :ok, install_sink(state, sink)}
   end
 
   @impl GenServer
@@ -1068,6 +1134,25 @@ defmodule Amarula.Connection do
     {:noreply, resolve_ack(state, msg_id, fn _shape -> {:error, :ack_timeout} end)}
   end
 
+  # The consumer event sink went down. Emit telemetry so the loss is observable
+  # (the whole point of monitoring it) rather than events vanishing silently. A
+  # name/via sink stays put — it re-resolves to the consumer's next pid on its own
+  # via `emit_event`, and we re-arm the monitor against whoever holds it now (nil
+  # if no one yet). A raw-pid sink can't come back, so it's cleared; a later
+  # `set_parent/2` re-attaches it.
+  @impl GenServer
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{parent_monitor: ref} = state) do
+    Amarula.Telemetry.emit([:amarula, :sink, :down], profile(state), %{count: 1}, %{
+      reason: reason,
+      sink: state.parent_pid
+    })
+
+    Logger.info("Consumer event sink #{inspect(state.parent_pid)} went down (#{inspect(reason)})")
+
+    new_sink = if is_pid(state.parent_pid), do: nil, else: state.parent_pid
+    {:noreply, install_sink(%{state | parent_monitor: nil}, new_sink)}
+  end
+
   # A per-recipient Sender died. If it crashed mid-pipe it never reported
   # {:send_failed,...}, so its parked sends would otherwise hang to :ack_timeout
   # (and be mislabeled). Fail them now, fast and correctly. A :normal exit is the
@@ -1086,6 +1171,13 @@ defmodule Amarula.Connection do
   # This matches Baileys startKeepAliveRequest() behavior exactly
   @impl GenServer
   def handle_info(:send_keep_alive, state) do
+    # Self-heal the sink monitor off the existing heartbeat: a name sink that was
+    # unheld when attached (or when its holder last died) delivers via per-event
+    # re-resolution but carries no monitor, so a later death would emit no
+    # `:sink, :down`. Re-arm here once the name resolves — no new timer, no polling
+    # loop, just the keep-alive we already run. No-op unless a sink needs it.
+    state = rearm_sink_if_needed(state)
+
     # Initialize last_recv_time if not set (shouldn't happen, but safety check)
     last_recv = state.last_recv_time || System.monotonic_time(:millisecond)
 
@@ -1272,16 +1364,69 @@ defmodule Amarula.Connection do
     emit_event(state, :connection_update, update)
   end
 
-  # Deliver a consumer event straight to the connection's parent_pid as
+  # Deliver a consumer event straight to the connection's sink as
   # `{:amarula, type, data}`. No internal subscriber registry, no relay hop — the
-  # parent_pid is the only sink. Nil parent (e.g. a test starting Connection
-  # directly without a sink) drops the event.
+  # sink is the only one. A pid sink is sent to directly; a name/via sink is
+  # resolved per event (so it re-attaches to the consumer's current pid for free).
+  # An unresolvable sink (nil, or a name no one holds right now) drops the event.
   defp emit_event(%{parent_pid: nil}, _event_type, _data), do: :ok
 
-  defp emit_event(%{parent_pid: parent}, event_type, data) do
-    send(parent, {:amarula, event_type, data})
+  defp emit_event(%{parent_pid: sink}, event_type, data) do
+    case sink_dest(sink) do
+      nil -> :ok
+      dest -> send(dest, {:amarula, event_type, data})
+    end
+
     :ok
   end
+
+  # Resolve a sink to something `send/2` accepts (a pid, or a `{name, node}`), or
+  # nil if it can't be resolved right now. A bare pid is the fast path; everything
+  # else goes through `GenServer.whereis/1` so an unregistered name yields nil
+  # instead of raising (which `send/2` to a stale atom name would).
+  defp sink_dest(pid) when is_pid(pid), do: pid
+  defp sink_dest(sink), do: GenServer.whereis(sink)
+
+  # Re-point the sink: demonitor the old, monitor the new, store it. Used by both
+  # `set_parent/2` and the sink-:DOWN re-arm.
+  defp install_sink(state, sink) do
+    state = demonitor_sink(state)
+    %{state | parent_pid: sink, parent_monitor: monitor_sink(sink)}
+  end
+
+  defp demonitor_sink(%{parent_monitor: nil} = state), do: state
+
+  defp demonitor_sink(%{parent_monitor: ref} = state) do
+    Process.demonitor(ref, [:flush])
+    %{state | parent_monitor: nil}
+  end
+
+  # Monitor a sink's current holder so its death is observable. Returns the monitor
+  # ref, or nil when there's nothing to watch (no sink, or a name no one holds yet).
+  # An unheld name stays unmonitored but is NOT a delivery hole — `emit_event`
+  # re-resolves it per event, and `rearm_sink_if_needed/1` re-arms the monitor off
+  # the keep-alive once it resolves, so observability self-heals too.
+  defp monitor_sink(nil), do: nil
+
+  defp monitor_sink(sink) do
+    case sink_dest(sink) do
+      nil -> nil
+      dest -> Process.monitor(dest)
+    end
+  end
+
+  # Re-arm an unmonitored name sink once it resolves (called off the keep-alive).
+  # Only acts when there's a sink but no live monitor — a pid sink is cleared to
+  # nil on its :DOWN, so this only ever re-arms a name/via that's now holdable.
+  defp rearm_sink_if_needed(%{parent_monitor: nil, parent_pid: sink} = state)
+       when not is_nil(sink) do
+    case monitor_sink(sink) do
+      nil -> state
+      ref -> %{state | parent_monitor: ref}
+    end
+  end
+
+  defp rearm_sink_if_needed(state), do: state
 
   # Dispatch a message to the per-recipient ConversationSender and DON'T block.
   # Connection mints the msg_id and PARKS the caller's `from` under it in
@@ -1340,7 +1485,14 @@ defmodule Amarula.Connection do
       instance_id: instance_id,
       cm: self(),
       conn: state.conn,
-      creds: state.auth_creds,
+      # Drop :pre_keys before handing creds to the sender — it's the one-time-prekey
+      # map (up to ~812 entries on a fresh account, ~100 KB+) read *only* on the
+      # responder/decrypt path (`SessionBuilder.init_incoming`), which runs in
+      # Connection, never in the sender (the sender is always the encrypt/initiator
+      # side). Passing it would deep-copy ~100 KB into every sender, per recipient
+      # on a fan-out. `Map.delete` is cheap (structural sharing); creds still go
+      # per-send so they stay fresh as they mutate after login.
+      creds: Map.delete(state.auth_creds, :pre_keys),
       recipient_jid: jid
     ]
 
@@ -2776,8 +2928,8 @@ defmodule Amarula.Connection do
     Enum.each(msgs, fn msg ->
       {media?, media_kind, bytes} =
         case msg do
-          %{type: :media, content: %{kind: kind, media: m}} ->
-            {true, kind, Map.get(m, :fileLength) || 0}
+          %{type: :media, content: %Amarula.Content.Media{kind: kind, file_length: len}} ->
+            {true, kind, len || 0}
 
           _ ->
             {false, nil, 0}
@@ -2845,18 +2997,37 @@ defmodule Amarula.Connection do
     # session/sender key) then <ack error="500"> nack.
     cond do
       messages != [] ->
-        # Pure Signal plumbing (a bare senderKeyDistributionMessage) has already had
-        # its side effect applied in MessageDecryptor; it is group-session-key plumbing,
-        # not a user message, so it must NOT surface to the consumer. Build each %Msg{}
-        # (classifying once) and drop the :sender_key ones — but keep them counting as a
-        # successful decrypt, so we still send the delivery receipt (drain the offline
-        # queue) and never nack a node whose only enc was an SKDM.
+        # Classify each decrypted message once, then split the stream so the
+        # consumer's `:messages_upsert` carries only real user messages:
+        #   * :sender_key — a bare senderKeyDistributionMessage (group-session-key
+        #     plumbing whose side effect MessageDecryptor already applied). Dropped
+        #     entirely; not user-visible in any form.
+        #   * :protocol — a bare protocolMessage (the residue of control frames:
+        #     ephemeral/setting changes and other types Amarula doesn't handle
+        #     specially; the important ones — history-sync, app-state key-share — are
+        #     already extracted to their own events/handlers upstream). Re-emitted on
+        #     a separate `:protocol_update` event rather than dropped, so a consumer
+        #     CAN react without it polluting `messages_upsert`.
+        # User-meaningful protocolMessages (edit/revoke/member-tag) classify into
+        # their own types upstream, so they stay in `messages_upsert`. We keep all of
+        # them counting as a successful decrypt (we split `msgs`, not `messages`), so
+        # the delivery receipt fires and we never nack a control-only node.
         to_addr = own_address(state)
 
-        msgs =
+        classified =
           messages
           |> Enum.map(&build_msg(state, &1, node, from, msg_id, to_addr))
           |> Enum.reject(&(&1.type == :sender_key))
+
+        {protocol_msgs, msgs} = Enum.split_with(classified, &(&1.type == :protocol))
+
+        if protocol_msgs != [] do
+          emit_to_subscribers(state, :protocol_update, %{
+            from: Amarula.Address.parse(from),
+            id: msg_id,
+            messages: protocol_msgs
+          })
+        end
 
         if msgs != [] do
           kinds = Enum.map(msgs, & &1.type)
@@ -2885,13 +3056,14 @@ defmodule Amarula.Connection do
           state
         end
 
-      # "Key used already or never filled" = the ratchet counter was already
-      # consumed (a duplicate redelivery). A retry is pointless — the sender
-      # can't re-encrypt to a counter we've moved past — and nacking 500 makes
-      # the server keep redelivering it forever (a poison-message loop). Baileys
-      # (messages-recv.ts:1629) acks these with ParsingError(487) and does NOT
-      # retry, terminating the redelivery.
-      missing_keys_error?(errors) ->
+      # A consumed-key error ("Key used already or never filled" /
+      # "Invalid PreKey ID") = the ratchet counter or one-time prekey was already
+      # consumed by the first decrypt (a duplicate redelivery). A retry is
+      # pointless — the sender can't re-encrypt to key material we've moved past —
+      # and nacking 500 makes the server keep redelivering it forever (a
+      # poison-message loop). Baileys (messages-recv.ts:1629) acks these with
+      # ParsingError(487) and does NOT retry, terminating the redelivery.
+      duplicate_decrypt_error?(errors) ->
         Logger.debug(
           "Message #{msg_id} from #{from}: already-decrypted duplicate — ack ParsingError"
         )
@@ -2910,13 +3082,15 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Detect the libsignal "Key used already or never filled" failure (a duplicate
-  # redelivery of an already-ratcheted message). Matches whether the reason is a
-  # raised RuntimeError struct or a plain string.
-  defp missing_keys_error?(errors) do
+  # Detect a libsignal consumed-key failure (a duplicate redelivery of an
+  # already-decrypted message): either the ratchet counter is spent ("Key used
+  # already or never filled") or the one-time prekey a pkmsg references is gone
+  # ("Invalid PreKey ID"). Matches whether the reason is a raised RuntimeError
+  # struct or a plain string.
+  defp duplicate_decrypt_error?(errors) do
     Enum.any?(errors, fn
-      %{message: @missing_keys_error_text} -> true
-      @missing_keys_error_text -> true
+      %{message: msg} -> msg in @duplicate_decrypt_error_texts
+      msg when is_binary(msg) -> msg in @duplicate_decrypt_error_texts
       _ -> false
     end)
   end

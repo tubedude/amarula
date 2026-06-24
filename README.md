@@ -79,14 +79,14 @@ functions.
 ### The QR code
 
 `qr` is a plain string — you render it to a scannable image however you like
-(terminal art, an `eqrcode` PNG, an HTML `<img>`). It's four comma-separated
-fields, `ref,noiseKeyB64,identityKeyB64,advSecretKeyB64`, where `ref` rotates
-every ~20s (each rotation emits a fresh `:connection_update` — re-render on each).
-Render it as-is; don't reformat. Example with [`eqrcode`](https://hex.pm/packages/eqrcode):
+(terminal art, a PNG, an HTML `<img>`). It's four comma-separated fields,
+`ref,noiseKeyB64,identityKeyB64,advSecretKeyB64`, where `ref` rotates every ~20s
+(each rotation emits a fresh `:connection_update` — re-render on each). Render it
+as-is; don't reformat. Example with [`qr_code`](https://hex.pm/packages/qr_code):
 
 ```elixir
-{:amarula, :connection_update, %{qr: qr}} ->
-  qr |> EQRCode.encode() |> EQRCode.png() |> then(&File.write!("qr.png", &1))
+{:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
+  qr |> QRCode.create() |> QRCode.render(:png) |> QRCode.save("qr.png")
 ```
 
 ## Events & connection flow
@@ -175,11 +175,11 @@ sequenceDiagram
 you get the real `{:ok, msg_id}` or `{:error, reason}`, not a fire-and-forget
 acknowledgement. But under the hood sends are **non-blocking and concurrent**:
 
-- The connection process (Socket) doesn't wait — it hands your send to a
-  **per-recipient sender** and is immediately free for the next send.
+- The connection process doesn't wait — it hands your send to a **per-recipient
+  sender** and is immediately free for the next send.
 - Sends to **different recipients run in parallel**; sends to the **same
-  recipient are serialized** (so that recipient's Signal session/ratchet is only
-  ever advanced by one send at a time).
+  recipient are serialized**, so that recipient's Signal session is advanced by
+  one send at a time.
 - Your caller still waits for *its own* result — the sender replies to you
   directly when done. A fast send (cached session) returns while a slow one (new
   recipient: USync + key-bundle fetch) is still in flight.
@@ -197,14 +197,14 @@ ready — fast orders come out first.
 ```mermaid
 sequenceDiagram
     participant App as Your app
-    participant S as Socket
+    participant C as Connection
     participant SA as SenderAlice
     participant SB as SenderBob
 
-    App->>S: send_text bob ... slow, new recipient
-    S-->>SB: dispatch, Socket returns at once
-    App->>S: send_text alice ... fast, cached session
-    S-->>SA: dispatch, Socket still free
+    App->>C: send_text bob ... slow, new recipient
+    C-->>SB: dispatch, Connection returns at once
+    App->>C: send_text alice ... fast, cached session
+    C-->>SA: dispatch, Connection still free
     Note over SB: USync + bundle fetch, slow
     SA-->>App: {:ok, alice_msg_id} Alice finishes first
     SB-->>App: {:ok, bob_msg_id} Bob finishes later
@@ -273,10 +273,10 @@ config :amarula, :retry_cache_adapter, Amarula.RetryCache.ETS
 
 Amarula logs through `Logger`. Almost everything is `:debug`; only connection
 lifecycle, pairing, and errors are `:info`+. So at `config :logger, level: :info`
-your console won't be flooded. To silence Amarula specifically:
+your console won't be flooded. To quiet the connection specifically:
 
 ```elixir
-Logger.put_module_level(Amarula.Protocol.Socket.ConnectionManager, :warning)
+Logger.put_module_level(Amarula.Connection, :warning)
 ```
 
 For production observability prefer [`Amarula.Telemetry`](lib/amarula/telemetry.ex)

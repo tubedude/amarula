@@ -283,6 +283,105 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "re-attaching the event sink (set_parent/2 + sink monitor)" do
+    # A process that forwards everything it receives to `dest`, tagged — lets a
+    # test prove WHICH sink an event reached.
+    defp forwarder(dest) do
+      spawn(fn -> forward_loop(dest) end)
+    end
+
+    defp forward_loop(dest) do
+      receive do
+        msg ->
+          send(dest, {:forwarded, msg})
+          forward_loop(dest)
+      end
+    end
+
+    # Drive one consumer emit through the same path the consumer sees.
+    defp drive_emit(pid), do: send(pid, {:ws_event, nil, {:close, :test}})
+
+    test "set_parent re-points the sink without bouncing the connection", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+      relay = forwarder(self())
+
+      assert :ok = Connection.set_parent(pid, relay)
+      drive_emit(pid)
+
+      assert_receive {:forwarded, {:amarula, :connection_update, %{connection: :disconnected}}}
+      # The original sink (self) no longer receives.
+      refute_receive {:amarula, :connection_update, _}, 50
+      GenServer.stop(pid)
+    end
+
+    test "a name-based sink re-resolves to the consumer's new pid (no set_parent needed)",
+         %{config: config} do
+      name = :"sink_name_#{System.unique_integer([:positive])}"
+      Process.register(self(), name)
+
+      {:ok, pid} = Connection.start_link(config, parent_pid: name)
+      drive_emit(pid)
+      assert_receive {:amarula, :connection_update, %{connection: :disconnected}}
+
+      # Simulate the consumer restarting: a NEW process takes over the name. The
+      # connection wasn't touched, yet the next event lands on the new holder.
+      Process.unregister(name)
+      relay = forwarder(self())
+      Process.register(relay, name)
+
+      drive_emit(pid)
+      assert_receive {:forwarded, {:amarula, :connection_update, %{connection: :disconnected}}}
+
+      GenServer.stop(pid)
+    end
+
+    test "a dead pid sink emits [:amarula, :sink, :down] telemetry and is cleared",
+         %{config: config} do
+      test = self()
+      handler = "sink-down-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler,
+        [:amarula, :sink, :down],
+        fn _e, meas, meta, _ -> send(test, {:sink_down, meas, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      sink = spawn(fn -> Process.sleep(:infinity) end)
+      {:ok, pid} = Connection.start_link(config, parent_pid: sink)
+
+      Process.exit(sink, :kill)
+
+      assert_receive {:sink_down, %{count: 1}, %{sink: ^sink, reason: :killed}}
+      # The raw-pid sink is cleared, so the connection now has no sink (not a corpse).
+      assert :sys.get_state(pid).parent_pid == nil
+      GenServer.stop(pid)
+    end
+
+    test "an unheld name sink is delivered-to AND its monitor self-heals on keep-alive",
+         %{config: config} do
+      name = :"sink_unheld_#{System.unique_integer([:positive])}"
+      # Attach a name nobody holds yet: no monitor is armed at attach time.
+      {:ok, pid} = Connection.start_link(config, parent_pid: name)
+      assert :sys.get_state(pid).parent_monitor == nil
+
+      # Consumer appears and claims the name. Per-event resolution already delivers
+      # to it (no set_parent needed)...
+      relay = forwarder(self())
+      Process.register(relay, name)
+      drive_emit(pid)
+      assert_receive {:forwarded, {:amarula, :connection_update, %{connection: :disconnected}}}
+
+      # ...and the monitor self-heals off the heartbeat, so a later death is observable.
+      send(pid, :send_keep_alive)
+      assert :sys.get_state(pid).parent_monitor != nil
+
+      GenServer.stop(pid)
+    end
+  end
+
   describe "build_msg/6 — real recipient on own (fan-out) messages" do
     alias Amarula.{Address, Msg}
     alias Amarula.Protocol.Proto

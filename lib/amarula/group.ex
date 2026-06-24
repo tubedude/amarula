@@ -130,6 +130,16 @@ defmodule Amarula.Group do
     Connection.group_op(conn, GroupOps.member_add_mode(group, mode), &ok_result/1)
   end
 
+  @doc """
+  Set your own **member tag** (per-group self-label) in `group`, or clear it with
+  `""`. Capped at 30 chars (a longer one is rejected, not truncated). A *message*
+  send (not an IQ op), so it lives on the facade too as `Amarula.update_member_tag/3`
+  — this is the group-scoped alias.
+  """
+  @spec update_member_tag(conn(), String.t(), String.t()) ::
+          Amarula.send_result() | {:error, :member_tag_too_long}
+  defdelegate update_member_tag(conn, group, label), to: Amarula
+
   @doc "Turn join-approval (admin approves joiners) `:on`/`:off`."
   @spec join_approval_mode(conn(), String.t(), :on | :off) :: :ok | {:error, term()}
   def join_approval_mode(conn, group, mode) do

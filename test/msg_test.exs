@@ -16,21 +16,25 @@ defmodule Amarula.MsgTest do
     assert msg.raw.conversation == "hello"
   end
 
-  test "media message exposes kind + struct for download" do
-    img = %Proto.Message.ImageMessage{directPath: "/x", mediaKey: <<1>>}
+  test "media message exposes kind + a normalized %Amarula.Content.Media{} (not the proto)" do
+    img = %Proto.Message.ImageMessage{directPath: "/x", mediaKey: <<1>>, mimetype: "image/jpeg"}
     msg = build(%Proto.Message{imageMessage: img})
     assert msg.type == :media
-    assert msg.content == %{kind: :image, media: img}
+    # content IS the %Content.Media{} struct directly (it carries :kind).
+    assert %Amarula.Content.Media{kind: :image} = m = msg.content
+    assert m.direct_path == "/x"
+    assert m.media_key == <<1>>
+    assert m.mimetype == "image/jpeg"
   end
 
-  test "reaction carries key + emoji" do
+  test "reaction carries the target as a {jid, msg_id} ref + emoji (not a proto key)" do
     key = %Proto.MessageKey{id: "ABC", remoteJid: "x@s.whatsapp.net"}
 
     msg =
       build(%Proto.Message{reactionMessage: %Proto.Message.ReactionMessage{key: key, text: "👍"}})
 
     assert msg.type == :reaction
-    assert msg.content == %{key: key, emoji: "👍"}
+    assert msg.content == %Amarula.Content.Reaction{key: {"x@s.whatsapp.net", "ABC"}, emoji: "👍"}
   end
 
   test "envelope fields are carried (channel/from/to)" do
@@ -84,22 +88,28 @@ defmodule Amarula.MsgTest do
     assert msg.type == :other
   end
 
-  test "pass-through classes carry the struct as content" do
-    contact = %Proto.Message.ContactMessage{displayName: "Bob"}
-    assert %{type: :contact, content: ^contact} = build(%Proto.Message{contactMessage: contact})
+  test "structured classes carry a normalized Content struct (not the proto)" do
+    contact =
+      build(%Proto.Message{contactMessage: %Proto.Message.ContactMessage{displayName: "Bob"}})
 
-    loc = %Proto.Message.LocationMessage{degreesLatitude: 1.0}
-    assert %{type: :location, content: ^loc} = build(%Proto.Message{locationMessage: loc})
+    assert %{type: :contact, content: %Amarula.Content.Contact{display_name: "Bob"}} = contact
 
-    poll = %Proto.Message.PollCreationMessage{name: "Q"}
-    assert %{type: :poll, content: ^poll} = build(%Proto.Message{pollCreationMessage: poll})
+    loc =
+      build(%Proto.Message{locationMessage: %Proto.Message.LocationMessage{degreesLatitude: 1.0}})
+
+    assert %{type: :location, content: %Amarula.Content.Location{latitude: 1.0}} = loc
+
+    poll =
+      build(%Proto.Message{pollCreationMessage: %Proto.Message.PollCreationMessage{name: "Q"}})
+
+    assert %{type: :poll, content: %Amarula.Content.Poll{name: "Q"}} = poll
   end
 
-  test "protocol messages surface as {:protocol, %{type, message}}" do
+  test "protocol messages surface the type tag only (no proto in content)" do
     pm = %Proto.Message.ProtocolMessage{type: :APP_STATE_SYNC_KEY_SHARE}
     msg = build(%Proto.Message{protocolMessage: pm})
     assert msg.type == :protocol
-    assert msg.content == %{type: :APP_STATE_SYNC_KEY_SHARE, message: pm}
+    assert msg.content == %Amarula.Content.Protocol{type: :APP_STATE_SYNC_KEY_SHARE}
   end
 
   describe "quoted replies + mentions" do

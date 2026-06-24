@@ -4,7 +4,7 @@ defmodule Amarula.Address do
   for or from. A friendly value you can build, inspect, and pass to sends, instead
   of juggling raw `"user@server"` jid strings.
 
-  Three kinds, distinguished by `:kind`:
+  Four kinds, distinguished by `:kind`:
 
     * `:pn`    — a phone-number identity (`<number>@s.whatsapp.net`).
     * `:lid`   — a privacy "Linked ID" (`<id>@lid`). WhatsApp's wire-preferred
@@ -40,11 +40,11 @@ defmodule Amarula.Address do
 
   alias Amarula.Protocol.Binary.JID
 
-  @enforce_keys [:user, :kind]
-  defstruct [:user, :kind, :device]
-
   @type kind :: :pn | :lid | :group | :none
   @type t :: %__MODULE__{user: String.t(), kind: kind(), device: non_neg_integer() | nil}
+
+  @enforce_keys [:user, :kind]
+  defstruct [:user, :kind, :device]
 
   @server %{pn: "s.whatsapp.net", lid: "lid", group: "g.us"}
 
@@ -66,11 +66,13 @@ defmodule Amarula.Address do
 
   @doc """
   Parse a jid string into an `Address` (via `JID.decode/1`). An already-parsed
-  `Address` passes through unchanged, so it's safe to call anywhere a string *or*
-  an `Address` may arrive. Returns `nil` for an unparseable/unknown-server string;
-  use `parse!/1` when a bad jid should raise instead.
+  `Address` passes through unchanged, and `nil` passes through as `nil` — so it's
+  safe to call on an optional `String.t() | nil` field without wrapping. Also
+  returns `nil` for an unparseable or unknown-server string; use `parse!/1` when a
+  bad jid should raise instead.
   """
-  @spec parse(String.t() | t()) :: t() | nil
+  @spec parse(String.t() | t() | nil) :: t() | nil
+  def parse(nil), do: nil
   def parse(%__MODULE__{} = address), do: address
 
   def parse(jid) when is_binary(jid) do

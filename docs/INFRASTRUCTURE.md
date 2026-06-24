@@ -59,6 +59,34 @@ It is a large coordinator on purpose. The decision and domain logic live in thei
 own pure modules (`Router`, `IQ`, `Login`, the message and signal layers);
 `Connection` wires them together and owns the side effects.
 
+### The event sink (re-attachable)
+
+Consumer events (`{:amarula, type, data}`) go to a single **sink** held in
+`Connection` state — there is still no subscriber registry or relay hop. The sink
+is set at `connect/2` (the `:parent`/`:parent_pid` opt, default the caller) and can
+be re-pointed on a live connection with `Amarula.set_parent/2`, so a consumer whose
+process restarts can re-attach without bouncing the websocket.
+
+The sink is a `t:Amarula.Connection.sink/0`: a `pid`, a registered name, a
+`{:via, …}` tuple, or `{name, node}`. A **raw pid** is not restart-safe — if the
+consumer restarts under a new pid, the old pid points at a corpse, and only
+`set_parent/2` recovers it. A **name** is restart-safe by construction:
+`emit_event` resolves it per event (via `GenServer.whereis/1`), so it re-attaches to
+the consumer's current pid automatically — across both the consumer's restart *and*
+this `Connection`'s own restart (which otherwise re-seeds the sink from the static
+child spec). This mirrors what `ProfileRegistry` does for the reverse direction
+(addressing the connection by `profile` instead of a raw pid).
+
+`Connection` **monitors** the sink. When it dies, `[:amarula, :sink, :down]`
+telemetry fires (so the loss is observable instead of silent), a raw-pid sink is
+cleared, and a name sink is left in place to re-resolve. A name sink that's unheld
+when attached carries no monitor yet, but it is not a delivery hole — `emit_event`
+re-resolves it per event, and the monitor self-heals off the keep-alive heartbeat
+(`rearm_sink_if_needed/1`) once a holder reappears, so `:sink, :down` coverage
+resumes too. Events emitted while no sink resolves are dropped — there is no replay
+buffer (and, unlike a real socket reconnect, the socket stayed up, so the server
+won't re-send them).
+
 ### Retry cache
 
 Not a process of its own. The per-connection retry-cache ETS table is created and

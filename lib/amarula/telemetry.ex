@@ -9,9 +9,10 @@ defmodule Amarula.Telemetry do
   ## Privacy
 
   Telemetry payloads NEVER carry phone numbers, JIDs, message content, or key
-  material — only counts, byte sizes, durations, booleans, kinds, and the
-  connection's `:profile`. Every emit goes through `emit/3` / `span/4` here, which
-  inject `:profile`, so this is the single file to audit for leaks.
+  material — only counts, byte sizes, durations, booleans, kinds, process
+  references (e.g. an event-sink pid/name), and the connection's `:profile`. Every
+  emit goes through `emit/3` / `span/4` here, which inject `:profile`, so this is
+  the single file to audit for leaks.
 
   ## Events
 
@@ -21,6 +22,7 @@ defmodule Amarula.Telemetry do
   | Event | Measurements | Metadata |
   |-------|--------------|----------|
   | `[:amarula, :connection, :update]` | `%{count: 1}` | `%{profile, state}` |
+  | `[:amarula, :sink, :down]` | `%{count: 1}` | `%{profile, sink, reason}` — the consumer event sink died; `sink` is the pid/name, `reason` the exit. Events drop until a new sink is attached (`set_parent/2`) or a name-based sink re-resolves. |
   | `[:amarula, :send, :start]` | `%{monotonic_time, system_time}` | `%{profile, kind, media?, media_kind}` |
   | `[:amarula, :send, :stop]` | `%{duration, bytes}` | `%{profile, kind, media?, media_kind}` |
   | `[:amarula, :send, :exception]` | `%{duration}` | `%{profile, kind, kind: :error/:exit/:throw, reason}` |
@@ -66,6 +68,7 @@ defmodule Amarula.Telemetry do
   def events do
     [
       [:amarula, :connection, :update],
+      [:amarula, :sink, :down],
       [:amarula, :send, :start],
       [:amarula, :send, :stop],
       [:amarula, :send, :exception],

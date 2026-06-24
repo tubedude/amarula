@@ -74,6 +74,7 @@ defmodule Amarula.Connection do
     :retry_delay,
     :retry_timer,
     :parent_pid,
+    :parent_monitor,
     :instance_id,
     :connection_timeout_timer,
     :last_error,
@@ -96,6 +97,19 @@ defmodule Amarula.Connection do
     sender_monitors: %{}
   ]
 
+  @typedoc """
+  The consumer event sink — where `{:amarula, type, data}` events are delivered.
+
+  A raw `pid()` is the simplest form, but it is **not restart-safe**: if the
+  consumer process restarts under a new pid, a pid sink points at a corpse (only
+  `set_parent/2` recovers it). Any name `GenServer.whereis/1` resolves — a
+  registered atom, a `{:via, mod, term}` tuple (e.g. `Amarula.via(profile)` of
+  *another* registry), or a `{name, node}` for a remote consumer — re-resolves to
+  the current holder on every event, so it survives the consumer's restart and
+  even this `Connection`'s own restart automatically. `nil` drops events.
+  """
+  @type sink :: pid() | atom() | {:via, module(), term()} | {atom(), node()} | nil
+
   @type t :: %__MODULE__{
           websocket_client: pid() | nil,
           config: Types.socket_config(),
@@ -104,7 +118,8 @@ defmodule Amarula.Connection do
           max_retries: non_neg_integer(),
           retry_delay: non_neg_integer(),
           retry_timer: reference() | nil,
-          parent_pid: pid() | nil,
+          parent_pid: sink(),
+          parent_monitor: reference() | nil,
           instance_id: reference() | nil,
           connection_timeout_timer: reference() | nil,
           last_error: term() | nil,
@@ -274,6 +289,21 @@ defmodule Amarula.Connection do
   """
   def get_connection_state(pid) do
     GenServer.call(pid, :get_connection_state)
+  end
+
+  @doc """
+  Re-point the consumer event sink to `sink` (a `t:sink/0` — pid, registered name,
+  `{:via, …}`, `{name, node}`, or `nil`) on a live connection, without bouncing the
+  websocket. The old sink is demonitored and the new one monitored.
+
+  This is the recovery path when the process that called `connect/2` restarts while
+  the connection survives: the new consumer re-attaches instead of forcing a
+  stop+reconnect. For a sink that should survive *both* the consumer's and this
+  connection's restarts, pass a name rather than a raw pid (see `t:sink/0`).
+  """
+  @spec set_parent(GenServer.server(), sink()) :: :ok
+  def set_parent(pid, sink) do
+    GenServer.call(pid, {:set_parent, sink})
   end
 
   @doc """
@@ -556,6 +586,9 @@ defmodule Amarula.Connection do
       retry_delay: config.retry_delay || 1000,
       retry_timer: nil,
       parent_pid: parent_pid,
+      # Watch the sink so a dead consumer is observable (telemetry) instead of a
+      # silent send into the void; a raw-pid sink is also cleared on its :DOWN.
+      parent_monitor: monitor_sink(parent_pid),
       instance_id: instance_id,
       connection_timeout_timer: nil,
       last_error: nil,
@@ -611,6 +644,11 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call(:instance_id, _from, state) do
     {:reply, state.instance_id, state}
+  end
+
+  @impl GenServer
+  def handle_call({:set_parent, sink}, _from, state) do
+    {:reply, :ok, install_sink(state, sink)}
   end
 
   @impl GenServer
@@ -1082,6 +1120,25 @@ defmodule Amarula.Connection do
     {:noreply, resolve_ack(state, msg_id, fn _shape -> {:error, :ack_timeout} end)}
   end
 
+  # The consumer event sink went down. Emit telemetry so the loss is observable
+  # (the whole point of monitoring it) rather than events vanishing silently. A
+  # name/via sink stays put — it re-resolves to the consumer's next pid on its own
+  # via `emit_event`, and we re-arm the monitor against whoever holds it now (nil
+  # if no one yet). A raw-pid sink can't come back, so it's cleared; a later
+  # `set_parent/2` re-attaches it.
+  @impl GenServer
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{parent_monitor: ref} = state) do
+    Amarula.Telemetry.emit([:amarula, :sink, :down], profile(state), %{count: 1}, %{
+      reason: reason,
+      sink: state.parent_pid
+    })
+
+    Logger.info("Consumer event sink #{inspect(state.parent_pid)} went down (#{inspect(reason)})")
+
+    new_sink = if is_pid(state.parent_pid), do: nil, else: state.parent_pid
+    {:noreply, install_sink(%{state | parent_monitor: nil}, new_sink)}
+  end
+
   # A per-recipient Sender died. If it crashed mid-pipe it never reported
   # {:send_failed,...}, so its parked sends would otherwise hang to :ack_timeout
   # (and be mislabeled). Fail them now, fast and correctly. A :normal exit is the
@@ -1100,6 +1157,13 @@ defmodule Amarula.Connection do
   # This matches Baileys startKeepAliveRequest() behavior exactly
   @impl GenServer
   def handle_info(:send_keep_alive, state) do
+    # Self-heal the sink monitor off the existing heartbeat: a name sink that was
+    # unheld when attached (or when its holder last died) delivers via per-event
+    # re-resolution but carries no monitor, so a later death would emit no
+    # `:sink, :down`. Re-arm here once the name resolves — no new timer, no polling
+    # loop, just the keep-alive we already run. No-op unless a sink needs it.
+    state = rearm_sink_if_needed(state)
+
     # Initialize last_recv_time if not set (shouldn't happen, but safety check)
     last_recv = state.last_recv_time || System.monotonic_time(:millisecond)
 
@@ -1286,16 +1350,69 @@ defmodule Amarula.Connection do
     emit_event(state, :connection_update, update)
   end
 
-  # Deliver a consumer event straight to the connection's parent_pid as
+  # Deliver a consumer event straight to the connection's sink as
   # `{:amarula, type, data}`. No internal subscriber registry, no relay hop — the
-  # parent_pid is the only sink. Nil parent (e.g. a test starting Connection
-  # directly without a sink) drops the event.
+  # sink is the only one. A pid sink is sent to directly; a name/via sink is
+  # resolved per event (so it re-attaches to the consumer's current pid for free).
+  # An unresolvable sink (nil, or a name no one holds right now) drops the event.
   defp emit_event(%{parent_pid: nil}, _event_type, _data), do: :ok
 
-  defp emit_event(%{parent_pid: parent}, event_type, data) do
-    send(parent, {:amarula, event_type, data})
+  defp emit_event(%{parent_pid: sink}, event_type, data) do
+    case sink_dest(sink) do
+      nil -> :ok
+      dest -> send(dest, {:amarula, event_type, data})
+    end
+
     :ok
   end
+
+  # Resolve a sink to something `send/2` accepts (a pid, or a `{name, node}`), or
+  # nil if it can't be resolved right now. A bare pid is the fast path; everything
+  # else goes through `GenServer.whereis/1` so an unregistered name yields nil
+  # instead of raising (which `send/2` to a stale atom name would).
+  defp sink_dest(pid) when is_pid(pid), do: pid
+  defp sink_dest(sink), do: GenServer.whereis(sink)
+
+  # Re-point the sink: demonitor the old, monitor the new, store it. Used by both
+  # `set_parent/2` and the sink-:DOWN re-arm.
+  defp install_sink(state, sink) do
+    state = demonitor_sink(state)
+    %{state | parent_pid: sink, parent_monitor: monitor_sink(sink)}
+  end
+
+  defp demonitor_sink(%{parent_monitor: nil} = state), do: state
+
+  defp demonitor_sink(%{parent_monitor: ref} = state) do
+    Process.demonitor(ref, [:flush])
+    %{state | parent_monitor: nil}
+  end
+
+  # Monitor a sink's current holder so its death is observable. Returns the monitor
+  # ref, or nil when there's nothing to watch (no sink, or a name no one holds yet).
+  # An unheld name stays unmonitored but is NOT a delivery hole — `emit_event`
+  # re-resolves it per event, and `rearm_sink_if_needed/1` re-arms the monitor off
+  # the keep-alive once it resolves, so observability self-heals too.
+  defp monitor_sink(nil), do: nil
+
+  defp monitor_sink(sink) do
+    case sink_dest(sink) do
+      nil -> nil
+      dest -> Process.monitor(dest)
+    end
+  end
+
+  # Re-arm an unmonitored name sink once it resolves (called off the keep-alive).
+  # Only acts when there's a sink but no live monitor — a pid sink is cleared to
+  # nil on its :DOWN, so this only ever re-arms a name/via that's now holdable.
+  defp rearm_sink_if_needed(%{parent_monitor: nil, parent_pid: sink} = state)
+       when not is_nil(sink) do
+    case monitor_sink(sink) do
+      nil -> state
+      ref -> %{state | parent_monitor: ref}
+    end
+  end
+
+  defp rearm_sink_if_needed(state), do: state
 
   # Dispatch a message to the per-recipient ConversationSender and DON'T block.
   # Connection mints the msg_id and PARKS the caller's `from` under it in

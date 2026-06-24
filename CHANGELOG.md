@@ -61,6 +61,23 @@ breaking release; the migration is mechanical (struct fields instead of maps/pro
 
 ### Added
 
+- **Re-attachable consumer event sink — `Amarula.set_parent/2`.** The event sink
+  (where `{:amarula, …}` events go) is no longer frozen at `connect/2`. If the
+  process that called `connect/2` restarts while the connection survives in the
+  registry, re-point the sink on the live connection instead of forcing a
+  stop+reconnect: `Amarula.set_parent(Amarula.via(:primary), self())`. There is
+  still exactly one sink — no subscriber registry, no relay hop.
+- **The sink may be a name, not just a pid** (`connect(:parent)` /
+  `set_parent/2` accept a `t:Amarula.Connection.sink/0`: pid, registered name,
+  `{:via, …}`, or `{name, node}`). A **name re-resolves per event**, so it
+  re-attaches to the consumer's current pid automatically — surviving both the
+  consumer's restart *and* the connection's own restart, the same way a `:profile`
+  handle survives where a raw pid goes stale. A raw pid is not restart-safe; recover
+  it with `set_parent/2`. `:parent` is the preferred connect option; `:parent_pid`
+  remains a legacy alias.
+- **`[:amarula, :sink, :down]` telemetry.** The connection monitors its sink, so a
+  dead consumer is observable instead of events vanishing silently. A name sink's
+  monitor self-heals off the keep-alive once a holder reappears.
 - **`Amarula.RetryCache.ReadOnly`** — back the retry cache with **your own message
   store** instead of a second copy. If your app already persists sent messages,
   supply `retry_cache: {Amarula.RetryCache.ReadOnly, get: fn profile, msg_id -> …}`;

@@ -302,17 +302,44 @@ defmodule Amarula do
 
   `opts` here are **process/runtime** wiring, distinct from the **config map**
   passed to `new/1` (the WhatsApp/protocol settings like `:mark_online_on_connect`):
-    * `:parent_pid` — process to receive `{:amarula, ..}` events (default: caller)
+    * `:parent`     — the event sink (`t:Amarula.Connection.sink/0`): a pid, a
+      registered name, a `{:via, …}` tuple, or `{name, node}`. A name survives the
+      consumer's restart (it re-resolves to the current holder); a raw pid does not.
+      Default: the caller's pid. Re-point a live connection's sink with
+      `set_parent/2`.
+    * `:parent_pid` — legacy alias for `:parent` (a pid). `:parent` wins if both given.
     * `:name`       — optional registered name for the connection
   """
   @spec connect(Amarula.Conn.t(), keyword()) ::
           {:ok, conn()} | {:error, {:already_running, pid()}} | {:error, term()}
   def connect(%Amarula.Conn{} = conn, opts \\ []) do
+    # `:parent` is the preferred name for the sink; `:parent_pid` is the legacy
+    # alias. Normalize to the `:parent_pid` key the connection plumbing reads.
+    opts =
+      case Keyword.fetch(opts, :parent) do
+        {:ok, sink} -> opts |> Keyword.delete(:parent) |> Keyword.put(:parent_pid, sink)
+        :error -> opts
+      end
+
     with {:ok, pid} <- Connection.make_socket(conn, opts),
          :ok <- Connection.connect(pid) do
       {:ok, pid}
     end
   end
+
+  @doc """
+  Re-attach the consumer event sink of a live connection to `sink` without
+  bouncing the websocket — the recovery path when the process that called
+  `connect/2` restarts while the connection survives in the registry.
+
+  `conn` is any connection handle (a pid, or `via/1` of a profile); `sink` is a
+  `t:Amarula.Connection.sink/0`. Pass a registered name (not a raw pid) for a sink
+  that also survives the connection's own restart. Returns `:ok`.
+
+      Amarula.set_parent(Amarula.via(:primary), self())
+  """
+  @spec set_parent(conn(), Amarula.Connection.sink()) :: :ok
+  defdelegate set_parent(conn, sink), to: Connection
 
   @doc """
   The live connection pid for `profile`, or `nil`. A restart-safe handle: the pid

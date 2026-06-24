@@ -44,8 +44,22 @@ defmodule Amarula.Connection do
   # Baileys NACK_REASONS (decode-wa-message.ts)
   @nack_unhandled_error 500
   @nack_parsing_error 487
-  # libsignal error text for an already-consumed ratchet counter (duplicate).
-  @missing_keys_error_text "Key used already or never filled"
+  # libsignal error texts that all mean "this stanza was already decrypted, the
+  # key material it references is gone" — i.e. a duplicate redelivery, not a real
+  # failure:
+  #   * "Key used already or never filled" — the ratchet counter was consumed
+  #     (a repeated <enc type="msg">/whisper message).
+  #   * "Invalid PreKey ID" — the one-time prekey a <enc type="pkmsg"> references
+  #     was consumed + deleted by the first decrypt (see remove_used_pre_keys/2),
+  #     so the redelivered pkmsg can no longer find it.
+  # These are stateless string matches on purpose: the redelivery loop recurs on
+  # every reconnect (the server re-fans the undrained stanza), so recognising the
+  # error each time is what terminates it — an in-memory "seen msg_ids" set would
+  # be wiped by the 515 restart and miss the cross-reconnect duplicates.
+  @duplicate_decrypt_error_texts [
+    "Key used already or never filled",
+    "Invalid PreKey ID"
+  ]
   # Baileys maxMsgRetryCount default — cap on retry-resends per message.
   @max_msg_retry_count 5
 
@@ -3042,13 +3056,14 @@ defmodule Amarula.Connection do
           state
         end
 
-      # "Key used already or never filled" = the ratchet counter was already
-      # consumed (a duplicate redelivery). A retry is pointless — the sender
-      # can't re-encrypt to a counter we've moved past — and nacking 500 makes
-      # the server keep redelivering it forever (a poison-message loop). Baileys
-      # (messages-recv.ts:1629) acks these with ParsingError(487) and does NOT
-      # retry, terminating the redelivery.
-      missing_keys_error?(errors) ->
+      # A consumed-key error ("Key used already or never filled" /
+      # "Invalid PreKey ID") = the ratchet counter or one-time prekey was already
+      # consumed by the first decrypt (a duplicate redelivery). A retry is
+      # pointless — the sender can't re-encrypt to key material we've moved past —
+      # and nacking 500 makes the server keep redelivering it forever (a
+      # poison-message loop). Baileys (messages-recv.ts:1629) acks these with
+      # ParsingError(487) and does NOT retry, terminating the redelivery.
+      duplicate_decrypt_error?(errors) ->
         Logger.debug(
           "Message #{msg_id} from #{from}: already-decrypted duplicate — ack ParsingError"
         )
@@ -3067,13 +3082,15 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Detect the libsignal "Key used already or never filled" failure (a duplicate
-  # redelivery of an already-ratcheted message). Matches whether the reason is a
-  # raised RuntimeError struct or a plain string.
-  defp missing_keys_error?(errors) do
+  # Detect a libsignal consumed-key failure (a duplicate redelivery of an
+  # already-decrypted message): either the ratchet counter is spent ("Key used
+  # already or never filled") or the one-time prekey a pkmsg references is gone
+  # ("Invalid PreKey ID"). Matches whether the reason is a raised RuntimeError
+  # struct or a plain string.
+  defp duplicate_decrypt_error?(errors) do
     Enum.any?(errors, fn
-      %{message: @missing_keys_error_text} -> true
-      @missing_keys_error_text -> true
+      %{message: msg} -> msg in @duplicate_decrypt_error_texts
+      msg when is_binary(msg) -> msg in @duplicate_decrypt_error_texts
       _ -> false
     end)
   end

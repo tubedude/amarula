@@ -283,6 +283,49 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "sending while disconnected (no crash, tagged error)" do
+    # A fresh Connection has noise_state: nil and websocket_client: nil (handshake
+    # not done) — exactly the window where a send used to crash the GenServer:
+    # encode_frame(nil, _) → BadMapError, or send_data(nil, _) → :noproc. Every
+    # send path must instead return {:error, :not_connected} and stay alive.
+
+    test "mark_read returns {:error, :not_connected} and does not crash", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      assert {:error, :not_connected} =
+               Connection.mark_read(pid, "5511999998888@s.whatsapp.net", ["M1"])
+
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "relay_stanza returns {:error, :not_connected} and does not crash", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+      node = %Node{tag: "ping", attrs: %{"id" => "x"}, content: nil}
+
+      assert {:error, :not_connected} = Connection.relay_stanza(pid, node)
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "a query_iq fails fast instead of parking the caller", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+      node = %Node{tag: "iq", attrs: %{"type" => "get"}, content: nil}
+
+      assert {:error, :not_connected} = Connection.query_iq(pid, node)
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "a waiter IQ (list_groups) fails fast instead of parking", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      assert {:error, :not_connected} = Connection.list_groups(pid)
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+  end
+
   describe "down-transition on a connection error" do
     test "a ws error emits :connection_update :disconnected, not just :error", %{config: config} do
       # The error paths used to emit only :error, never the :connection_update the

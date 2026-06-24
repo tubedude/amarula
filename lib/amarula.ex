@@ -534,11 +534,12 @@ defmodule Amarula do
   def set_presence(conn, type), do: GenServer.call(conn, {:set_presence, type})
 
   @doc "Send a typing indicator to `jid`: `:composing`, `:recording`, or `:paused`."
-  @spec send_chatstate(conn(), jid(), :composing | :recording | :paused) :: :ok
+  @spec send_chatstate(conn(), jid(), :composing | :recording | :paused) ::
+          :ok | {:error, :not_connected}
   def send_chatstate(conn, jid, type), do: GenServer.call(conn, {:send_chatstate, jid, type})
 
   @doc "Subscribe to a contact's presence updates."
-  @spec subscribe_presence(conn(), jid()) :: :ok
+  @spec subscribe_presence(conn(), jid()) :: :ok | {:error, :not_connected}
   def subscribe_presence(conn, jid), do: GenServer.call(conn, {:presence_subscribe, jid})
 
   @request_pairing_code_opts NimbleOptions.new!(
@@ -575,7 +576,7 @@ defmodule Amarula do
   Send a read receipt for `message_ids` in chat `jid` (pass `participant` for a
   group sender). Marks those messages read on the sender's side.
   """
-  @spec mark_read(conn(), jid(), [String.t(), ...], jid() | nil) :: :ok
+  @spec mark_read(conn(), jid(), [String.t(), ...], jid() | nil) :: :ok | {:error, :not_connected}
   def mark_read(conn, jid, message_ids, participant \\ nil),
     do: GenServer.call(conn, {:mark_read, jid, message_ids, participant})
 

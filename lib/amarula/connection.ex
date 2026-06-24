@@ -375,7 +375,7 @@ defmodule Amarula.Connection do
   """
   @spec query_iq(GenServer.server(), Amarula.Protocol.Binary.Node.t(), timeout()) ::
           {:ok, Amarula.Protocol.Binary.Node.t()}
-          | {:error, Amarula.Protocol.Binary.Node.t() | :timeout}
+          | {:error, Amarula.Protocol.Binary.Node.t() | :timeout | :not_connected}
   def query_iq(pid, node, timeout \\ 25_000) do
     GenServer.call(pid, {:query_iq, node}, timeout)
   end
@@ -384,7 +384,8 @@ defmodule Amarula.Connection do
   Frame and send a stanza over the websocket (fire-and-forget; no IQ reply
   awaited). Used by the send path to relay the final `<message>`.
   """
-  @spec relay_stanza(GenServer.server(), Amarula.Protocol.Binary.Node.t()) :: :ok
+  @spec relay_stanza(GenServer.server(), Amarula.Protocol.Binary.Node.t()) ::
+          :ok | {:error, :not_connected}
   def relay_stanza(pid, node) do
     GenServer.call(pid, {:relay_stanza, node})
   end
@@ -408,7 +409,7 @@ defmodule Amarula.Connection do
 
   @doc "Send a chat-state to `jid` (`:composing`/`:recording`/`:paused`)."
   @spec send_chatstate(GenServer.server(), Amarula.jid(), :composing | :recording | :paused) ::
-          :ok
+          :ok | {:error, :not_connected}
   def send_chatstate(pid, jid, type),
     do: GenServer.call(pid, {:send_chatstate, jid, type})
 
@@ -433,13 +434,13 @@ defmodule Amarula.Connection do
   end
 
   @doc "Subscribe to a contact's presence."
-  @spec presence_subscribe(GenServer.server(), Amarula.jid()) :: :ok
+  @spec presence_subscribe(GenServer.server(), Amarula.jid()) :: :ok | {:error, :not_connected}
   def presence_subscribe(pid, jid),
     do: GenServer.call(pid, {:presence_subscribe, jid})
 
   @doc "Send a read receipt for `message_ids` in chat `jid` (optional `participant`)."
   @spec mark_read(GenServer.server(), Amarula.jid(), [String.t(), ...], Amarula.jid() | nil) ::
-          :ok
+          :ok | {:error, :not_connected}
   def mark_read(pid, jid, message_ids, participant \\ nil),
     do: GenServer.call(pid, {:mark_read, jid, message_ids, participant})
 
@@ -708,15 +709,20 @@ defmodule Amarula.Connection do
   # until the matching websocket frame arrives in handle_iq_response.
   @impl GenServer
   def handle_call({:query_iq, node}, from, state) do
-    {state, id, node} = stamp_iq(state, node)
-    timer = Process.send_after(self(), {:iq_timeout, id}, @iq_timeout_ms)
-    state = %{state | pending_iqs: IQ.wait(state.pending_iqs, id, from, timer, nil)}
-    {:noreply, send_binary_node(state, node)}
+    if ready_to_send?(state) do
+      {state, id, node} = stamp_iq(state, node)
+      timer = Process.send_after(self(), {:iq_timeout, id}, @iq_timeout_ms)
+      state = %{state | pending_iqs: IQ.wait(state.pending_iqs, id, from, timer, nil)}
+      {:noreply, send_binary_node(state, node)}
+    else
+      # Don't park a caller behind a frame that can never go out — fail fast.
+      {:reply, {:error, :not_connected}, state}
+    end
   end
 
   @impl GenServer
   def handle_call({:relay_stanza, node}, _from, state) do
-    {:reply, :ok, send_binary_node(state, node)}
+    send_reply(state, node)
   end
 
   @impl GenServer
@@ -753,7 +759,7 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call({:set_presence, type}, _from, state) do
     case Presence.presence(type, me(state)) do
-      {:ok, node} -> {:reply, :ok, send_binary_node(state, node)}
+      {:ok, node} -> send_reply(state, node)
       {:error, _} = err -> {:reply, err, state}
     end
   end
@@ -761,7 +767,7 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call({:send_chatstate, jid, type}, _from, state) do
     node = Presence.chatstate(type, Amarula.Address.to_jid!(jid), me(state))
-    {:reply, :ok, send_binary_node(state, node)}
+    send_reply(state, node)
   end
 
   @impl GenServer
@@ -784,7 +790,7 @@ defmodule Amarula.Connection do
         generate_message_tag(state)
       )
 
-    {:reply, :ok, send_binary_node(state, node)}
+    send_reply(state, node)
   end
 
   @impl GenServer
@@ -792,7 +798,7 @@ defmodule Amarula.Connection do
     jid = Amarula.Address.to_jid!(jid)
     participant = participant && Amarula.Address.to_jid!(participant)
     node = Amarula.Protocol.Receipt.read(message_ids, jid, participant)
-    {:reply, :ok, send_binary_node(state, node)}
+    send_reply(state, node)
   end
 
   # --- Send path (folded from the former Socket facade) ---
@@ -2505,6 +2511,22 @@ defmodule Amarula.Connection do
     state
   end
 
+  # Backstop: an outbound must never crash the connection. A send before the
+  # handshake completes (noise_state nil ⇒ encode_frame derefs nil ⇒ BadMapError)
+  # or after the socket dropped (websocket_client nil ⇒ send_data crash) drops the
+  # frame and returns the state unchanged. The consumer-facing send clauses guard
+  # with ready_to_send?/1 and reply {:error, :not_connected}; this catches every
+  # other (internal) caller — receipts, acks, pings — that fires in the same window.
+  defp send_binary_node(%{noise_state: nil} = state, _node) do
+    Logger.warning("Dropping outbound frame: connection not established (no noise state)")
+    state
+  end
+
+  defp send_binary_node(%{websocket_client: nil} = state, _node) do
+    Logger.warning("Dropping outbound frame: connection down (no websocket)")
+    state
+  end
+
   defp send_binary_node(state, node) do
     frame_tap("OUT", node)
     {:ok, encoded} = Encoder.encode(node)
@@ -2516,6 +2538,27 @@ defmodule Amarula.Connection do
     {encrypted, updated_noise_state} = NoiseHandler.encode_frame(state.noise_state, framed)
     WebSocketClient.send_data(state.websocket_client, encrypted)
     %{state | noise_state: updated_noise_state}
+  end
+
+  # Whether the send path can run without hitting the nil-noise / nil-socket
+  # backstop above. A configured frame_sink (test seam) is always ready; otherwise
+  # we need a completed handshake (noise_state) AND a live socket (websocket_client).
+  # Race-free server-side: only this process mutates state, so the check and the
+  # send it gates can't straddle a disconnect.
+  defp ready_to_send?(%{config: %{frame_sink: sink}}) when is_pid(sink), do: true
+
+  defp ready_to_send?(%{noise_state: noise, websocket_client: ws}),
+    do: not is_nil(noise) and not is_nil(ws)
+
+  # Send `node` and reply :ok, unless the connection isn't ready — then reply
+  # {:error, :not_connected} without entering the noise/socket path. For the
+  # synchronous consumer sends (presence, read receipts, relayed stanzas).
+  defp send_reply(state, node) do
+    if ready_to_send?(state) do
+      {:reply, :ok, send_binary_node(state, node)}
+    else
+      {:reply, {:error, :not_connected}, state}
+    end
   end
 
   defp handle_connection_failure(state, node) do
@@ -3638,10 +3681,17 @@ defmodule Amarula.Connection do
   # before replying to `from` — used for queries that return a parsed value
   # (e.g. group metadata → %Amarula.Group{}).
   defp send_waiter_iq(state, %Node{} = node, from, transform) do
-    {state, id, node} = stamp_iq(state, node)
-    timer = Process.send_after(self(), {:iq_timeout, id}, @iq_timeout_ms)
-    state = %{state | pending_iqs: IQ.wait(state.pending_iqs, id, from, timer, transform)}
-    send_binary_node(state, node)
+    if ready_to_send?(state) do
+      {state, id, node} = stamp_iq(state, node)
+      timer = Process.send_after(self(), {:iq_timeout, id}, @iq_timeout_ms)
+      state = %{state | pending_iqs: IQ.wait(state.pending_iqs, id, from, timer, transform)}
+      send_binary_node(state, node)
+    else
+      # Called from {:noreply, send_waiter_iq(...)} clauses — reply the waiter
+      # directly rather than park it behind a frame that can never go out.
+      GenServer.reply(from, {:error, :not_connected})
+      state
+    end
   end
 
   # Stamp an outbound IQ with the next id and advance the message epoch.

@@ -326,6 +326,30 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "auto-reconnect when the websocket dies" do
+    test "killing the websocket does not kill Connection and drives a reconnect",
+         %{config: config} do
+      # The WebSockex client used to be LINKED to Connection (start_link): a server
+      # close (WebSockex exits {:remote, :closed}, non-normal) signal-killed
+      # Connection before it could reconnect, and the restarted process never
+      # reconnected — stuck :disconnected. We now unlink + monitor it. A brutal
+      # :kill propagates through a link regardless of trap_exit, so Connection
+      # surviving this proves the link is gone; the :DOWN then drives the reconnect.
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+      :ok = GenServer.call(pid, :connect)
+
+      ws = :sys.get_state(pid).websocket_client
+      assert is_pid(ws) and Process.alive?(ws)
+
+      Process.exit(ws, :kill)
+
+      assert_receive {:amarula, :connection_update, %{connection: :disconnected}}, 1000
+      assert Process.alive?(pid)
+
+      GenServer.stop(pid)
+    end
+  end
+
   describe "down-transition on a connection error" do
     test "a ws error emits :connection_update :disconnected, not just :error", %{config: config} do
       # The error paths used to emit only :error, never the :connection_update the

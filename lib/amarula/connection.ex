@@ -80,6 +80,7 @@ defmodule Amarula.Connection do
 
   defstruct [
     :websocket_client,
+    :websocket_monitor,
     :conn,
     :config,
     :connection_state,
@@ -126,6 +127,7 @@ defmodule Amarula.Connection do
 
   @type t :: %__MODULE__{
           websocket_client: pid() | nil,
+          websocket_monitor: reference() | nil,
           config: Types.socket_config(),
           connection_state: Types.connection_state(),
           retry_count: non_neg_integer(),
@@ -1159,6 +1161,27 @@ defmodule Amarula.Connection do
     {:noreply, install_sink(%{state | parent_monitor: nil}, new_sink)}
   end
 
+  # The WebSockex client process died. We unlink + monitor it (see
+  # attempt_connection/1) so a server-initiated close — WebSockex exits
+  # {:remote, :closed}, a non-normal exit — can't signal-kill Connection before we
+  # reconnect. On the normal close path handle_disconnect already sent
+  # {:ws_event, {:close}} (which ran first and nil'd websocket_client + scheduled
+  # the reconnect), so here websocket_client no longer matches `pid` and we just
+  # let the monitor lapse. If it DOES still match, the client crashed hard without
+  # a close — drive the reconnect ourselves.
+  @impl GenServer
+  def handle_info({:DOWN, ref, :process, pid, reason}, %{websocket_monitor: ref} = state) do
+    state = %{state | websocket_monitor: nil}
+
+    if state.websocket_client == pid do
+      Logger.warning("WebSocket client died (#{inspect(reason)}) with no close — reconnecting")
+      {:noreply, handle_connection_error(%{state | websocket_client: nil}, reason)}
+    else
+      Logger.debug("WebSocket client #{inspect(pid)} down (#{inspect(reason)}) — already handled")
+      {:noreply, state}
+    end
+  end
+
   # A per-recipient Sender died. If it crashed mid-pipe it never reported
   # {:send_failed,...}, so its parked sends would otherwise hang to :ack_timeout
   # (and be mislabeled). Fail them now, fast and correctly. A :normal exit is the
@@ -1265,10 +1288,25 @@ defmodule Amarula.Connection do
 
     case WebSocketClient.start_link(websocket_opts) do
       {:ok, websocket_pid} ->
+        # WebSocketClient.start_link LINKS the client to us. Swap that for a
+        # monitor: a server close makes WebSockex exit {:remote, :closed} (a
+        # non-normal exit) — linked, that signal-killed Connection before the
+        # {:ws_event, {:close}} it sends could drive the reconnect, and the
+        # supervisor-restarted Connection never reconnects (init only registers),
+        # so the account got stuck :disconnected. As a monitor, the death arrives
+        # as a {:DOWN} we handle. terminate/2 still closes the client, so dropping
+        # the link doesn't orphan it. (Unlinking only the websocket keeps
+        # Connection's own parent/supervisor behaviour unchanged — unlike
+        # trap_exit, which would also tie us to the parent's lifecycle.)
+        new_state = demonitor_websocket(new_state)
+        Process.unlink(websocket_pid)
+        ref = Process.monitor(websocket_pid)
+
         # Store websocket_pid and wait for :open event to initiate handshake
         %{
           new_state
           | websocket_client: websocket_pid,
+            websocket_monitor: ref,
             connection_state: :connecting,
             retry_count: 0,
             last_error: nil
@@ -1280,7 +1318,19 @@ defmodule Amarula.Connection do
     end
   end
 
+  # Drop the websocket monitor (flushing any pending {:DOWN}) before we replace or
+  # deliberately close the client, so a self-initiated teardown doesn't look like a
+  # crash to reconnect from.
+  defp demonitor_websocket(%{websocket_monitor: nil} = state), do: state
+
+  defp demonitor_websocket(%{websocket_monitor: ref} = state) do
+    Process.demonitor(ref, [:flush])
+    %{state | websocket_monitor: nil}
+  end
+
   defp disconnect_websocket(state) do
+    state = demonitor_websocket(state)
+
     if state.websocket_client do
       WebSocketClient.close(state.websocket_client)
     end

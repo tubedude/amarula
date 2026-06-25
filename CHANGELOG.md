@@ -116,6 +116,16 @@ breaking release; the migration is mechanical (struct fields instead of maps/pro
   media descriptor now returns `{:error, :invalid_media}` instead of letting the
   HTTP layer raise (which forced consumers to wrap the call in rescue). It also
   works with no live connection — documented now — so you can download from a `Task`.
+- **The connection auto-reconnects when the websocket dies.** When the underlying
+  websocket goes down unexpectedly, `Connection` now unlinks and monitors it, then
+  reconnects — instead of the dead socket lingering. Paired with the down-transition
+  emit below, a consumer sees the connection go down and come back.
+- **A send while disconnected no longer crashes the connection.** Relaying a frame
+  with no live socket now returns an error to the caller instead of taking the
+  `Connection` process down with it.
+- **Errors emit a `:connection_update` down-transition.** On a connection error the
+  consumer now gets a `connection: :close` (down) `:connection_update`, so the
+  connection state a consumer observes always reflects reality.
 
 ### Documentation
 
@@ -132,6 +142,10 @@ breaking release; the migration is mechanical (struct fields instead of maps/pro
   `docs/plans/SESSION_WORKER.plan.md`.)
 - README: fixed a stale module reference and the QR-render example (now `qr_code`,
   the actual dependency).
+- **`docs/LID_PN.md`** — a LID vs PN identity guide: the two identities a person
+  has, raw JID vs the parsed `Amarula.Address`, the LID>PN rule (sessions and
+  bundles key on LID; the wire `<to>` stays PN), where mappings are learned, and how
+  a consumer should key its own contacts.
 
 ## [0.2.4] - 2026-06-21
 
@@ -417,4 +431,11 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/tubedude/amarula/compare/v0.2.4...v0.3.0
+[0.2.4]: https://github.com/tubedude/amarula/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/tubedude/amarula/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/tubedude/amarula/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/tubedude/amarula/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/tubedude/amarula/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/tubedude/amarula/releases/tag/v0.1.0

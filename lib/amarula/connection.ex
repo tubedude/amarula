@@ -80,6 +80,7 @@ defmodule Amarula.Connection do
 
   defstruct [
     :websocket_client,
+    :websocket_monitor,
     :conn,
     :config,
     :connection_state,
@@ -126,6 +127,7 @@ defmodule Amarula.Connection do
 
   @type t :: %__MODULE__{
           websocket_client: pid() | nil,
+          websocket_monitor: reference() | nil,
           config: Types.socket_config(),
           connection_state: Types.connection_state(),
           retry_count: non_neg_integer(),
@@ -375,7 +377,7 @@ defmodule Amarula.Connection do
   """
   @spec query_iq(GenServer.server(), Amarula.Protocol.Binary.Node.t(), timeout()) ::
           {:ok, Amarula.Protocol.Binary.Node.t()}
-          | {:error, Amarula.Protocol.Binary.Node.t() | :timeout}
+          | {:error, Amarula.Protocol.Binary.Node.t() | :timeout | :not_connected}
   def query_iq(pid, node, timeout \\ 25_000) do
     GenServer.call(pid, {:query_iq, node}, timeout)
   end
@@ -384,7 +386,8 @@ defmodule Amarula.Connection do
   Frame and send a stanza over the websocket (fire-and-forget; no IQ reply
   awaited). Used by the send path to relay the final `<message>`.
   """
-  @spec relay_stanza(GenServer.server(), Amarula.Protocol.Binary.Node.t()) :: :ok
+  @spec relay_stanza(GenServer.server(), Amarula.Protocol.Binary.Node.t()) ::
+          :ok | {:error, :not_connected}
   def relay_stanza(pid, node) do
     GenServer.call(pid, {:relay_stanza, node})
   end
@@ -408,7 +411,7 @@ defmodule Amarula.Connection do
 
   @doc "Send a chat-state to `jid` (`:composing`/`:recording`/`:paused`)."
   @spec send_chatstate(GenServer.server(), Amarula.jid(), :composing | :recording | :paused) ::
-          :ok
+          :ok | {:error, :not_connected}
   def send_chatstate(pid, jid, type),
     do: GenServer.call(pid, {:send_chatstate, jid, type})
 
@@ -433,13 +436,13 @@ defmodule Amarula.Connection do
   end
 
   @doc "Subscribe to a contact's presence."
-  @spec presence_subscribe(GenServer.server(), Amarula.jid()) :: :ok
+  @spec presence_subscribe(GenServer.server(), Amarula.jid()) :: :ok | {:error, :not_connected}
   def presence_subscribe(pid, jid),
     do: GenServer.call(pid, {:presence_subscribe, jid})
 
   @doc "Send a read receipt for `message_ids` in chat `jid` (optional `participant`)."
   @spec mark_read(GenServer.server(), Amarula.jid(), [String.t(), ...], Amarula.jid() | nil) ::
-          :ok
+          :ok | {:error, :not_connected}
   def mark_read(pid, jid, message_ids, participant \\ nil),
     do: GenServer.call(pid, {:mark_read, jid, message_ids, participant})
 
@@ -708,15 +711,20 @@ defmodule Amarula.Connection do
   # until the matching websocket frame arrives in handle_iq_response.
   @impl GenServer
   def handle_call({:query_iq, node}, from, state) do
-    {state, id, node} = stamp_iq(state, node)
-    timer = Process.send_after(self(), {:iq_timeout, id}, @iq_timeout_ms)
-    state = %{state | pending_iqs: IQ.wait(state.pending_iqs, id, from, timer, nil)}
-    {:noreply, send_binary_node(state, node)}
+    if ready_to_send?(state) do
+      {state, id, node} = stamp_iq(state, node)
+      timer = Process.send_after(self(), {:iq_timeout, id}, @iq_timeout_ms)
+      state = %{state | pending_iqs: IQ.wait(state.pending_iqs, id, from, timer, nil)}
+      {:noreply, send_binary_node(state, node)}
+    else
+      # Don't park a caller behind a frame that can never go out — fail fast.
+      {:reply, {:error, :not_connected}, state}
+    end
   end
 
   @impl GenServer
   def handle_call({:relay_stanza, node}, _from, state) do
-    {:reply, :ok, send_binary_node(state, node)}
+    send_reply(state, node)
   end
 
   @impl GenServer
@@ -753,7 +761,7 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call({:set_presence, type}, _from, state) do
     case Presence.presence(type, me(state)) do
-      {:ok, node} -> {:reply, :ok, send_binary_node(state, node)}
+      {:ok, node} -> send_reply(state, node)
       {:error, _} = err -> {:reply, err, state}
     end
   end
@@ -761,7 +769,7 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_call({:send_chatstate, jid, type}, _from, state) do
     node = Presence.chatstate(type, Amarula.Address.to_jid!(jid), me(state))
-    {:reply, :ok, send_binary_node(state, node)}
+    send_reply(state, node)
   end
 
   @impl GenServer
@@ -784,7 +792,7 @@ defmodule Amarula.Connection do
         generate_message_tag(state)
       )
 
-    {:reply, :ok, send_binary_node(state, node)}
+    send_reply(state, node)
   end
 
   @impl GenServer
@@ -792,7 +800,7 @@ defmodule Amarula.Connection do
     jid = Amarula.Address.to_jid!(jid)
     participant = participant && Amarula.Address.to_jid!(participant)
     node = Amarula.Protocol.Receipt.read(message_ids, jid, participant)
-    {:reply, :ok, send_binary_node(state, node)}
+    send_reply(state, node)
   end
 
   # --- Send path (folded from the former Socket facade) ---
@@ -1153,6 +1161,27 @@ defmodule Amarula.Connection do
     {:noreply, install_sink(%{state | parent_monitor: nil}, new_sink)}
   end
 
+  # The WebSockex client process died. We unlink + monitor it (see
+  # attempt_connection/1) so a server-initiated close — WebSockex exits
+  # {:remote, :closed}, a non-normal exit — can't signal-kill Connection before we
+  # reconnect. On the normal close path handle_disconnect already sent
+  # {:ws_event, {:close}} (which ran first and nil'd websocket_client + scheduled
+  # the reconnect), so here websocket_client no longer matches `pid` and we just
+  # let the monitor lapse. If it DOES still match, the client crashed hard without
+  # a close — drive the reconnect ourselves.
+  @impl GenServer
+  def handle_info({:DOWN, ref, :process, pid, reason}, %{websocket_monitor: ref} = state) do
+    state = %{state | websocket_monitor: nil}
+
+    if state.websocket_client == pid do
+      Logger.warning("WebSocket client died (#{inspect(reason)}) with no close — reconnecting")
+      {:noreply, handle_connection_error(%{state | websocket_client: nil}, reason)}
+    else
+      Logger.debug("WebSocket client #{inspect(pid)} down (#{inspect(reason)}) — already handled")
+      {:noreply, state}
+    end
+  end
+
   # A per-recipient Sender died. If it crashed mid-pipe it never reported
   # {:send_failed,...}, so its parked sends would otherwise hang to :ack_timeout
   # (and be mislabeled). Fail them now, fast and correctly. A :normal exit is the
@@ -1259,10 +1288,25 @@ defmodule Amarula.Connection do
 
     case WebSocketClient.start_link(websocket_opts) do
       {:ok, websocket_pid} ->
+        # WebSocketClient.start_link LINKS the client to us. Swap that for a
+        # monitor: a server close makes WebSockex exit {:remote, :closed} (a
+        # non-normal exit) — linked, that signal-killed Connection before the
+        # {:ws_event, {:close}} it sends could drive the reconnect, and the
+        # supervisor-restarted Connection never reconnects (init only registers),
+        # so the account got stuck :disconnected. As a monitor, the death arrives
+        # as a {:DOWN} we handle. terminate/2 still closes the client, so dropping
+        # the link doesn't orphan it. (Unlinking only the websocket keeps
+        # Connection's own parent/supervisor behaviour unchanged — unlike
+        # trap_exit, which would also tie us to the parent's lifecycle.)
+        new_state = demonitor_websocket(new_state)
+        Process.unlink(websocket_pid)
+        ref = Process.monitor(websocket_pid)
+
         # Store websocket_pid and wait for :open event to initiate handshake
         %{
           new_state
           | websocket_client: websocket_pid,
+            websocket_monitor: ref,
             connection_state: :connecting,
             retry_count: 0,
             last_error: nil
@@ -1274,7 +1318,19 @@ defmodule Amarula.Connection do
     end
   end
 
+  # Drop the websocket monitor (flushing any pending {:DOWN}) before we replace or
+  # deliberately close the client, so a self-initiated teardown doesn't look like a
+  # crash to reconnect from.
+  defp demonitor_websocket(%{websocket_monitor: nil} = state), do: state
+
+  defp demonitor_websocket(%{websocket_monitor: ref} = state) do
+    Process.demonitor(ref, [:flush])
+    %{state | websocket_monitor: nil}
+  end
+
   defp disconnect_websocket(state) do
+    state = demonitor_websocket(state)
+
     if state.websocket_client do
       WebSocketClient.close(state.websocket_client)
     end
@@ -1321,12 +1377,21 @@ defmodule Amarula.Connection do
     emit_event(new_state, :error, error)
 
     # Schedule reconnection if within retry limit
-    if new_state.retry_count < new_state.max_retries do
-      schedule_reconnect(new_state)
-    else
-      Logger.error("Max retry attempts reached, giving up")
-      %{new_state | connection_state: :closed}
-    end
+    new_state =
+      if new_state.retry_count < new_state.max_retries do
+        schedule_reconnect(new_state)
+      else
+        Logger.error("Max retry attempts reached, giving up")
+        %{new_state | connection_state: :closed}
+      end
+
+    # Announce the down-transition. Previously the error paths emitted only
+    # :error, never the :connection_update the clean-close path emits — so a
+    # consumer tracking connection state never saw the drop and its UI went stale
+    # on the last "open". Emit the resulting state (:disconnected, or :closed once
+    # retries are exhausted).
+    emit_connection_update(new_state, new_state.connection_state)
+    new_state
   end
 
   defp schedule_reconnect(state) do
@@ -2496,6 +2561,22 @@ defmodule Amarula.Connection do
     state
   end
 
+  # Backstop: an outbound must never crash the connection. A send before the
+  # handshake completes (noise_state nil ⇒ encode_frame derefs nil ⇒ BadMapError)
+  # or after the socket dropped (websocket_client nil ⇒ send_data crash) drops the
+  # frame and returns the state unchanged. The consumer-facing send clauses guard
+  # with ready_to_send?/1 and reply {:error, :not_connected}; this catches every
+  # other (internal) caller — receipts, acks, pings — that fires in the same window.
+  defp send_binary_node(%{noise_state: nil} = state, _node) do
+    Logger.warning("Dropping outbound frame: connection not established (no noise state)")
+    state
+  end
+
+  defp send_binary_node(%{websocket_client: nil} = state, _node) do
+    Logger.warning("Dropping outbound frame: connection down (no websocket)")
+    state
+  end
+
   defp send_binary_node(state, node) do
     frame_tap("OUT", node)
     {:ok, encoded} = Encoder.encode(node)
@@ -2507,6 +2588,27 @@ defmodule Amarula.Connection do
     {encrypted, updated_noise_state} = NoiseHandler.encode_frame(state.noise_state, framed)
     WebSocketClient.send_data(state.websocket_client, encrypted)
     %{state | noise_state: updated_noise_state}
+  end
+
+  # Whether the send path can run without hitting the nil-noise / nil-socket
+  # backstop above. A configured frame_sink (test seam) is always ready; otherwise
+  # we need a completed handshake (noise_state) AND a live socket (websocket_client).
+  # Race-free server-side: only this process mutates state, so the check and the
+  # send it gates can't straddle a disconnect.
+  defp ready_to_send?(%{config: %{frame_sink: sink}}) when is_pid(sink), do: true
+
+  defp ready_to_send?(%{noise_state: noise, websocket_client: ws}),
+    do: not is_nil(noise) and not is_nil(ws)
+
+  # Send `node` and reply :ok, unless the connection isn't ready — then reply
+  # {:error, :not_connected} without entering the noise/socket path. For the
+  # synchronous consumer sends (presence, read receipts, relayed stanzas).
+  defp send_reply(state, node) do
+    if ready_to_send?(state) do
+      {:reply, :ok, send_binary_node(state, node)}
+    else
+      {:reply, {:error, :not_connected}, state}
+    end
   end
 
   defp handle_connection_failure(state, node) do
@@ -3629,10 +3731,17 @@ defmodule Amarula.Connection do
   # before replying to `from` — used for queries that return a parsed value
   # (e.g. group metadata → %Amarula.Group{}).
   defp send_waiter_iq(state, %Node{} = node, from, transform) do
-    {state, id, node} = stamp_iq(state, node)
-    timer = Process.send_after(self(), {:iq_timeout, id}, @iq_timeout_ms)
-    state = %{state | pending_iqs: IQ.wait(state.pending_iqs, id, from, timer, transform)}
-    send_binary_node(state, node)
+    if ready_to_send?(state) do
+      {state, id, node} = stamp_iq(state, node)
+      timer = Process.send_after(self(), {:iq_timeout, id}, @iq_timeout_ms)
+      state = %{state | pending_iqs: IQ.wait(state.pending_iqs, id, from, timer, transform)}
+      send_binary_node(state, node)
+    else
+      # Called from {:noreply, send_waiter_iq(...)} clauses — reply the waiter
+      # directly rather than park it behind a frame that can never go out.
+      GenServer.reply(from, {:error, :not_connected})
+      state
+    end
   end
 
   # Stamp an outbound IQ with the next id and advance the message epoch.

@@ -283,6 +283,89 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "sending while disconnected (no crash, tagged error)" do
+    # A fresh Connection has noise_state: nil and websocket_client: nil (handshake
+    # not done) — exactly the window where a send used to crash the GenServer:
+    # encode_frame(nil, _) → BadMapError, or send_data(nil, _) → :noproc. Every
+    # send path must instead return {:error, :not_connected} and stay alive.
+
+    test "mark_read returns {:error, :not_connected} and does not crash", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      assert {:error, :not_connected} =
+               Connection.mark_read(pid, "5511999998888@s.whatsapp.net", ["M1"])
+
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "relay_stanza returns {:error, :not_connected} and does not crash", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+      node = %Node{tag: "ping", attrs: %{"id" => "x"}, content: nil}
+
+      assert {:error, :not_connected} = Connection.relay_stanza(pid, node)
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "a query_iq fails fast instead of parking the caller", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+      node = %Node{tag: "iq", attrs: %{"type" => "get"}, content: nil}
+
+      assert {:error, :not_connected} = Connection.query_iq(pid, node)
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "a waiter IQ (list_groups) fails fast instead of parking", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      assert {:error, :not_connected} = Connection.list_groups(pid)
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "auto-reconnect when the websocket dies" do
+    test "killing the websocket does not kill Connection and drives a reconnect",
+         %{config: config} do
+      # The WebSockex client used to be LINKED to Connection (start_link): a server
+      # close (WebSockex exits {:remote, :closed}, non-normal) signal-killed
+      # Connection before it could reconnect, and the restarted process never
+      # reconnected — stuck :disconnected. We now unlink + monitor it. A brutal
+      # :kill propagates through a link regardless of trap_exit, so Connection
+      # surviving this proves the link is gone; the :DOWN then drives the reconnect.
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+      :ok = GenServer.call(pid, :connect)
+
+      ws = :sys.get_state(pid).websocket_client
+      assert is_pid(ws) and Process.alive?(ws)
+
+      Process.exit(ws, :kill)
+
+      assert_receive {:amarula, :connection_update, %{connection: :disconnected}}, 1000
+      assert Process.alive?(pid)
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "down-transition on a connection error" do
+    test "a ws error emits :connection_update :disconnected, not just :error", %{config: config} do
+      # The error paths used to emit only :error, never the :connection_update the
+      # clean-close path emits — so a consumer tracking connection state never saw
+      # the drop and its UI went stale on the last "open". Every handled error must
+      # announce the down-transition.
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      send(pid, {:ws_event, nil, {:error, :econnreset}})
+
+      assert_receive {:amarula, :error, :econnreset}
+      assert_receive {:amarula, :connection_update, %{connection: :disconnected}}
+      GenServer.stop(pid)
+    end
+  end
+
   describe "re-attaching the event sink (set_parent/2 + sink monitor)" do
     # A process that forwards everything it receives to `dest`, tagged — lets a
     # test prove WHICH sink an event reached.

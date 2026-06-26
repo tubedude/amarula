@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-26
+
+A small follow-up to 0.3.0 — connection robustness fixes plus post-release review
+catches. No breaking changes; purely additive/fixes.
+
+### Fixed
+
+- **Auto-reconnect when the websocket dies.** `WebSocketClient` was linked to
+  `Connection` (which doesn't trap exits), so a server close signal-killed
+  `Connection` before it could drive the reconnect, leaving the account stuck
+  `:disconnected`. The link is now a monitor, so the client's death arrives as a
+  `{:DOWN}` that triggers a reconnect.
+- **Never crash on a send while disconnected.** A send before the handshake
+  completed (nil `noise_state`) or after the socket dropped (nil
+  `websocket_client`) crashed the whole `Connection` instead of returning to the
+  caller. A backstop in `send_binary_node/2` drops the frame and a
+  `ready_to_send?/1` guard on the consumer sends replies `{:error, :not_connected}`.
+- **Emit a `:connection_update` down-transition on error paths.** Errors (ws
+  errors, timeouts, non-515 stream errors, server close) previously emitted only
+  an `:error` event, so a consumer tracking connection state never saw the drop.
+- **Treat "Invalid PreKey ID" on a pkmsg as a duplicate (ack 487).** A redelivered
+  pkmsg whose one-time prekey was consumed on first decrypt raised this error and
+  fell through to retry+nack-500, making the server re-fan the stanza forever. It
+  is now recognised as a duplicate and acked, terminating the redelivery loop.
+
+### Changed
+
+- `Content.Poll.options` drops malformed entries instead of emitting `nil`, so it
+  always matches its `[String.t()]` type.
+- Removed the unused `Connection.cache_sent_message/4` (superseded by the
+  `RetryCache.Step` send-pipe step) and corrected the `Media.download/2` doc to
+  the snake_case-only descriptor shape.
+
 ## [0.3.0] - 2026-06-22
 
 The headline is the **receive side**: a `%Amarula.Msg{}`'s `content` is now always a

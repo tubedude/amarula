@@ -469,16 +469,6 @@ defmodule Amarula.Connection do
   def wipe_credentials(pid), do: GenServer.call(pid, :wipe_credentials)
 
   @doc """
-  Remember a just-sent message (id → content + recipient) so it can be
-  re-encrypted and resent if the recipient sends a `type="retry"` receipt.
-  Bounded LRU; the ConversationSender calls this after a successful relay.
-  """
-  @spec cache_sent_message(GenServer.server(), String.t(), String.t(), struct()) :: :ok
-  def cache_sent_message(pid, msg_id, recipient_jid, message) do
-    GenServer.cast(pid, {:cache_sent_message, msg_id, recipient_jid, message})
-  end
-
-  @doc """
   Send a 1:1/group text message to `jid`. Encrypts and relays (fetching the
   recipient's prekey bundle first if we have no session). Returns `{:ok, msg_id}`.
   """
@@ -884,19 +874,6 @@ defmodule Amarula.Connection do
       end)
 
     emit_to_subscribers(state, :lid_mapping_update, mappings)
-    {:noreply, state}
-  end
-
-  @impl GenServer
-  def handle_cast({:cache_sent_message, msg_id, recipient_jid, message}, state) do
-    entry = %{
-      recipient_jid: recipient_jid,
-      message: message,
-      ts: System.system_time(:millisecond)
-    }
-
-    Amarula.RetryCache.put(retry_cache(state), profile(state), msg_id, entry)
-
     {:noreply, state}
   end
 

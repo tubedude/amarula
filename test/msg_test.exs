@@ -195,4 +195,54 @@ defmodule Amarula.MsgTest do
       assert %{id: "QID", message: %Amarula.Msg{content: "q"}} = msg.quoted
     end
   end
+
+  describe "forwarded" do
+    alias Amarula.Protocol.Proto.ContextInfo
+
+    test "a forwarded message surfaces forwarded: true" do
+      ctx = %ContextInfo{isForwarded: true, forwardingScore: 1}
+
+      msg =
+        build(%Proto.Message{
+          extendedTextMessage: %Proto.Message.ExtendedTextMessage{text: "fwd", contextInfo: ctx}
+        })
+
+      assert msg.forwarded == true
+    end
+
+    test "a non-forwarded message is forwarded: false (isForwarded nil)" do
+      msg = build(%Proto.Message{conversation: "hi"})
+      assert msg.forwarded == false
+
+      ctx = %ContextInfo{stanzaId: "X", participant: "5511888888888@s.whatsapp.net"}
+
+      reply =
+        build(%Proto.Message{
+          extendedTextMessage: %Proto.Message.ExtendedTextMessage{text: "r", contextInfo: ctx}
+        })
+
+      assert reply.forwarded == false
+    end
+
+    test "an inlined quoted message carries its own forwarded flag" do
+      inner_ctx = %ContextInfo{isForwarded: true}
+
+      ctx = %ContextInfo{
+        stanzaId: "ORIG",
+        quotedMessage: %Proto.Message{
+          extendedTextMessage: %Proto.Message.ExtendedTextMessage{
+            text: "quoted fwd",
+            contextInfo: inner_ctx
+          }
+        }
+      }
+
+      reply =
+        build(%Proto.Message{
+          extendedTextMessage: %Proto.Message.ExtendedTextMessage{text: "top", contextInfo: ctx}
+        })
+
+      assert reply.quoted.message.forwarded == true
+    end
+  end
 end

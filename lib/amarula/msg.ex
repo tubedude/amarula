@@ -121,6 +121,13 @@ defmodule Amarula.Msg do
   a contact the moment they message — no re-pairing, no separate contact fetch — even
   for someone WhatsApp only addresses by LID/number. It's `nil` for our own
   (`from_me`) messages and any stanza without the attr.
+
+  ## `forwarded`
+
+  `forwarded` is `true` when the message was forwarded from another chat
+  (`ContextInfo.isForwarded` on the wire), else `false`. The forward *score* (how
+  many hops — WhatsApp shows "forwarded many times" at ≥ 5) isn't surfaced here;
+  read `ContextInfo.forwardingScore` off `msg.raw` if you need it.
   """
 
   alias Amarula.Address
@@ -155,6 +162,7 @@ defmodule Amarula.Msg do
           content: term(),
           quoted: quoted() | nil,
           mentions: [Address.t()],
+          forwarded: boolean(),
           raw: Proto.Message.t()
         }
 
@@ -171,6 +179,7 @@ defmodule Amarula.Msg do
     :content,
     :quoted,
     :raw,
+    forwarded: false,
     mentions: []
   ]
 
@@ -199,6 +208,7 @@ defmodule Amarula.Msg do
       content: content,
       quoted: quoted(ctx, meta[:channel]),
       mentions: mentions(ctx),
+      forwarded: forwarded?(ctx),
       raw: proto
     }
   end
@@ -239,6 +249,7 @@ defmodule Amarula.Msg do
       content: content,
       quoted: nil,
       mentions: [],
+      forwarded: forwarded?(MessageContent.context_info(proto)),
       raw: proto
     }
   end
@@ -249,6 +260,11 @@ defmodule Amarula.Msg do
     do: Enum.map(jids, &Address.parse/1)
 
   defp mentions(_), do: []
+
+  # Whether the message was forwarded (ContextInfo.isForwarded, field 22). The
+  # proto3-optional field is nil when unset, so only an explicit `true` counts.
+  defp forwarded?(%Proto.ContextInfo{isForwarded: true}), do: true
+  defp forwarded?(_), do: false
 
   defp address(nil), do: nil
   defp address(""), do: nil

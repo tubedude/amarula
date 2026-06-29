@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`%Amarula.Msg{}.forwarded`** — a boolean, `true` when the message was forwarded
+  from another chat (decoded from `ContextInfo.isForwarded`). Defaults to `false`;
+  inlined quoted messages carry their own flag. The forward *score*
+  (`forwardingScore`, the "forwarded many times" signal) stays on `msg.raw`.
+
 ## [0.3.1] - 2026-06-26
 
 A small follow-up to 0.3.0 — connection robustness fixes plus post-release review

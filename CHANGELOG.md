@@ -13,6 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from another chat (decoded from `ContextInfo.isForwarded`). Defaults to `false`;
   inlined quoted messages carry their own flag. The forward *score*
   (`forwardingScore`, the "forwarded many times" signal) stays on `msg.raw`.
+- **Incoming calls surfaced as `:call_update`.** A `<call>` stanza was previously
+  acked and dropped; it now also emits a `:call_update` consumer event carrying
+  `%{chat, from, id, status, timestamp, offline, video?, group?, group_jid}`.
+  `status` is `:offer` (ringing), `:terminate`, `:timeout` (unanswered), `:reject`,
+  `:accept`, or `:ringing`; correlate an `:offer` with its later `:terminate` via
+  `id`. Parsing lives in the new pure `Amarula.Protocol.Call`.
+- **Interactive "pick one" messages classified.** `listMessage`, `buttonsMessage`,
+  `templateMessage`, and `interactiveMessage` (native-flow) — the prompts business
+  / call-center / automated flows send to present a set of choices — used to fall
+  through to `{:other}`. They now classify to `msg.type` `:list` / `:buttons` /
+  `:template` / `:interactive` with content as the new `Amarula.Content.Options`
+  struct (`title`, `body`, `footer`, `button_text`, and `options: [%{id, text,
+  description}]`). The option `id` matches the `id` on the user's later
+  `%Amarula.Content.Response{}`.
+
+### Fixed
+
+- **`:pairing_failure` added to the `t:event/0` typespec.** The event was already
+  emitted on a failed pair-success but was missing from the documented event list.
 
 ## [0.3.1] - 2026-06-26
 

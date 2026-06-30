@@ -27,6 +27,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Messages.{ConversationSender, Media, MessageEncoder}
   alias Amarula.Protocol.Messages.{HistorySync, MessageDecryptor}
   alias Amarula.Protocol.Presence
+  alias Amarula.Protocol.Call
 
   # A send blocks the caller until the per-recipient sender finishes (up to three
   # IQ round-trips for a new recipient). The client-side call timeout must exceed
@@ -1750,8 +1751,9 @@ defmodule Amarula.Connection do
   # type="retry" receipt = recipient asking us to re-encrypt+resend; others just ack.
   defp dispatch_node(state, :retry_receipt, node), do: handle_retry_receipt(state, node)
   defp dispatch_node(state, :receipt_ack, node), do: handle_receipt(state, node)
-  # Incoming call offer/terminate. Baileys acks calls; processing not ported.
-  defp dispatch_node(state, :call_ack, node), do: send_message_ack(state, node)
+  # Incoming call (offer/terminate/accept/reject/...). Always ack first (stops
+  # the server retransmitting), then surface it as :call_update.
+  defp dispatch_node(state, :call_ack, node), do: handle_call(state, node)
   # Server confirmation of a send we relayed — reply the parked consumer.
   defp dispatch_node(state, :message_ack, node), do: handle_message_ack(state, node)
 
@@ -1844,6 +1846,25 @@ defmodule Amarula.Connection do
 
       {:error, _} ->
         Logger.warning("Invalid presence node: #{inspect(node)}")
+        state
+    end
+  end
+
+  # An incoming `<call>` stanza (a contact calling, the call timing out, being
+  # accepted/rejected, ...). Ack first so the server stops retransmitting, then
+  # parse and surface it as :call_update. A malformed call (no info child) is
+  # still acked but not surfaced.
+  defp handle_call(state, node) do
+    state = send_message_ack(state, node)
+
+    case Call.parse(node) do
+      {:ok, call} ->
+        Logger.debug("Call #{call.status} from #{inspect(call.from)}")
+        emit_to_subscribers(state, :call_update, call)
+        state
+
+      {:error, _} ->
+        Logger.warning("Invalid call node: #{inspect(node)}")
         state
     end
   end

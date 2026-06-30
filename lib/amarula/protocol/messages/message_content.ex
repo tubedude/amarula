@@ -19,6 +19,9 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     * `{:product, msg}` / `{:order, msg}` / `{:button_response, msg}` /
       `{:list_response, msg}` / `{:template_reply, msg}` /
       `{:interactive_response, msg}` — WhatsApp Business / interactive (receive-only)
+    * `{:list, msg}` / `{:buttons, msg}` / `{:template, msg}` /
+      `{:interactive, msg}` — interactive messages that *present* a set of choices
+      (receive-only); see `Amarula.Content.Options`
     * `{:sender_key, skdm}`                        — Signal group-session-key plumbing (filtered before emit)
     * `{:other, message}`                          — anything not yet classified
 
@@ -174,6 +177,17 @@ defmodule Amarula.Protocol.Messages.MessageContent do
 
   defp do_classify(%Proto.Message{interactiveResponseMessage: m}) when not is_nil(m),
     do: {:interactive_response, m}
+
+  # Interactive messages that PRESENT a set of choices (a list menu, buttons, a
+  # template, or a native-flow interactive message) — what business / call-center
+  # / automated flows send to ask "pick one". Receive-only; the reply comes back
+  # as one of the *_response messages above.
+  defp do_classify(%Proto.Message{listMessage: m}) when not is_nil(m), do: {:list, m}
+  defp do_classify(%Proto.Message{buttonsMessage: m}) when not is_nil(m), do: {:buttons, m}
+  defp do_classify(%Proto.Message{templateMessage: m}) when not is_nil(m), do: {:template, m}
+
+  defp do_classify(%Proto.Message{interactiveMessage: m}) when not is_nil(m),
+    do: {:interactive, m}
 
   defp do_classify(message), do: {:other, message}
 

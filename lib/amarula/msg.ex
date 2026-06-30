@@ -32,6 +32,7 @@ defmodule Amarula.Msg do
   | `:product`    | `%Amarula.Content.Product{}` (minimal — detail on `raw`) |
   | `:order`      | `%Amarula.Content.Order{}` (minimal — detail on `raw`) |
   | `:button_response` / `:list_response` / `:template_reply` / `:interactive_response` | `%Amarula.Content.Response{}` |
+  | `:list` / `:buttons` / `:template` / `:interactive` | `%Amarula.Content.Options{}` (a presented set of choices) |
   | `:protocol`   | `%Amarula.Content.Protocol{}` (control frame) — arrives on `:protocol_update` |
   | `:other`      | `nil` (read `raw`)                                     |
 
@@ -57,10 +58,12 @@ defmodule Amarula.Msg do
   | `:group_invite`        | `Amarula.send_group_invite/5`                        |
   | `:member_tag`          | `Amarula.update_member_tag/3` (group is `msg.channel`) |
 
-  **Receive-only** (no originating send): `:product`, `:order`, and the interactive
+  **Receive-only** (no originating send): `:product`, `:order`, the interactive
   replies (`:button_response`/`:list_response`/`:template_reply`/`:interactive_response`
-  — you receive a user's choice, but originating the buttons/list isn't supported).
-  Event RSVP responses are not yet supported either.
+  — you receive a user's choice, but originating the buttons/list isn't supported),
+  and the interactive *prompts* (`:list`/`:buttons`/`:template`/`:interactive` — you
+  receive a presented set of choices but can't send one). Event RSVP responses are
+  not yet supported either.
 
   ## Addressing — `channel`, `from`, `to`
 
@@ -340,6 +343,19 @@ defmodule Amarula.Msg do
 
       {:interactive_response, m} ->
         {:interactive_response, Content.Response.from_proto(:interactive, m)}
+
+      # interactive messages presenting a set of choices → unified Options struct.
+      {:list, m} ->
+        {:list, Content.Options.from_proto(:list, m)}
+
+      {:buttons, m} ->
+        {:buttons, Content.Options.from_proto(:buttons, m)}
+
+      {:template, m} ->
+        {:template, Content.Options.from_proto(:template, m)}
+
+      {:interactive, m} ->
+        {:interactive, Content.Options.from_proto(:interactive, m)}
 
       # control: the type tag only; detail (and the proto) stays on msg.raw.
       {:protocol, t, _pm} ->

@@ -122,6 +122,60 @@ defmodule Amarula.MsgNoProtoLeakTest do
     %Proto.Message{
       interactiveResponseMessage: %Proto.Message.InteractiveResponseMessage{}
     },
+    %Proto.Message{
+      listMessage: %Proto.Message.ListMessage{
+        title: "Menu",
+        sections: [
+          %Proto.Message.ListMessage.Section{
+            title: "Drinks",
+            rows: [%Proto.Message.ListMessage.Row{title: "Coffee", rowId: "r1"}]
+          }
+        ]
+      }
+    },
+    %Proto.Message{
+      buttonsMessage: %Proto.Message.ButtonsMessage{
+        contentText: "Pick",
+        buttons: [
+          %Proto.Message.ButtonsMessage.Button{
+            buttonId: "b1",
+            buttonText: %Proto.Message.ButtonsMessage.Button.ButtonText{displayText: "Yes"}
+          }
+        ]
+      }
+    },
+    %Proto.Message{
+      templateMessage: %Proto.Message.TemplateMessage{
+        hydratedTemplate: %Proto.Message.TemplateMessage.HydratedFourRowTemplate{
+          hydratedContentText: "Choose",
+          hydratedButtons: [
+            %Proto.HydratedTemplateButton{
+              hydratedButton:
+                {:quickReplyButton,
+                 %Proto.HydratedTemplateButton.HydratedQuickReplyButton{
+                   displayText: "Go",
+                   id: "q1"
+                 }}
+            }
+          ]
+        }
+      }
+    },
+    %Proto.Message{
+      interactiveMessage: %Proto.Message.InteractiveMessage{
+        body: %Proto.Message.InteractiveMessage.Body{text: "Hello"},
+        interactiveMessage:
+          {:nativeFlowMessage,
+           %Proto.Message.InteractiveMessage.NativeFlowMessage{
+             buttons: [
+               %Proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton{
+                 name: "cta_url",
+                 buttonParamsJson: "{}"
+               }
+             ]
+           }}
+      }
+    },
     # :other catch-all
     %Proto.Message{}
   ]

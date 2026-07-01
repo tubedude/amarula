@@ -19,6 +19,9 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     * `{:product, msg}` / `{:order, msg}` / `{:button_response, msg}` /
       `{:list_response, msg}` / `{:template_reply, msg}` /
       `{:interactive_response, msg}` — WhatsApp Business / interactive (receive-only)
+    * `{:list, msg}` / `{:buttons, msg}` / `{:template, msg}` /
+      `{:interactive, msg}` — interactive messages that *present* a set of choices
+      (receive-only); see `Amarula.Content.Options`
     * `{:sender_key, skdm}`                        — Signal group-session-key plumbing (filtered before emit)
     * `{:other, message}`                          — anything not yet classified
 
@@ -175,6 +178,17 @@ defmodule Amarula.Protocol.Messages.MessageContent do
   defp do_classify(%Proto.Message{interactiveResponseMessage: m}) when not is_nil(m),
     do: {:interactive_response, m}
 
+  # Interactive messages that PRESENT a set of choices (a list menu, buttons, a
+  # template, or a native-flow interactive message) — what business / call-center
+  # / automated flows send to ask "pick one". Receive-only; the reply comes back
+  # as one of the *_response messages above.
+  defp do_classify(%Proto.Message{listMessage: m}) when not is_nil(m), do: {:list, m}
+  defp do_classify(%Proto.Message{buttonsMessage: m}) when not is_nil(m), do: {:buttons, m}
+  defp do_classify(%Proto.Message{templateMessage: m}) when not is_nil(m), do: {:template, m}
+
+  defp do_classify(%Proto.Message{interactiveMessage: m}) when not is_nil(m),
+    do: {:interactive, m}
+
   defp do_classify(message), do: {:other, message}
 
   @doc """
@@ -186,6 +200,21 @@ defmodule Amarula.Protocol.Messages.MessageContent do
   @spec context_info(Proto.Message.t()) :: Proto.ContextInfo.t() | nil
   def context_info(%Proto.Message{} = message) do
     message |> unwrap() |> sub_message() |> ctx_of()
+  end
+
+  @doc """
+  The `%Proto.Message.ExtendedTextMessage{}` of an inbound text message (after
+  unwrapping device-sent/ephemeral envelopes), or `nil` when the message isn't an
+  extended-text message. Callers read its link-preview fields
+  (`matchedText`/`title`/`description`/`jpegThumbnail`/`previewType`); see
+  `Amarula.Content.LinkPreview`.
+  """
+  @spec extended_text(Proto.Message.t()) :: Proto.Message.ExtendedTextMessage.t() | nil
+  def extended_text(%Proto.Message{} = message) do
+    case unwrap(message) do
+      %Proto.Message{extendedTextMessage: %Proto.Message.ExtendedTextMessage{} = ext} -> ext
+      _ -> nil
+    end
   end
 
   # The content-bearing sub-struct (the one classify keys on), or nil.

@@ -32,6 +32,7 @@ defmodule Amarula.Msg do
   | `:product`    | `%Amarula.Content.Product{}` (minimal — detail on `raw`) |
   | `:order`      | `%Amarula.Content.Order{}` (minimal — detail on `raw`) |
   | `:button_response` / `:list_response` / `:template_reply` / `:interactive_response` | `%Amarula.Content.Response{}` |
+  | `:list` / `:buttons` / `:template` / `:interactive` | `%Amarula.Content.Options{}` (a presented set of choices) |
   | `:protocol`   | `%Amarula.Content.Protocol{}` (control frame) — arrives on `:protocol_update` |
   | `:other`      | `nil` (read `raw`)                                     |
 
@@ -57,10 +58,12 @@ defmodule Amarula.Msg do
   | `:group_invite`        | `Amarula.send_group_invite/5`                        |
   | `:member_tag`          | `Amarula.update_member_tag/3` (group is `msg.channel`) |
 
-  **Receive-only** (no originating send): `:product`, `:order`, and the interactive
+  **Receive-only** (no originating send): `:product`, `:order`, the interactive
   replies (`:button_response`/`:list_response`/`:template_reply`/`:interactive_response`
-  — you receive a user's choice, but originating the buttons/list isn't supported).
-  Event RSVP responses are not yet supported either.
+  — you receive a user's choice, but originating the buttons/list isn't supported),
+  and the interactive *prompts* (`:list`/`:buttons`/`:template`/`:interactive` — you
+  receive a presented set of choices but can't send one). Event RSVP responses are
+  not yet supported either.
 
   ## Addressing — `channel`, `from`, `to`
 
@@ -121,6 +124,22 @@ defmodule Amarula.Msg do
   a contact the moment they message — no re-pairing, no separate contact fetch — even
   for someone WhatsApp only addresses by LID/number. It's `nil` for our own
   (`from_me`) messages and any stanza without the attr.
+
+  ## `forwarded`
+
+  `forwarded` is `true` when the message was forwarded from another chat
+  (`ContextInfo.isForwarded` on the wire), else `false`. The forward *score* (how
+  many hops — WhatsApp shows "forwarded many times" at ≥ 5) isn't surfaced here;
+  read `ContextInfo.forwardingScore` off `msg.raw` if you need it.
+
+  ## `preview`
+
+  `preview` is the link-preview card a `:text` message carries for a URL it
+  contains — an `%Amarula.Content.LinkPreview{}` with `url`/`title`/`description`/
+  `thumbnail`/`type`, or `nil` when the message has no preview. It rides
+  alongside the text (the `type` stays `:text` and `content` stays the body
+  string); a plain text message, or a reply/mention with no link, has `nil`.
+  Amarula surfaces previews it *receives*; sending them isn't supported yet.
   """
 
   alias Amarula.Address
@@ -155,6 +174,8 @@ defmodule Amarula.Msg do
           content: term(),
           quoted: quoted() | nil,
           mentions: [Address.t()],
+          forwarded: boolean(),
+          preview: Content.LinkPreview.t() | nil,
           raw: Proto.Message.t()
         }
 
@@ -170,7 +191,9 @@ defmodule Amarula.Msg do
     :type,
     :content,
     :quoted,
+    :preview,
     :raw,
+    forwarded: false,
     mentions: []
   ]
 
@@ -199,8 +222,16 @@ defmodule Amarula.Msg do
       content: content,
       quoted: quoted(ctx, meta[:channel]),
       mentions: mentions(ctx),
+      forwarded: forwarded?(ctx),
+      preview: link_preview(proto),
       raw: proto
     }
+  end
+
+  # Link-preview card for a text message carrying a URL, or nil (see
+  # Amarula.Content.LinkPreview). Reads the (unwrapped) extendedTextMessage.
+  defp link_preview(proto) do
+    proto |> MessageContent.extended_text() |> Content.LinkPreview.from_proto()
   end
 
   # Build the `quoted` view from a message's contextInfo (nil if not a reply).
@@ -239,6 +270,8 @@ defmodule Amarula.Msg do
       content: content,
       quoted: nil,
       mentions: [],
+      forwarded: forwarded?(MessageContent.context_info(proto)),
+      preview: link_preview(proto),
       raw: proto
     }
   end
@@ -249,6 +282,11 @@ defmodule Amarula.Msg do
     do: Enum.map(jids, &Address.parse/1)
 
   defp mentions(_), do: []
+
+  # Whether the message was forwarded (ContextInfo.isForwarded, field 22). The
+  # proto3-optional field is nil when unset, so only an explicit `true` counts.
+  defp forwarded?(%Proto.ContextInfo{isForwarded: true}), do: true
+  defp forwarded?(_), do: false
 
   defp address(nil), do: nil
   defp address(""), do: nil
@@ -324,6 +362,19 @@ defmodule Amarula.Msg do
 
       {:interactive_response, m} ->
         {:interactive_response, Content.Response.from_proto(:interactive, m)}
+
+      # interactive messages presenting a set of choices → unified Options struct.
+      {:list, m} ->
+        {:list, Content.Options.from_proto(:list, m)}
+
+      {:buttons, m} ->
+        {:buttons, Content.Options.from_proto(:buttons, m)}
+
+      {:template, m} ->
+        {:template, Content.Options.from_proto(:template, m)}
+
+      {:interactive, m} ->
+        {:interactive, Content.Options.from_proto(:interactive, m)}
 
       # control: the type tag only; detail (and the proto) stays on msg.raw.
       {:protocol, t, _pm} ->

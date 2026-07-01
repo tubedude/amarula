@@ -7,6 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-01
+
+First hex release since 0.3.0 — the 0.3.1 section below landed in git but was
+never published; its changes ship in this release too.
+
+### Added
+
+- **`%Amarula.Msg{}.forwarded`** — a boolean, `true` when the message was forwarded
+  from another chat (decoded from `ContextInfo.isForwarded`). Defaults to `false`;
+  inlined quoted messages carry their own flag. The forward *score*
+  (`forwardingScore`, the "forwarded many times" signal) stays on `msg.raw`.
+- **Incoming calls surfaced as `:call_update`.** A `<call>` stanza was previously
+  acked and dropped; it now also emits a `:call_update` consumer event carrying
+  `%{chat, from, id, status, timestamp, offline, video?, group?, group_jid}`.
+  `status` is `:offer` (ringing), `:terminate`, `:timeout` (unanswered), `:reject`,
+  `:accept`, or `:ringing`; correlate an `:offer` with its later `:terminate` via
+  `id`. Parsing lives in the new pure `Amarula.Protocol.Call`.
+- **Interactive "pick one" messages classified.** `listMessage`, `buttonsMessage`,
+  `templateMessage`, and `interactiveMessage` (native-flow) — the prompts business
+  / call-center / automated flows send to present a set of choices — used to fall
+  through to `{:other}`. They now classify to `msg.type` `:list` / `:buttons` /
+  `:template` / `:interactive` with content as the new `Amarula.Content.Options`
+  struct (`title`, `body`, `footer`, `button_text`, and `options: [%{id, text,
+  description}]`). The option `id` matches the `id` on the user's later
+  `%Amarula.Content.Response{}`.
+- **Link previews surfaced on received messages.** A text message carrying a URL
+  preview now exposes it on the new `%Amarula.Msg{}.preview` field — an
+  `%Amarula.Content.LinkPreview{}` with `url`/`title`/`description`/`thumbnail`
+  (raw JPEG bytes)/`type`, or `nil` when there's no preview. The message `type`
+  stays `:text` and `content` stays the body string, so it's non-breaking.
+  Receiving only — sending previews isn't supported yet.
+
+### Fixed
+
+- **`:pairing_failure` added to the `t:event/0` typespec.** The event was already
+  emitted on a failed pair-success but was missing from the documented event list.
+- **Keep-alive pings no longer multiply across reconnects.** The generic reconnect
+  path armed a new ping timer without cancelling the old one, so every reconnect
+  added a permanent extra ping loop (which can itself provoke server disconnects).
+- **Reconnect backoff and give-up actually work.** `retry_count` was reset the
+  moment the socket process started, so backoff never grew and `max_retries`
+  never triggered — a server that accepts-then-drops caused a tight reconnect
+  storm. The counter now resets only on a successful login, and a server close
+  counts toward the limit; exhausting it transitions to `:closed`.
+- **A malformed `<enc>` payload can't take down the connection.** `skmsg` and
+  `plaintext` decrypt paths were unguarded, so garbage bytes crashed the whole
+  `Connection` (dropping the batch and forcing a reconnect). Every enc type now
+  degrades to a per-enc error entry.
+- **Constant-time pairing HMAC verification.** The ADV device-identity HMAC was
+  compared with `==`; it now uses `:crypto.hash_equals/2` with a length pre-check,
+  like every other MAC comparison in the codebase.
+- **Retry-cache reads no longer mint atoms from `profile`.** Unknown profiles
+  resolved through `:"amarula_retry_cache_#{profile}"` on every read — an atom
+  exhaustion vector for multi-tenant bots with user-derived profiles. Reads now
+  use `String.to_existing_atom`; the atom is created once, at connection init.
+- **`send_media` can't hang its caller.** A raise inside the media encrypt/upload
+  task left the caller blocked for the full 90s call timeout; it now replies
+  `{:error, {:media_prepare_failed, _}}`.
+- **A 515 restart fails parked IQ callers fast.** Pending `query_iq` waiters were
+  silently dropped on restart and hung to their 25s call timeout; they now get
+  `{:error, :not_connected}` immediately.
+- **Unexpected messages no longer crash `Connection`.** Catch-all `handle_call`/
+  `handle_info` clauses log and ignore instead of `FunctionClauseError`-ing the
+  whole per-connection tree.
+- **Hosted JIDs decode correctly off the wire.** The binary decoder read AD_JID
+  domain types 2/3 for `hosted`/`hosted.lid` while the encoder (and Baileys'
+  `WAJIDDomains`) use 128/129 — hosted device jids silently mangled to
+  `s.whatsapp.net` on receive.
+- **Server-supplied integers degrade instead of crashing.** Malformed receipt
+  `t`, group `size`, and JID device/agent segments (decode and encode paths) now
+  parse via `Integer.parse` with a fallback rather than raising mid-frame.
+- **Trial decryption can't mask real bugs.** The Signal session trial-decrypt
+  loop rescued *every* exception as "wrong session, try next"; it now rescues
+  only the new `DecryptError` (bad MAC / version / chain), so programming errors
+  propagate instead of surfacing as "No matching sessions found".
+
+### Changed
+
+- **Binary node encoding is O(n).** The encoder accumulated a byte list with tail
+  appends and exploded binaries via `bin_to_list` — quadratic time and ~10x
+  memory on large payloads. It now builds iodata.
+- Removed dead internal modules: `Signal.Repository` and `Signal.LIDMappingStore`
+  (unused, superseded by `LidMappingFileStore`), the unused `SenderKeyName`
+  hash/parse helpers, and the vestigial `WebSocketClient` connect/state-predicate
+  API.
+
+## [0.3.1] - 2026-06-26
+
+A small follow-up to 0.3.0 — connection robustness fixes plus post-release review
+catches. No breaking changes; purely additive/fixes.
+
+### Fixed
+
+- **Auto-reconnect when the websocket dies.** `WebSocketClient` was linked to
+  `Connection` (which doesn't trap exits), so a server close signal-killed
+  `Connection` before it could drive the reconnect, leaving the account stuck
+  `:disconnected`. The link is now a monitor, so the client's death arrives as a
+  `{:DOWN}` that triggers a reconnect.
+- **Never crash on a send while disconnected.** A send before the handshake
+  completed (nil `noise_state`) or after the socket dropped (nil
+  `websocket_client`) crashed the whole `Connection` instead of returning to the
+  caller. A backstop in `send_binary_node/2` drops the frame and a
+  `ready_to_send?/1` guard on the consumer sends replies `{:error, :not_connected}`.
+- **Emit a `:connection_update` down-transition on error paths.** Errors (ws
+  errors, timeouts, non-515 stream errors, server close) previously emitted only
+  an `:error` event, so a consumer tracking connection state never saw the drop.
+- **Treat "Invalid PreKey ID" on a pkmsg as a duplicate (ack 487).** A redelivered
+  pkmsg whose one-time prekey was consumed on first decrypt raised this error and
+  fell through to retry+nack-500, making the server re-fan the stanza forever. It
+  is now recognised as a duplicate and acked, terminating the redelivery loop.
+
+### Changed
+
+- `Content.Poll.options` drops malformed entries instead of emitting `nil`, so it
+  always matches its `[String.t()]` type.
+- Removed the unused `Connection.cache_sent_message/4` (superseded by the
+  `RetryCache.Step` send-pipe step) and corrected the `Media.download/2` doc to
+  the snake_case-only descriptor shape.
+
 ## [0.3.0] - 2026-06-22
 
 The headline is the **receive side**: a `%Amarula.Msg{}`'s `content` is now always a

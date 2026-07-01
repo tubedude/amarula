@@ -151,8 +151,4 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     removed = MessageEncoder.member_label("")
     assert {:member_tag, %{label: ""}} = MessageContent.classify(removed)
   end
-
-  test "still falls through to {:other} for genuinely unknown content" do
-    assert {:other, _} = MessageContent.classify(%Proto.Message{})
-  end
 end

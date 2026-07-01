@@ -43,7 +43,7 @@ history sync.
 ```elixir
 def deps do
   [
-    {:amarula, "~> 0.2"}
+    {:amarula, "~> 0.4"}
   ]
 end
 ```

@@ -27,6 +27,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Messages.{ConversationSender, Media, MessageEncoder}
   alias Amarula.Protocol.Messages.{HistorySync, MessageDecryptor}
   alias Amarula.Protocol.Presence
+  alias Amarula.Protocol.Call
 
   # A send blocks the caller until the per-recipient sender finishes (up to three
   # IQ round-trips for a new recipient). The client-side call timeout must exceed
@@ -469,16 +470,6 @@ defmodule Amarula.Connection do
   def wipe_credentials(pid), do: GenServer.call(pid, :wipe_credentials)
 
   @doc """
-  Remember a just-sent message (id → content + recipient) so it can be
-  re-encrypted and resent if the recipient sends a `type="retry"` receipt.
-  Bounded LRU; the ConversationSender calls this after a successful relay.
-  """
-  @spec cache_sent_message(GenServer.server(), String.t(), String.t(), struct()) :: :ok
-  def cache_sent_message(pid, msg_id, recipient_jid, message) do
-    GenServer.cast(pid, {:cache_sent_message, msg_id, recipient_jid, message})
-  end
-
-  @doc """
   Send a 1:1/group text message to `jid`. Encrypts and relays (fetching the
   recipient's prekey bundle first if we have no session). Returns `{:ok, msg_id}`.
   """
@@ -846,13 +837,19 @@ defmodule Amarula.Connection do
     # the normal async dispatch (forwarding the caller's `from`) takes over. On a
     # failure the Task replies the error to `from` directly.
     Task.start(fn ->
-      with {:ok, enc} <- Media.encrypt(data, type),
-           {:ok, uploaded} <- Media.upload(conn_pid, enc.enc, enc.file_enc_sha256, type) do
-        info = Map.merge(enc, Map.put(uploaded, :mimetype, mimetype))
-        message = MessageEncoder.media(type, info, opts)
-        send(conn_pid, {:send_media_ready, jid, message, from})
-      else
-        {:error, reason} -> GenServer.reply(from, {:error, reason})
+      # `from` must always get an answer — a raise here would otherwise leave the
+      # caller hanging for the full send-call timeout.
+      try do
+        with {:ok, enc} <- Media.encrypt(data, type),
+             {:ok, uploaded} <- Media.upload(conn_pid, enc.enc, enc.file_enc_sha256, type) do
+          info = Map.merge(enc, Map.put(uploaded, :mimetype, mimetype))
+          message = MessageEncoder.media(type, info, opts)
+          send(conn_pid, {:send_media_ready, jid, message, from})
+        else
+          {:error, reason} -> GenServer.reply(from, {:error, reason})
+        end
+      rescue
+        e -> GenServer.reply(from, {:error, {:media_prepare_failed, e}})
       end
     end)
 
@@ -863,6 +860,13 @@ defmodule Amarula.Connection do
   def handle_call({:update_auth_creds, new_creds}, _from, state) do
     Logger.info("Updating authentication credentials")
     {:reply, :ok, update_creds(state, new_creds)}
+  end
+
+  # Catch-all: an unexpected call must not crash the whole per-connection tree.
+  @impl GenServer
+  def handle_call(request, _from, state) do
+    Logger.warning("Unexpected call: #{inspect(request)}")
+    {:reply, {:error, :unknown_request}, state}
   end
 
   # Reaction to "a brand-new LID mapping was learned" (cast from
@@ -884,19 +888,6 @@ defmodule Amarula.Connection do
       end)
 
     emit_to_subscribers(state, :lid_mapping_update, mappings)
-    {:noreply, state}
-  end
-
-  @impl GenServer
-  def handle_cast({:cache_sent_message, msg_id, recipient_jid, message}, state) do
-    entry = %{
-      recipient_jid: recipient_jid,
-      message: message,
-      ts: System.system_time(:millisecond)
-    }
-
-    Amarula.RetryCache.put(retry_cache(state), profile(state), msg_id, entry)
-
     {:noreply, state}
   end
 
@@ -953,15 +944,21 @@ defmodule Amarula.Connection do
   def handle_info({:ws_event, _ws_pid, {:close, data}}, state) do
     Logger.debug("WebSocket connection closed: #{inspect(data)}")
 
-    # Drop the pid so further events from this socket are ignored as stale
-    new_state = %{state | connection_state: :disconnected, websocket_client: nil}
+    # Drop the pid so further events from this socket are ignored as stale.
+    # Count the close toward backoff/give-up like the error path does.
+    new_state = %{
+      state
+      | connection_state: :disconnected,
+        websocket_client: nil,
+        retry_count: state.retry_count + 1
+    }
 
     # Emit connection update event
     emit_connection_update(new_state, :disconnected)
 
     # Attempt reconnection if not manually disconnected
     new_state =
-      if state.retry_count < state.max_retries do
+      if new_state.retry_count < new_state.max_retries do
         schedule_reconnect(new_state)
       else
         Logger.error("Max retry attempts reached, giving up")
@@ -1240,18 +1237,28 @@ defmodule Amarula.Connection do
     end
   end
 
+  # Catch-all: this process owns a socket and is long-lived — an unexpected
+  # message must not crash the whole per-connection tree.
+  @impl GenServer
+  def handle_info(msg, state) do
+    Logger.debug("Ignoring unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
   @impl GenServer
   def terminate(reason, state) do
     Logger.info("Connection manager terminating: #{inspect(reason)}")
 
     # Clean up timers
-    if state.retry_timer do
-      Process.cancel_timer(state.retry_timer)
-    end
-
-    if state.connection_timeout_timer do
-      Process.cancel_timer(state.connection_timeout_timer)
-    end
+    for timer <- [
+          state.retry_timer,
+          state.connection_timeout_timer,
+          state.keep_alive_timer,
+          state.qr_timer,
+          state.server_response_timeout_timer
+        ],
+        timer,
+        do: Process.cancel_timer(timer)
 
     # Disconnect WebSocket
     if state.websocket_client do
@@ -1263,6 +1270,10 @@ defmodule Amarula.Connection do
 
   defp attempt_connection(state) do
     Logger.debug("Attempting WebSocket connection (attempt #{state.retry_count + 1})")
+
+    # A re-entrant connect (e.g. :connect while still :connecting) must not
+    # orphan the previous client — tear it down before starting a new one.
+    state = if state.websocket_client, do: disconnect_websocket(state), else: state
 
     new_state = %{state | connection_state: :connecting}
 
@@ -1302,13 +1313,15 @@ defmodule Amarula.Connection do
         Process.unlink(websocket_pid)
         ref = Process.monitor(websocket_pid)
 
-        # Store websocket_pid and wait for :open event to initiate handshake
+        # Store websocket_pid and wait for :open event to initiate handshake.
+        # retry_count is NOT reset here — the socket process starting says nothing
+        # about the connection succeeding; finish_login resets it, so an
+        # accept-then-drop server still backs off and eventually gives up.
         %{
           new_state
           | websocket_client: websocket_pid,
             websocket_monitor: ref,
             connection_state: :connecting,
-            retry_count: 0,
             last_error: nil
         }
 
@@ -1773,8 +1786,9 @@ defmodule Amarula.Connection do
   # type="retry" receipt = recipient asking us to re-encrypt+resend; others just ack.
   defp dispatch_node(state, :retry_receipt, node), do: handle_retry_receipt(state, node)
   defp dispatch_node(state, :receipt_ack, node), do: handle_receipt(state, node)
-  # Incoming call offer/terminate. Baileys acks calls; processing not ported.
-  defp dispatch_node(state, :call_ack, node), do: send_message_ack(state, node)
+  # Incoming call (offer/terminate/accept/reject/...). Always ack first (stops
+  # the server retransmitting), then surface it as :call_update.
+  defp dispatch_node(state, :call_ack, node), do: handle_call(state, node)
   # Server confirmation of a send we relayed — reply the parked consumer.
   defp dispatch_node(state, :message_ack, node), do: handle_message_ack(state, node)
 
@@ -1867,6 +1881,25 @@ defmodule Amarula.Connection do
 
       {:error, _} ->
         Logger.warning("Invalid presence node: #{inspect(node)}")
+        state
+    end
+  end
+
+  # An incoming `<call>` stanza (a contact calling, the call timing out, being
+  # accepted/rejected, ...). Ack first so the server stops retransmitting, then
+  # parse and surface it as :call_update. A malformed call (no info child) is
+  # still acked but not surfaced.
+  defp handle_call(state, node) do
+    state = send_message_ack(state, node)
+
+    case Call.parse(node) do
+      {:ok, call} ->
+        Logger.debug("Call #{call.status} from #{inspect(call.from)}")
+        emit_to_subscribers(state, :call_update, call)
+        state
+
+      {:error, _} ->
+        Logger.warning("Invalid call node: #{inspect(node)}")
         state
     end
   end
@@ -2372,15 +2405,35 @@ defmodule Amarula.Connection do
 
     state
     |> clear_server_response_waiting()
+    |> fail_pending_iqs(:not_connected)
     |> disconnect_websocket()
     |> Map.merge(%{
       noise_state: nil,
       handshake_state: nil,
       keep_alive_timer: nil,
-      retry_count: 0,
-      pending_iqs: %{}
+      retry_count: 0
     })
     |> attempt_connection()
+  end
+
+  # Drain pending IQs on a restart: blocked query_iq callers get an immediate
+  # error instead of hanging to their call timeout; tracked-IQ timers are
+  # cancelled (their continuations are abandoned with the old socket).
+  defp fail_pending_iqs(state, reason) do
+    Enum.each(state.pending_iqs, fn
+      {_id, {:waiter, from, timer}} ->
+        Process.cancel_timer(timer)
+        GenServer.reply(from, {:error, reason})
+
+      {_id, {:waiter, from, timer, _transform}} ->
+        Process.cancel_timer(timer)
+        GenServer.reply(from, {:error, reason})
+
+      {_id, {:tracked, _kind, timer}} ->
+        Process.cancel_timer(timer)
+    end)
+
+    %{state | pending_iqs: %{}}
   end
 
   defp handle_pair_device(state, node) do
@@ -2904,6 +2957,8 @@ defmodule Amarula.Connection do
   defp start_keep_alive_timer(state) do
     # Start keep-alive timer to send periodic ping messages
     # NO immediate ping after handshake - first ping sent after keep_alive_interval_ms
+    # Cancel any timer from a previous (re)connect so ping loops don't multiply.
+    if state.keep_alive_timer, do: Process.cancel_timer(state.keep_alive_timer)
     keep_alive_interval = state.config.keep_alive_interval_ms || 30_000
 
     # Schedule first ping after interval
@@ -3898,8 +3953,9 @@ defmodule Amarula.Connection do
   # Mirrors Baileys CB:success body (passive IQ, unified_session, digest key
   # bundle) plus the connection-open presence (markOnlineOnConnect default).
   defp finish_login(state) do
+    # Login succeeded — this is where the reconnect backoff counter resets.
     state =
-      state
+      %{state | retry_count: 0}
       |> send_passive_iq("active")
       |> send_unified_session()
       |> send_digest_iq()

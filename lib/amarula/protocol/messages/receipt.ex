@@ -80,9 +80,9 @@ defmodule Amarula.Protocol.Messages.Receipt do
   end
 
   defp timestamp(node) do
-    case NodeUtils.get_attr(node, "t") do
-      nil -> nil
-      t -> String.to_integer(t)
+    case Integer.parse(NodeUtils.get_attr(node, "t") || "") do
+      {t, _} -> t
+      :error -> nil
     end
   end
 

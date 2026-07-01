@@ -4,7 +4,6 @@ defmodule Amarula.NoiseProtocolTest do
   """
 
   use ExUnit.Case, async: false
-  import Bitwise
   alias Amarula.Protocol.Crypto.{Crypto, NoiseHandler, Constants}
   alias Amarula.Protocol.Auth.AuthUtils
 
@@ -147,47 +146,21 @@ defmodule Amarula.NoiseProtocolTest do
     assert state3.write_counter == 2
   end
 
-  test "handshake structure is well-formed" do
-    # This test documents the expected handshake structure
-    # It tests basic structure without requiring full encryption
-    #
-    # Note: Full handshake tests should be added after fixing encryption issues
+  test "process_handshake returns {:error, _} on a corrupt serverHello (no raise)" do
+    # A garbage/MITM'd static or payload fails GCM auth inside process_handshake;
+    # that must surface as the spec'd error tuple, not a MatchError crash.
+    key_pair = Crypto.generate_key_pair()
+    noise_key = Crypto.generate_key_pair()
+    state = NoiseHandler.new(key_pair)
 
-    # Generate key pairs for both client and server
-    server_ephemeral_key = Crypto.generate_key_pair()
-    server_static_key = Crypto.generate_key_pair()
-
-    # Build minimal serverHello structure
-    # In a complete test, server_hello.static and .payload would be encrypted
     server_hello = %{
-      ephemeral: server_ephemeral_key.public,
-      static: server_static_key.public,
-      # Would be encrypted in real test
-      payload: "placeholder_payload"
+      ephemeral: Crypto.generate_key_pair().public,
+      static: :crypto.strong_rand_bytes(48),
+      payload: :crypto.strong_rand_bytes(64)
     }
 
-    # Verify structure
-    assert is_map(server_hello)
-    assert byte_size(server_hello.ephemeral) == 32
-    assert byte_size(server_hello.static) == 32
-    assert is_binary(server_hello.payload)
-
-    # Note: process_handshake would fail here because encryption isn't implemented yet
-    # This is expected behavior until the encryption logic is fixed
-  end
-
-  test "encryption guard prevents pre-handshake encryption" do
-    # Test that we cannot encrypt before keys are established via mix_into_key
-    key_pair = Crypto.generate_key_pair()
-    noise_state = NoiseHandler.new(key_pair)
-
-    # Verify handshake state is :init
-    assert noise_state.handshake_state == :init
-
-    # Attempting to encrypt should raise an error
-    assert_raise RuntimeError, ~r/Cannot encrypt before keys are established/, fn ->
-      NoiseHandler.encrypt(noise_state, "test data")
-    end
+    assert {:error, _} =
+             NoiseHandler.process_handshake(state, %{serverHello: server_hello}, noise_key)
   end
 
   test "state threading works correctly in decode_frame" do

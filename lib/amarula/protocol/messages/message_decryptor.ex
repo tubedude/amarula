@@ -33,8 +33,9 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   @doc """
   Decrypt all decryptable `<enc>` children of `node`.
 
-  Returns `{:ok, [%Proto.Message{}], used_pre_key_ids}` (one message per
-  successfully decrypted enc), or `{:ok, [], []}` if nothing decryptable.
+  Returns `{:ok, [%Proto.Message{}], used_pre_key_ids, errors}` (one message per
+  successfully decrypted enc, one error entry per enc that failed), or
+  `{:ok, [], [], []}` if nothing decryptable.
   `used_pre_key_ids` lists our one-time prekey ids consumed by
   PreKeySignalMessages — the caller must delete them from storage, as
   libsignal's `session_cipher` does via `removePreKey`. `opts` requires:
@@ -106,48 +107,64 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   defp decrypt_enc("pkmsg", content, addr, _from, _author, store, _sk_store, conn) do
     record = SessionStore.load_session(conn, addr)
 
-    try do
-      {:ok, plaintext, record, pre_key_id} =
-        SessionCipher.decrypt_pre_key_whisper_message(record, content, store)
-
+    with {:ok, plaintext, record, pre_key_id} <-
+           run_cipher(fn ->
+             SessionCipher.decrypt_pre_key_whisper_message(record, content, store)
+           end) do
       SessionStore.store_session(conn, addr, record)
-      {:ok, decode_message(unpad(plaintext)), pre_key_id}
-    rescue
-      e -> {:error, e}
+
+      with {:ok, msg} <- decode_padded(plaintext), do: {:ok, msg, pre_key_id}
     end
   end
 
   defp decrypt_enc("msg", content, addr, _from, _author, store, _sk_store, conn) do
-    case SessionStore.load_session(conn, addr) do
-      nil ->
-        {:error, :no_session}
+    with record when not is_nil(record) <- SessionStore.load_session(conn, addr),
+         {:ok, plaintext, record} <-
+           run_cipher(fn -> SessionCipher.decrypt_whisper_message(record, content, store) end) do
+      SessionStore.store_session(conn, addr, record)
 
-      record ->
-        try do
-          {:ok, plaintext, record} = SessionCipher.decrypt_whisper_message(record, content, store)
-          SessionStore.store_session(conn, addr, record)
-          {:ok, decode_message(unpad(plaintext)), nil}
-        rescue
-          e -> {:error, e}
-        end
-    end
-  end
-
-  defp decrypt_enc("skmsg", content, _addr, from, author, _store, sk_store, _dir) do
-    sender_key_name = SenderKeyName.from_jids(from, author)
-
-    case GroupCipher.decrypt(sk_store, sender_key_name, content) do
-      {:ok, plaintext} -> {:ok, decode_message(unpad(plaintext)), nil}
+      with {:ok, msg} <- decode_padded(plaintext), do: {:ok, msg, nil}
+    else
+      nil -> {:error, :no_session}
       {:error, reason} -> {:error, reason}
     end
   end
 
+  defp decrypt_enc("skmsg", content, _addr, from, author, _store, sk_store, _conn) do
+    sender_key_name = SenderKeyName.from_jids(from, author)
+
+    with {:ok, plaintext} <- GroupCipher.decrypt(sk_store, sender_key_name, content),
+         {:ok, msg} <- decode_padded(plaintext) do
+      {:ok, msg, nil}
+    end
+  end
+
   defp decrypt_enc("plaintext", content, _addr, _from, _author, _store, _sk_store, _conn) do
-    {:ok, decode_message(content), nil}
+    with {:ok, msg} <- decode_proto(content), do: {:ok, msg, nil}
   end
 
   defp decrypt_enc(type, _content, _addr, _from, _author, _store, _sk_store, _conn) do
     {:error, {:unsupported_enc_type, type}}
+  end
+
+  # The Signal cipher signals failure by raising (libsignal-shaped); convert to a
+  # tuple at this one boundary so a bad <enc> becomes an error entry, not a crash.
+  defp run_cipher(fun) do
+    fun.()
+  rescue
+    e -> {:error, e}
+  end
+
+  defp decode_padded(plaintext) do
+    with {:ok, bytes} <- unpad(plaintext), do: decode_proto(bytes)
+  end
+
+  # Proto.Message.decode/1 raises on malformed bytes — untrusted input, so
+  # convert to a tuple here.
+  defp decode_proto(bytes) do
+    {:ok, decode_message(bytes)}
+  rescue
+    e -> {:error, e}
   end
 
   # proto.Message.decode, unwrapping deviceSentMessage.
@@ -161,16 +178,16 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   end
 
   # unpadRandomMax16: last byte is the pad length.
-  defp unpad(<<>>), do: raise("unpad given empty bytes")
+  defp unpad(<<>>), do: {:error, :empty_plaintext}
 
   defp unpad(bytes) do
     pad = :binary.last(bytes)
 
     if pad > byte_size(bytes) do
-      raise "unpad given #{byte_size(bytes)} bytes, but pad is #{pad}"
+      {:error, {:bad_pad_length, pad, byte_size(bytes)}}
+    else
+      {:ok, binary_part(bytes, 0, byte_size(bytes) - pad)}
     end
-
-    binary_part(bytes, 0, byte_size(bytes) - pad)
   end
 
   # Process senderKeyDistributionMessage inside a just-decrypted group message.

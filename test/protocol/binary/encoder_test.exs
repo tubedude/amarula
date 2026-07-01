@@ -161,14 +161,6 @@ defmodule Amarula.Protocol.Binary.EncoderTest do
       assert decoded.content == nil
     end
 
-    test "handles nil content" do
-      node = %Node{tag: "message", attrs: %{}, content: nil}
-      {:ok, binary} = Encoder.encode(node)
-      decoded = Decoder.decode(binary)
-
-      assert decoded.content == nil
-    end
-
     test "handles special characters in strings" do
       special_string = "Hello\nWorld\tTest\"Quote'"
       node = %Node{tag: "message", attrs: %{"text" => special_string}, content: nil}
@@ -204,6 +196,38 @@ defmodule Amarula.Protocol.Binary.EncoderTest do
       decoded = Decoder.decode(binary)
 
       assert decoded.tag == "small"
+    end
+
+    test "raises on a node list beyond the LIST_16 wire maximum" do
+      node = %Node{tag: "x", attrs: %{}, content: List.duplicate(%Node{tag: "k"}, 65_536)}
+
+      assert_raise ArgumentError, ~r/LIST_16 maximum/, fn -> Encoder.encode(node) end
+    end
+  end
+
+  describe "AD_JID domain types" do
+    # Encoder writes and decoder reads the Baileys WAJIDDomains values
+    # (WHATSAPP=0, LID=1, HOSTED=128, HOSTED_LID=129) — device jids for every
+    # domain must survive the wire round-trip.
+    test "device jids round-trip for every domain" do
+      for jid <- [
+            "1234:5@s.whatsapp.net",
+            "1234:5@lid",
+            "1234:5@hosted",
+            "1234:5@hosted.lid"
+          ] do
+        node = %Node{tag: "message", attrs: %{"from" => jid}, content: nil}
+        {:ok, binary} = Encoder.encode(node)
+
+        assert %{attrs: %{"from" => ^jid}} = Decoder.decode(binary)
+      end
+    end
+
+    test "a malformed device segment falls back to a raw string, not a crash" do
+      node = %Node{tag: "message", attrs: %{"from" => "1234:xx@s.whatsapp.net"}, content: nil}
+      {:ok, binary} = Encoder.encode(node)
+
+      assert %{attrs: %{"from" => "1234:xx@s.whatsapp.net"}} = Decoder.decode(binary)
     end
   end
 end

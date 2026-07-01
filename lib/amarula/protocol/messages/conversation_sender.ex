@@ -579,12 +579,10 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     own_user = JID.decode(ctx.creds.me.id).user
 
     participants =
-      devices
-      |> Enum.map(fn device ->
+      Enum.map(devices, fn device ->
         bytes = if own_device?(device, own_user), do: dsm_plaintext, else: plaintext
         encrypt_for_device(ctx, device, bytes)
       end)
-      |> Enum.reject(&is_nil/1)
 
     {:ok, %{ctx | participants: participants}}
   end
@@ -614,10 +612,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     # our sender key (Baileys senderKeyMsg).
     skdm_plaintext = MessageEncoder.encode(skdm_message(ctx.target_jid, skdm))
 
-    participants =
-      ctx.devices
-      |> Enum.map(&encrypt_for_device(ctx, &1, skdm_plaintext))
-      |> Enum.reject(&is_nil/1)
+    participants = Enum.map(ctx.devices, &encrypt_for_device(ctx, &1, skdm_plaintext))
 
     {:ok, %{ctx | participants: participants, skmsg: skmsg}}
   end
@@ -684,8 +679,8 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     DeviceListCache.put_many(ctx.conn, Enum.group_by(devices, & &1.user))
   end
 
-  # {device_jid, enc_type, ciphertext} or nil on failure. Session keyed by the
-  # LID address when a mapping exists; wire <to jid> stays the PN device jid.
+  # {device_jid, enc_type, ciphertext}. Session keyed by the LID address when a
+  # mapping exists; wire <to jid> stays the PN device jid.
   defp encrypt_for_device(ctx, %{jid: device_jid}, plaintext) do
     addr = LidMappingFileStore.signal_address(ctx.conn, device_jid)
     store = SessionStore.build(ctx.creds)

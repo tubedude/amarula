@@ -44,6 +44,16 @@ defmodule Amarula.MsgNoProtoLeakTest do
   # MessageContent without a proto-free content mapping, add it here and it must pass.
   @samples [
     %Proto.Message{conversation: "hi"},
+    %Proto.Message{
+      extendedTextMessage: %Proto.Message.ExtendedTextMessage{
+        text: "see https://x.test",
+        matchedText: "https://x.test",
+        title: "Example",
+        description: "An example site",
+        jpegThumbnail: <<255, 216, 255>>,
+        previewType: :IMAGE
+      }
+    },
     %Proto.Message{imageMessage: %Proto.Message.ImageMessage{directPath: "/x"}},
     %Proto.Message{videoMessage: %Proto.Message.VideoMessage{seconds: 3}},
     %Proto.Message{audioMessage: %Proto.Message.AudioMessage{seconds: 3}},
@@ -122,6 +132,60 @@ defmodule Amarula.MsgNoProtoLeakTest do
     %Proto.Message{
       interactiveResponseMessage: %Proto.Message.InteractiveResponseMessage{}
     },
+    %Proto.Message{
+      listMessage: %Proto.Message.ListMessage{
+        title: "Menu",
+        sections: [
+          %Proto.Message.ListMessage.Section{
+            title: "Drinks",
+            rows: [%Proto.Message.ListMessage.Row{title: "Coffee", rowId: "r1"}]
+          }
+        ]
+      }
+    },
+    %Proto.Message{
+      buttonsMessage: %Proto.Message.ButtonsMessage{
+        contentText: "Pick",
+        buttons: [
+          %Proto.Message.ButtonsMessage.Button{
+            buttonId: "b1",
+            buttonText: %Proto.Message.ButtonsMessage.Button.ButtonText{displayText: "Yes"}
+          }
+        ]
+      }
+    },
+    %Proto.Message{
+      templateMessage: %Proto.Message.TemplateMessage{
+        hydratedTemplate: %Proto.Message.TemplateMessage.HydratedFourRowTemplate{
+          hydratedContentText: "Choose",
+          hydratedButtons: [
+            %Proto.HydratedTemplateButton{
+              hydratedButton:
+                {:quickReplyButton,
+                 %Proto.HydratedTemplateButton.HydratedQuickReplyButton{
+                   displayText: "Go",
+                   id: "q1"
+                 }}
+            }
+          ]
+        }
+      }
+    },
+    %Proto.Message{
+      interactiveMessage: %Proto.Message.InteractiveMessage{
+        body: %Proto.Message.InteractiveMessage.Body{text: "Hello"},
+        interactiveMessage:
+          {:nativeFlowMessage,
+           %Proto.Message.InteractiveMessage.NativeFlowMessage{
+             buttons: [
+               %Proto.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton{
+                 name: "cta_url",
+                 buttonParamsJson: "{}"
+               }
+             ]
+           }}
+      }
+    },
     # :other catch-all
     %Proto.Message{}
   ]
@@ -130,6 +194,8 @@ defmodule Amarula.MsgNoProtoLeakTest do
     for proto <- @samples do
       msg = build(proto)
       refute_proto(msg.content, "#{msg.type}.content")
+      # msg.preview is a consumer-facing struct too — it must not leak a proto.
+      refute_proto(msg.preview, "#{msg.type}.preview")
       # sanity: the raw proto IS still available (the escape hatch).
       assert %Proto.Message{} = msg.raw
     end

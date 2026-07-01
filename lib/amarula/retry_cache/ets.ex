@@ -87,7 +87,10 @@ defmodule Amarula.RetryCache.ETS do
   @impl true
   @spec ensure_local(map(), atom() | String.t()) :: :ok
   def ensure_local(_state, profile) do
-    name = table(profile)
+    # The one place the table-name atom is minted: once per started profile, from
+    # Connection.init. A profile that gets here already owns a supervision tree,
+    # so this can't exhaust the atom table any faster than the process table.
+    name = :"amarula_retry_cache_#{profile}"
 
     case :ets.whereis(name) do
       :undefined -> :ets.new(name, [:set, :public, :named_table, read_concurrency: true])
@@ -99,7 +102,13 @@ defmodule Amarula.RetryCache.ETS do
 
   # --- internals ---
 
-  defp table(profile), do: :"amarula_retry_cache_#{profile}"
+  # Read/write paths never mint atoms — `profile` can be user-controlled, and
+  # atoms aren't GC'd. An unknown profile resolves to :undefined (no such table).
+  defp table(profile) do
+    String.to_existing_atom("amarula_retry_cache_#{profile}")
+  rescue
+    ArgumentError -> :undefined
+  end
 
   # Write-triggered eviction: first drop everything past the TTL, then, if still
   # over the hard cap, drop the oldest until back under it.

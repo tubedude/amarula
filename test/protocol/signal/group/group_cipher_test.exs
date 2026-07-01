@@ -157,7 +157,7 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipherTest do
       # Flip a bit in the signature (last 64 bytes) — protobuf stays valid,
       # XEd25519 verification must fail.
       head_len = byte_size(ct) - 1
-      <<head::binary-size(head_len), last>> = ct
+      <<head::binary-size(^head_len), last>> = ct
       tampered = <<head::binary, bxor(last, 1)>>
 
       assert {:error, _} = GroupCipher.decrypt(receiver_store, name, tampered)
@@ -171,7 +171,7 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipherTest do
 
       assert <<0x33, _rest::binary>> = ct
       body_len = byte_size(ct) - 1 - 64
-      <<_v, body::binary-size(body_len), _sig::binary-size(64)>> = ct
+      <<_v, body::binary-size(^body_len), _sig::binary-size(64)>> = ct
 
       msg = Amarula.Protocol.Proto.SenderKeyMessage.decode(body)
       assert is_integer(msg.id)

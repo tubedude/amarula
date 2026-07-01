@@ -30,7 +30,8 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
           dec_key: binary(),
           read_counter: non_neg_integer(),
           write_counter: non_neg_integer(),
-          handshake_state: :init | :awaiting_server_hello | :handshake_complete | :transport,
+          handshake_state:
+            :init | :awaiting_server_hello | :handshake | :handshake_complete | :transport,
           sent_intro: boolean(),
           in_bytes: binary(),
           routing_info: binary() | nil,
@@ -222,16 +223,15 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
     state = mix_into_key(state, shared_key)
     state = %{state | handshake_state: :awaiting_server_hello}
 
-    # Decrypt and mix server static
-    {:ok, decrypted_static, state_after_first_decrypt} = decrypt(state, server_hello.static)
-    shared_static = Crypto.shared_key(state.ephemeral_key_pair.private, decrypted_static)
-    state_after_mix = mix_into_key(state_after_first_decrypt, shared_static)
-
-    # Decrypt and verify certificate
-    {:ok, cert_decoded, state_after_second_decrypt} =
-      decrypt(state_after_mix, server_hello.payload)
-
-    with :ok <- verify_certificate(cert_decoded) do
+    # Decrypt server static, mix, then decrypt + verify the certificate. A GCM
+    # auth failure here (corrupt/MITM hello) returns {:error, _} per the spec.
+    with {:ok, decrypted_static, state_after_first_decrypt} <-
+           decrypt(state, server_hello.static),
+         shared_static = Crypto.shared_key(state.ephemeral_key_pair.private, decrypted_static),
+         state_after_mix = mix_into_key(state_after_first_decrypt, shared_static),
+         {:ok, cert_decoded, state_after_second_decrypt} <-
+           decrypt(state_after_mix, server_hello.payload),
+         :ok <- verify_certificate(cert_decoded) do
       # Encrypt noise key
       {key_encrypted, state_after_encrypt} = encrypt(state_after_second_decrypt, noise_key.public)
 

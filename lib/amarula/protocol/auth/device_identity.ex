@@ -64,7 +64,12 @@ defmodule Amarula.Protocol.Auth.DeviceIdentity do
     adv_secret_key = Base.decode64!(adv_secret_key_b64)
     expected = Crypto.hmac_sign(hmac_prefix <> identity_hmac.details, adv_secret_key)
 
-    if identity_hmac.hmac == expected, do: :ok, else: {:error, :invalid_hmac}
+    if byte_size(identity_hmac.hmac) == byte_size(expected) and
+         :crypto.hash_equals(identity_hmac.hmac, expected) do
+      :ok
+    else
+      {:error, :invalid_hmac}
+    end
   end
 
   defp verify_account_signature(account, signed_identity_public_key) do

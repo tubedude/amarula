@@ -86,6 +86,15 @@ defmodule Amarula.Protocol.Auth.DeviceIdentityTest do
       assert {:error, :invalid_hmac} = DeviceIdentity.verify_and_sign(bad, creds)
     end
 
+    test "rejects a wrong-length hmac without crashing", %{creds: creds} do
+      # :crypto.hash_equals/2 raises on unequal lengths — the length pre-check
+      # must turn a truncated hmac into a normal rejection.
+      hmac = valid_identity(creds)
+      bad = %{hmac | hmac: binary_part(hmac.hmac, 0, 10)}
+
+      assert {:error, :invalid_hmac} = DeviceIdentity.verify_and_sign(bad, creds)
+    end
+
     test "rejects an hmac computed under a different adv_secret_key", %{creds: creds} do
       # Valid against other_creds, presented against creds → hmac mismatch.
       other = AuthUtils.init_auth_creds()

@@ -118,7 +118,7 @@ lib/amarula/protocol/
   used by `Amarula.Msg`), `MessageDecryptor`, `Receipt`, `Media`, `HistorySync`.
 
 **Signal Protocol** (`lib/amarula/protocol/signal/`):
-- `Repository` (sessions/keys), `SessionStore`, `SessionInjector`, `SessionCipher`,
+- `SessionStore`, `SessionInjector`, `SessionCipher`,
   `PreKeys`, `DeviceListCache`, `LidMappingFileStore` (LID↔PN), `group/`
   (sender-key cipher).
 - **The crypto is a pure, self-contained layer with an explicit boundary** — the

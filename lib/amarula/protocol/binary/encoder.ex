@@ -16,15 +16,13 @@ defmodule Amarula.Protocol.Binary.Encoder do
   """
   @spec encode(Node.t()) :: {:ok, binary()}
   def encode(node) do
-    # Start with initial byte
-    buffer = [0]
-    encoded = encode_node_inner(node, buffer)
-    # Skip the initial byte (0) and convert to binary
-    binary = :erlang.list_to_binary(tl(encoded))
-    {:ok, binary}
+    # The buffer is iodata, appended by nesting ([buffer, byte]) — O(1) per
+    # write, and raw binary content is kept whole rather than exploded to bytes.
+    encoded = encode_node_inner(node, [])
+    {:ok, IO.iodata_to_binary(encoded)}
   end
 
-  @spec encode_node_inner(Node.t(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec encode_node_inner(Node.t(), iodata()) :: iodata()
   defp encode_node_inner(%Node{tag: tag, attrs: attrs, content: content}, buffer) do
     # Filter out undefined/null attributes
     # Keep as list if it's a list (preserves order), otherwise convert from map
@@ -64,7 +62,7 @@ defmodule Amarula.Protocol.Binary.Encoder do
     buffer
   end
 
-  @spec write_list_start(non_neg_integer(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec write_list_start(non_neg_integer(), iodata()) :: iodata()
   defp write_list_start(0, buffer), do: push_byte(Constants.tag(:list_empty), buffer)
 
   defp write_list_start(size, buffer) when size < 256 do
@@ -77,7 +75,11 @@ defmodule Amarula.Protocol.Binary.Encoder do
     push_int16(size, buffer)
   end
 
-  @spec write_string(String.t() | nil, [non_neg_integer()]) :: [non_neg_integer()]
+  defp write_list_start(size, _buffer) do
+    raise ArgumentError, "node list size #{size} exceeds the wire format's LIST_16 maximum"
+  end
+
+  @spec write_string(String.t() | nil, iodata()) :: iodata()
   defp write_string(nil, buffer), do: push_byte(Constants.tag(:list_empty), buffer)
   # Empty string is token 0
   defp write_string("", buffer), do: push_byte(0, buffer)
@@ -107,7 +109,7 @@ defmodule Amarula.Protocol.Binary.Encoder do
   # domainType. Encoding a device jid as a plain JID_PAIR (the old bug) produced a
   # wire jid the server can't parse, so it SILENTLY DROPPED every frame addressing
   # a device (the `<key>` bundle fetch and the `<message>` participants).
-  @spec write_jid(String.t(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec write_jid(String.t(), iodata()) :: iodata()
   defp write_jid(jid, buffer) do
     case decode_jid(jid) do
       {:ok, %{user: user, device: device, domain_type: domain_type}} when not is_nil(device) ->
@@ -127,25 +129,30 @@ defmodule Amarula.Protocol.Binary.Encoder do
   end
 
   # Parse "<user>[_<agent>][:<device>]@<server>" into its parts + domainType.
+  # A malformed device/agent segment yields :error — the caller falls back to a
+  # raw-string write instead of the encode crashing on server-supplied input.
   @spec decode_jid(String.t()) :: {:ok, map()} | :error
   defp decode_jid(jid) do
-    case String.split(jid, "@", parts: 2) do
-      [user_combined, server] ->
-        {user_agent, device} = split_device(user_combined)
-        {user, agent} = split_agent(user_agent)
-
-        {:ok,
-         %{user: user, server: server, device: device, domain_type: domain_type(server, agent)}}
-
-      _ ->
-        :error
+    with [user_combined, server] <- String.split(jid, "@", parts: 2),
+         {user_agent, device} <- split_device(user_combined),
+         {user, agent} <- split_agent(user_agent),
+         {:ok, dt} <- domain_type(server, agent) do
+      {:ok, %{user: user, server: server, device: device, domain_type: dt}}
+    else
+      _ -> :error
     end
   end
 
   defp split_device(user_combined) do
     case String.split(user_combined, ":", parts: 2) do
-      [ua, dev] -> {ua, String.to_integer(dev)}
-      [ua] -> {ua, nil}
+      [ua, dev] ->
+        case Integer.parse(dev) do
+          {d, ""} -> {ua, d}
+          _ -> :error
+        end
+
+      [ua] ->
+        {ua, nil}
     end
   end
 
@@ -156,17 +163,23 @@ defmodule Amarula.Protocol.Binary.Encoder do
     end
   end
 
-  defp domain_type("lid", _agent), do: 1
-  defp domain_type("hosted", _agent), do: 128
-  defp domain_type("hosted.lid", _agent), do: 129
-  defp domain_type(_server, nil), do: 0
-  defp domain_type(_server, agent), do: String.to_integer(agent)
+  defp domain_type("lid", _agent), do: {:ok, 1}
+  defp domain_type("hosted", _agent), do: {:ok, 128}
+  defp domain_type("hosted.lid", _agent), do: {:ok, 129}
+  defp domain_type(_server, nil), do: {:ok, 0}
+
+  defp domain_type(_server, agent) do
+    case Integer.parse(agent) do
+      {n, ""} -> {:ok, n}
+      _ -> :error
+    end
+  end
 
   defp write_jid_user("", buffer), do: push_byte(Constants.tag(:list_empty), buffer)
   defp write_jid_user(user, buffer), do: write_string_inner(user, buffer)
 
   # Internal string writer that doesn't check for JIDs (prevents infinite recursion)
-  @spec write_string_inner(String.t(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec write_string_inner(String.t(), iodata()) :: iodata()
   defp write_string_inner("", buffer), do: push_byte(0, buffer)
 
   defp write_string_inner(str, buffer) do
@@ -179,8 +192,7 @@ defmodule Amarula.Protocol.Binary.Encoder do
   # Write a token: single-byte tokens are one byte; double-byte (dictionary)
   # tokens are a DICTIONARY_<n> marker byte followed by the index, matching
   # Baileys writeString.
-  @spec write_token(integer() | {integer(), integer()}, [non_neg_integer()]) ::
-          [non_neg_integer()]
+  @spec write_token(integer() | {integer(), integer()}, iodata()) :: iodata()
   defp write_token(index, buffer) when is_integer(index), do: push_byte(index, buffer)
 
   defp write_token({dict, index}, buffer) do
@@ -188,7 +200,7 @@ defmodule Amarula.Protocol.Binary.Encoder do
     push_byte(index, buffer)
   end
 
-  @spec write_string_raw(binary(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec write_string_raw(binary(), iodata()) :: iodata()
   defp write_string_raw(str, buffer) do
     # Nibble-pack only valid all-digit UTF-8 strings. Arbitrary binary content
     # (e.g. protobuf blobs in device-identity) is written as length-prefixed raw
@@ -196,13 +208,12 @@ defmodule Amarula.Protocol.Binary.Encoder do
     if String.valid?(str) and String.match?(str, ~r/^\d+$/) do
       write_packed_nibbles(str, buffer)
     else
-      bytes = :binary.bin_to_list(str)
       buffer = write_byte_length(byte_size(str), buffer)
-      buffer ++ bytes
+      [buffer, str]
     end
   end
 
-  @spec write_packed_nibbles(String.t(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec write_packed_nibbles(String.t(), iodata()) :: iodata()
   defp write_packed_nibbles(str, buffer) do
     # Write NIBBLE_8 tag
     buffer = push_byte(Constants.tag(:nibble_8), buffer)
@@ -223,7 +234,7 @@ defmodule Amarula.Protocol.Binary.Encoder do
     buffer
   end
 
-  @spec pack_nibbles([char()], [non_neg_integer()], boolean()) :: [non_neg_integer()]
+  @spec pack_nibbles([char()], iodata(), boolean()) :: iodata()
   defp pack_nibbles([], buffer, _), do: buffer
 
   defp pack_nibbles([d1], buffer, true) do
@@ -239,7 +250,7 @@ defmodule Amarula.Protocol.Binary.Encoder do
     pack_nibbles(rest, buffer, has_padding)
   end
 
-  @spec write_byte_length(non_neg_integer(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec write_byte_length(non_neg_integer(), iodata()) :: iodata()
   defp write_byte_length(length, buffer) when length < 256 do
     buffer = push_byte(Constants.tag(:binary_8), buffer)
     push_byte(length, buffer)
@@ -255,7 +266,7 @@ defmodule Amarula.Protocol.Binary.Encoder do
     push_int32(length, buffer)
   end
 
-  @spec write_content(any(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec write_content(any(), iodata()) :: iodata()
   defp write_content(nil, buffer), do: buffer
 
   defp write_content(content, buffer) when is_binary(content) do
@@ -284,21 +295,21 @@ defmodule Amarula.Protocol.Binary.Encoder do
   end
 
   # Helper functions for pushing bytes
-  @spec push_byte(non_neg_integer(), [non_neg_integer()]) :: [non_neg_integer()]
-  defp push_byte(value, buffer), do: buffer ++ [value &&& 0xFF]
+  @spec push_byte(non_neg_integer(), iodata()) :: iodata()
+  defp push_byte(value, buffer), do: [buffer, value &&& 0xFF]
 
-  @spec push_int16(non_neg_integer(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec push_int16(non_neg_integer(), iodata()) :: iodata()
   defp push_int16(value, buffer) do
-    buffer ++ [value >>> 8 &&& 0xFF, value &&& 0xFF]
+    [buffer, value >>> 8 &&& 0xFF, value &&& 0xFF]
   end
 
-  @spec push_int20(non_neg_integer(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec push_int20(non_neg_integer(), iodata()) :: iodata()
   defp push_int20(value, buffer) do
-    buffer ++ [value >>> 16 &&& 0x0F, value >>> 8 &&& 0xFF, value &&& 0xFF]
+    [buffer, value >>> 16 &&& 0x0F, value >>> 8 &&& 0xFF, value &&& 0xFF]
   end
 
-  @spec push_int32(non_neg_integer(), [non_neg_integer()]) :: [non_neg_integer()]
+  @spec push_int32(non_neg_integer(), iodata()) :: iodata()
   defp push_int32(value, buffer) do
-    buffer ++ [value >>> 24 &&& 0xFF, value >>> 16 &&& 0xFF, value >>> 8 &&& 0xFF, value &&& 0xFF]
+    [buffer, value >>> 24 &&& 0xFF, value >>> 16 &&& 0xFF, value >>> 8 &&& 0xFF, value &&& 0xFF]
   end
 end

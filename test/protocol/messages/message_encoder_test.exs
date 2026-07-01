@@ -494,7 +494,8 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
 
     test "rejects non-float coordinates" do
-      assert_raise FunctionClauseError, fn -> MessageEncoder.location(1, 2) end
+      # apply/3 keeps the type checker from flagging the deliberately-bad call
+      assert_raise FunctionClauseError, fn -> apply(MessageEncoder, :location, [1, 2]) end
     end
   end
 end

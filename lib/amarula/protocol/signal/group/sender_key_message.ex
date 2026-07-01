@@ -81,7 +81,7 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyMessage do
 
     {:ok,
      %__MODULE__{
-       message_version: (version &&& 0xFF) >>> 4,
+       message_version: version >>> 4,
        key_id: msg.id,
        iteration: msg.iteration,
        ciphertext: msg.ciphertext,

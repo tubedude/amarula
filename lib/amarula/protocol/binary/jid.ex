@@ -290,7 +290,7 @@ defmodule Amarula.Protocol.Binary.JID do
   defp decode_user_part(user_part, server) do
     case String.split(user_part, ":", parts: 2) do
       [user_agent, device] ->
-        decode_user_agent(user_agent, server, String.to_integer(device))
+        decode_user_agent(user_agent, server, parse_int(device))
 
       [user_agent] ->
         decode_user_agent(user_agent, server, nil)
@@ -300,12 +300,21 @@ defmodule Amarula.Protocol.Binary.JID do
   defp decode_user_agent(user_agent, server, device) do
     case String.split(user_agent, "_", parts: 2) do
       [user, agent] ->
-        domain_type = get_domain_type(server, String.to_integer(agent))
+        domain_type = get_domain_type(server, parse_int(agent))
         build_result(user, server, device, domain_type)
 
       [user] ->
         domain_type = get_domain_type(server, nil)
         build_result(user, server, device, domain_type)
+    end
+  end
+
+  # JIDs are server-supplied; a malformed device/agent segment degrades to nil
+  # rather than crashing the decode.
+  defp parse_int(s) do
+    case Integer.parse(s) do
+      {n, ""} -> n
+      _ -> nil
     end
   end
 

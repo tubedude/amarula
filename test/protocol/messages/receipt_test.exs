@@ -19,6 +19,14 @@ defmodule Amarula.Protocol.Messages.ReceiptTest do
     assert r.timestamp == 1700
   end
 
+  test "a malformed t attribute degrades to a nil timestamp" do
+    assert {:ok, r} = Receipt.parse(receipt(%{"id" => "ABC", "from" => @from, "t" => "soon"}))
+    assert r.timestamp == nil
+
+    assert {:ok, r} = Receipt.parse(receipt(%{"id" => "ABC", "from" => @from}))
+    assert r.timestamp == nil
+  end
+
   test "read / read-self map to :read" do
     assert {:ok, %{status: :read}} = Receipt.parse(receipt(%{"id" => "X", "type" => "read"}))
     assert {:ok, %{status: :read}} = Receipt.parse(receipt(%{"id" => "X", "type" => "read-self"}))

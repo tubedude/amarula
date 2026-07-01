@@ -201,6 +201,13 @@ defmodule Amarula do
       pairing code to display (from `request_pairing_code/3`)
     * `:pairing_success`   — `%{jid, lid, platform}` (QR) or `%{via: :link_code}`
       (phone-number pairing)
+    * `:pairing_failure`   — `%{reason: String.t()}` pairing could not be completed
+      (e.g. a malformed pair-success); the connection then errors out
+    * `:call_update`       — an inbound call event (`Amarula.Protocol.Call.t/0`):
+      `%{chat, from, id, status, timestamp, offline, video?, group?, group_jid}`.
+      `status` is `:offer` (ringing), `:terminate`, `:timeout` (unanswered),
+      `:reject`, `:accept`, or `:ringing`. Use `id` to correlate a call's
+      `:offer` with its later `:terminate`.
     * `:history_sync`      — a batch of synced history (chats/contacts/messages)
       delivered asynchronously after connect (`Amarula.Protocol.Messages.HistorySync`)
     * `:error`             — a connection error term
@@ -222,6 +229,8 @@ defmodule Amarula do
           | :lid_mapping_update
           | :pairing_code
           | :pairing_success
+          | :pairing_failure
+          | :call_update
           | :history_sync
           | :error
 
@@ -529,7 +538,7 @@ defmodule Amarula do
     GenServer.call(conn, {:send_text, jid, text, opts}, @send_call_timeout)
   end
 
-  @doc "Set your global presence: `:available` (online) or `:unavailable`. Needs a profile name."
+  @doc "Set your global presence: `:available` (online) or `:unavailable`."
   @spec set_presence(conn(), :available | :unavailable) :: :ok | {:error, term()}
   def set_presence(conn, type), do: GenServer.call(conn, {:set_presence, type})
 

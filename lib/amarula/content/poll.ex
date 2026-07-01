@@ -24,12 +24,12 @@ defmodule Amarula.Content.Poll do
   def from_proto(%{} = m) do
     %__MODULE__{
       name: Map.get(m, :name),
-      options: m |> Map.get(:options, []) |> Enum.map(&option_name/1),
+      options: m |> Map.get(:options, []) |> Enum.flat_map(&option_name/1),
       selectable: Map.get(m, :selectableOptionsCount),
       enc_key: Map.get(m, :encKey)
     }
   end
 
-  defp option_name(%{optionName: name}), do: name
-  defp option_name(_), do: nil
+  defp option_name(%{optionName: name}) when is_binary(name), do: [name]
+  defp option_name(_), do: []
 end

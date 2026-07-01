@@ -606,4 +606,122 @@ defmodule Amarula.ConnectionTest do
       refute Connection.own_chat?(pid, msg_to(@me_pn, false))
     end
   end
+
+  describe "retry give-up (max_retries exhausted → :closed, no more reconnects)" do
+    test "repeated closes drive the count to the limit, then :closed, then stop reconnecting",
+         %{config: config} do
+      # retry_count now increments on the websocket {:close, _} path (not just the
+      # error path) and is reset only in finish_login. With a tiny max_retries and a
+      # long retry_delay — so the scheduled :reconnect never fires during the test —
+      # repeated closes reach the limit and flip the connection to :closed.
+      config = %{config | max_retries: 2, retry_delay: 60_000}
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      # websocket_client is nil on a fresh start, so {:ws_event, nil, {:close, _}}
+      # is NOT treated as stale (nil == current) and counts toward give-up.
+      # Close 1: retry_count 0 -> 1 (< 2) → :disconnected + a (far-future) reconnect.
+      send(pid, {:ws_event, nil, {:close, :test}})
+      assert_receive {:amarula, :connection_update, %{connection: :disconnected}}
+
+      # Close 2: retry_count 1 -> 2 (not < 2) → give up → :closed.
+      send(pid, {:ws_event, nil, {:close, :test}})
+      assert_receive {:amarula, :connection_update, %{connection: :closed}}
+
+      # It stays closed and attempts no further reconnect — a reconnect would run
+      # attempt_connection and emit :connecting. The only scheduled retry timer is
+      # 60s+ out, so nothing fires in the test window.
+      assert :sys.get_state(pid).connection_state == :closed
+      refute_receive {:amarula, :connection_update, %{connection: :connecting}}, 100
+
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "restart drains pending IQ waiters (fail_pending_iqs → {:error, :not_connected})" do
+    test "a parked query_iq caller is failed fast on a 515 restart", %{config: config} do
+      # A configured frame_sink makes the send path 'ready', so query_iq parks the
+      # caller in pending_iqs (holding its `from`) exactly as in production. The
+      # outbound IQ is captured as {:frame_out, _}: receiving it proves the waiter is
+      # parked (same-mailbox ordering) BEFORE we trigger the restart.
+      config = Map.merge(config, %{frame_sink: self(), connection_state: :connected})
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      node = %Node{tag: "iq", attrs: %{"type" => "get"}, content: nil}
+      task = Task.async(fn -> Connection.query_iq(pid, node) end)
+
+      # The parked query stamped + emitted its IQ frame → the waiter is registered.
+      assert_receive {:frame_out, %Node{tag: "iq"}}, 1000
+
+      # A 515 stream:error drives restart_connection/1, which now calls
+      # fail_pending_iqs and replies every parked waiter {:error, :not_connected}
+      # before tearing down + reconnecting — so the caller unblocks promptly instead
+      # of hanging to its call timeout.
+      send(
+        pid,
+        {:inject_node, %Node{tag: "stream:error", attrs: %{"code" => "515"}, content: nil}}
+      )
+
+      assert {:error, :not_connected} = Task.await(task, 1000)
+
+      # The 515 restart also kicks off a reconnect to the (unreachable) test URL,
+      # leaving a half-open WebSockex client. Trap exits so tearing the (linked)
+      # Connection down — its terminate/2 does a synchronous close on that doomed
+      # client — can't take the test process with it; then kill the orphaned client
+      # (Connection is already gone, so its monitor won't respawn one).
+      ws = :sys.get_state(pid).websocket_client
+      Process.flag(:trap_exit, true)
+
+      try do
+        GenServer.stop(pid, :shutdown, 1000)
+      catch
+        :exit, _ -> :ok
+      end
+
+      if is_pid(ws) and Process.alive?(ws), do: Process.exit(ws, :kill)
+    end
+  end
+
+  describe "catch-all handlers (an unexpected message must not crash the tree)" do
+    test "an unknown info message is ignored and the process stays alive", %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      send(pid, :garbage_message)
+
+      # A round-trip call proves the process processed past the garbage and lives.
+      assert Connection.get_connection_state(pid) == :disconnected
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "an unknown call returns {:error, :unknown_request} without crashing",
+         %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      assert {:error, :unknown_request} = GenServer.call(pid, :nonsense)
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "send_media prep failure (the Task rescue path replies the caller)" do
+    test "a raise during media prep replies {:error, {:media_prepare_failed, _}}",
+         %{config: config} do
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
+
+      # Drive the raw {:send_media, ...} call directly — bypassing the public
+      # send_media/5 guard, which only admits binary data — with non-binary data, so
+      # Media.encrypt/2 (guarded is_binary) raises with no matching clause inside the
+      # prep Task. The Task's try/rescue must convert that raise into a reply to the
+      # caller; otherwise the caller would hang for the full 90s send-call timeout.
+      assert {:error, {:media_prepare_failed, _}} =
+               GenServer.call(
+                 pid,
+                 {:send_media, "5511999998888@s.whatsapp.net", :image, :not_binary, []},
+                 5000
+               )
+
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+  end
 end

@@ -2,6 +2,7 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
   use ExUnit.Case, async: true
 
   alias Amarula.Protocol.Messages.MessageDecryptor
+  alias Amarula.Protocol.Proto
   alias Amarula.Protocol.Signal.SessionStore
   alias Amarula.Protocol.Binary.Node
 
@@ -61,5 +62,42 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
                store: store,
                conn: conn
              )
+  end
+
+  test "a plaintext enc with undecodable bytes becomes an error entry, no raise", %{conn: conn} do
+    store = SessionStore.build(@creds)
+
+    # Not a valid protobuf wire encoding → Proto.Message.decode/1 raises, which
+    # decrypt_node converts to an error entry rather than crashing.
+    enc = %Node{tag: "enc", attrs: %{"type" => "plaintext"}, content: <<0xFF, 0xFF, 0xFF, 0xFF>>}
+
+    node = %Node{
+      tag: "message",
+      attrs: %{"from" => "15550001234:0@s.whatsapp.net", "id" => "ABC", "t" => "1"},
+      content: [enc]
+    }
+
+    assert {:ok, [], [], [_error]} =
+             MessageDecryptor.decrypt_node(node, store: store, conn: conn)
+  end
+
+  test "partial failure: the good plaintext enc decodes, the bad one is an error", %{conn: conn} do
+    store = SessionStore.build(@creds)
+
+    good_bytes = IO.iodata_to_binary(Proto.Message.encode(%Proto.Message{conversation: "hi"}))
+
+    good = %Node{tag: "enc", attrs: %{"type" => "plaintext"}, content: good_bytes}
+    bad = %Node{tag: "enc", attrs: %{"type" => "plaintext"}, content: <<0xFF, 0xFF, 0xFF, 0xFF>>}
+
+    node = %Node{
+      tag: "message",
+      attrs: %{"from" => "15550001234:0@s.whatsapp.net", "id" => "ABC", "t" => "1"},
+      content: [good, bad]
+    }
+
+    assert {:ok, [msg], [], [_error]} =
+             MessageDecryptor.decrypt_node(node, store: store, conn: conn)
+
+    assert msg.conversation == "hi"
   end
 end

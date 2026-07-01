@@ -19,6 +19,8 @@ defmodule Amarula.Protocol.Messages.Media do
   `decrypt/2` reverses 2–3 for a downloaded blob.
   """
 
+  require Logger
+
   alias Amarula.Protocol.Binary.{Node, NodeUtils}
   alias Amarula.Protocol.Crypto.{Constants, Crypto}
   alias Amarula.Connection
@@ -45,10 +47,12 @@ defmodule Amarula.Protocol.Messages.Media do
   @type media_type :: :image | :video | :audio | :document | :sticker | :history
 
   @doc """
-  Download an encrypted media blob from a message's `:directPath` (or `:url`) and
-  decrypt it for `type`. `ref` is a map/struct with `direct_path`/`directPath` or
-  `url`, plus `media_key`/`mediaKey`. Returns `{:ok, plaintext}` (still possibly
-  compressed — history blobs are zlib-deflated; the caller inflates).
+  Download an encrypted media blob from a message's `:direct_path` (or `:url`) and
+  decrypt it for `type`. `ref` is a map/struct with `:direct_path` (preferred) or
+  `:url`, plus `:media_key` — the canonical snake_case shape of an inbound
+  `%Amarula.Content.Media{}` (camelCase keys are no longer accepted). Returns
+  `{:ok, plaintext}` (still possibly compressed — history blobs are zlib-deflated;
+  the caller inflates).
   """
   @spec download(map(), media_type()) :: {:ok, binary()} | {:error, term()}
   def download(%{} = ref, type) do
@@ -202,8 +206,13 @@ defmodule Amarula.Protocol.Messages.Media do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, %{direct_path: body["direct_path"], url: body["url"] || ""}}
 
-      _ ->
+      other ->
+        # Status/reason only — the URL carries the auth token, keep it out of logs.
+        Logger.warning("Media upload to #{host} failed: #{inspect(upload_failure(other))}")
         put_to_hosts(rest, type, token, auth, enc)
     end
   end
+
+  defp upload_failure({:ok, %{status: status}}), do: {:status, status}
+  defp upload_failure({:error, reason}), do: reason
 end

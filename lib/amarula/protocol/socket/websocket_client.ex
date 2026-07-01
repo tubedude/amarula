@@ -98,14 +98,6 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   end
 
   @doc """
-  Connects to the WebSocket server.
-  """
-  @impl Types
-  def connect(pid \\ __MODULE__) do
-    GenServer.call(pid, :connect)
-  end
-
-  @doc """
   Closes the WebSocket connection.
   """
   @impl Types
@@ -119,38 +111,6 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   @impl Types
   def send_data(pid \\ __MODULE__, data) do
     WebSockex.send_frame(pid, {:binary, data})
-  end
-
-  @doc """
-  Checks if the WebSocket is open.
-  """
-  @impl Types
-  def open?(pid \\ __MODULE__) do
-    GenServer.call(pid, :open?)
-  end
-
-  @doc """
-  Checks if the WebSocket is closed.
-  """
-  @impl Types
-  def closed?(pid \\ __MODULE__) do
-    GenServer.call(pid, :closed?)
-  end
-
-  @doc """
-  Checks if the WebSocket is connecting.
-  """
-  @impl Types
-  def connecting?(pid \\ __MODULE__) do
-    GenServer.call(pid, :connecting?)
-  end
-
-  @doc """
-  Checks if the WebSocket is closing.
-  """
-  @impl Types
-  def closing?(pid \\ __MODULE__) do
-    GenServer.call(pid, :closing?)
   end
 
   # WebSockex callbacks
@@ -240,47 +200,11 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   end
 
   @impl WebSockex
-  def handle_info({:"$gen_call", from, :connect}, state) do
-    # WebSockex handles connection automatically on start_link
-    # This is a no-op for compatibility with the Types behavior
-    GenServer.reply(from, :ok)
-    {:ok, state}
-  end
-
-  @impl WebSockex
   def handle_info({:"$gen_call", from, :close}, state) do
     # Request graceful WebSocket closure using WebSockex's close mechanism
     # Close code 1000 = normal closure
     GenServer.reply(from, :ok)
     {:close, {1000, "Client requested close"}, state}
-  end
-
-  @impl WebSockex
-  def handle_info({:"$gen_call", from, :open?}, state) do
-    is_open = state.connection_state == :connected
-    GenServer.reply(from, is_open)
-    {:ok, state}
-  end
-
-  @impl WebSockex
-  def handle_info({:"$gen_call", from, :closed?}, state) do
-    is_closed = state.connection_state == :disconnected or state.connection_state == :closed
-    GenServer.reply(from, is_closed)
-    {:ok, state}
-  end
-
-  @impl WebSockex
-  def handle_info({:"$gen_call", from, :connecting?}, state) do
-    is_connecting = state.connection_state == :connecting
-    GenServer.reply(from, is_connecting)
-    {:ok, state}
-  end
-
-  @impl WebSockex
-  def handle_info({:"$gen_call", from, :closing?}, state) do
-    is_closing = state.connection_state == :reconnecting
-    GenServer.reply(from, is_closing)
-    {:ok, state}
   end
 
   @impl WebSockex

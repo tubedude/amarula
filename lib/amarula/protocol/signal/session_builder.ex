@@ -160,15 +160,8 @@ defmodule Amarula.Protocol.Signal.SessionBuilder do
     # 32-byte 0xff discontinuity, then the DH outputs in initiator-dependent order
     discontinuity = :binary.copy(<<0xFF>>, 32)
 
-    ordered =
-      if is_initiator do
-        [a1, a2]
-      else
-        [a2, a1]
-      end
-
-    shared =
-      discontinuity <> Enum.at(ordered, 0) <> Enum.at(ordered, 1) <> a3
+    {first, second} = if is_initiator, do: {a1, a2}, else: {a2, a1}
+    shared = discontinuity <> first <> second <> a3
 
     shared =
       if our_ephemeral_key && their_ephemeral_pub_key do

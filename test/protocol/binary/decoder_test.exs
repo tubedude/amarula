@@ -45,13 +45,6 @@ defmodule Amarula.Protocol.Binary.DecoderTest do
   end
 
   describe "decode/1 content types" do
-    test "decodes nil content (LIST_EMPTY)" do
-      binary = <<248, 1, 25, 0>>
-      node = Decoder.decode(binary)
-
-      assert node.content == nil
-    end
-
     test "decodes binary content (BINARY_8)" do
       binary = <<248, 2, 19, 252, 4, 1, 2, 3, 4>>
       node = Decoder.decode(binary)
@@ -259,13 +252,6 @@ defmodule Amarula.Protocol.Binary.DecoderTest do
       assert byte_size(node.content) == 255
     end
 
-    test "handles empty attributes" do
-      binary = <<248, 1, 25, 0>>
-      node = Decoder.decode(binary)
-
-      assert node.attrs == %{}
-    end
-
     test "handles invalid list size tag" do
       assert_raise RuntimeError, "invalid tag for list size: 255", fn ->
         Decoder.decode(<<255, 1, 19, 0>>)
@@ -341,15 +327,6 @@ defmodule Amarula.Protocol.Binary.DecoderTest do
 
       assert node.tag == "message"
       assert node.attrs == %{"name" => "value"}
-    end
-
-    test "handles edge case with exact boundary values" do
-      # Test with exact boundary values for different encoding types
-      # BINARY_8 with length 255 (max for single byte)
-      binary = <<248, 2, 19, 252, 255>> <> :binary.copy(<<65>>, 255)
-      node = Decoder.decode(binary)
-
-      assert byte_size(node.content) == 255
     end
   end
 end

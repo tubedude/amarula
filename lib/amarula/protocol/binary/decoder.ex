@@ -147,12 +147,14 @@ defmodule Amarula.Protocol.Binary.Decoder do
         device = binary_at(binary, index + 1)
         {user, index} = read_string(binary, index + 2)
 
+        # Baileys WAJIDDomains: WHATSAPP=0, LID=1, HOSTED=128, HOSTED_LID=129
+        # (must mirror Encoder.domain_type/2 and JID's domain constants).
         server =
           case domain_type do
             0 -> "s.whatsapp.net"
             1 -> "lid"
-            2 -> "hosted"
-            3 -> "hosted.lid"
+            128 -> "hosted"
+            129 -> "hosted.lid"
             _ -> "s.whatsapp.net"
           end
 

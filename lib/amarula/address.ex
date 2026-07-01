@@ -76,9 +76,9 @@ defmodule Amarula.Address do
   def parse(%__MODULE__{} = address), do: address
 
   def parse(jid) when is_binary(jid) do
-    with %{user: user, server: server} <- JID.decode(jid),
+    with %{user: user, server: server} = decoded <- JID.decode(jid),
          k when not is_nil(k) <- kind_of(server) do
-      %__MODULE__{user: user, kind: k, device: device_of(jid)}
+      %__MODULE__{user: user, kind: k, device: Map.get(decoded, :device)}
     else
       _ -> nil
     end
@@ -169,12 +169,5 @@ defmodule Amarula.Address do
     |> hd()
     |> String.split(":", parts: 2)
     |> hd()
-  end
-
-  defp device_of(jid) do
-    case JID.decode(jid) do
-      %{device: d} -> d
-      _ -> nil
-    end
   end
 end

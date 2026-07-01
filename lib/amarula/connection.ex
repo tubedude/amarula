@@ -837,13 +837,19 @@ defmodule Amarula.Connection do
     # the normal async dispatch (forwarding the caller's `from`) takes over. On a
     # failure the Task replies the error to `from` directly.
     Task.start(fn ->
-      with {:ok, enc} <- Media.encrypt(data, type),
-           {:ok, uploaded} <- Media.upload(conn_pid, enc.enc, enc.file_enc_sha256, type) do
-        info = Map.merge(enc, Map.put(uploaded, :mimetype, mimetype))
-        message = MessageEncoder.media(type, info, opts)
-        send(conn_pid, {:send_media_ready, jid, message, from})
-      else
-        {:error, reason} -> GenServer.reply(from, {:error, reason})
+      # `from` must always get an answer — a raise here would otherwise leave the
+      # caller hanging for the full send-call timeout.
+      try do
+        with {:ok, enc} <- Media.encrypt(data, type),
+             {:ok, uploaded} <- Media.upload(conn_pid, enc.enc, enc.file_enc_sha256, type) do
+          info = Map.merge(enc, Map.put(uploaded, :mimetype, mimetype))
+          message = MessageEncoder.media(type, info, opts)
+          send(conn_pid, {:send_media_ready, jid, message, from})
+        else
+          {:error, reason} -> GenServer.reply(from, {:error, reason})
+        end
+      rescue
+        e -> GenServer.reply(from, {:error, {:media_prepare_failed, e}})
       end
     end)
 
@@ -854,6 +860,13 @@ defmodule Amarula.Connection do
   def handle_call({:update_auth_creds, new_creds}, _from, state) do
     Logger.info("Updating authentication credentials")
     {:reply, :ok, update_creds(state, new_creds)}
+  end
+
+  # Catch-all: an unexpected call must not crash the whole per-connection tree.
+  @impl GenServer
+  def handle_call(request, _from, state) do
+    Logger.warning("Unexpected call: #{inspect(request)}")
+    {:reply, {:error, :unknown_request}, state}
   end
 
   # Reaction to "a brand-new LID mapping was learned" (cast from
@@ -931,15 +944,21 @@ defmodule Amarula.Connection do
   def handle_info({:ws_event, _ws_pid, {:close, data}}, state) do
     Logger.debug("WebSocket connection closed: #{inspect(data)}")
 
-    # Drop the pid so further events from this socket are ignored as stale
-    new_state = %{state | connection_state: :disconnected, websocket_client: nil}
+    # Drop the pid so further events from this socket are ignored as stale.
+    # Count the close toward backoff/give-up like the error path does.
+    new_state = %{
+      state
+      | connection_state: :disconnected,
+        websocket_client: nil,
+        retry_count: state.retry_count + 1
+    }
 
     # Emit connection update event
     emit_connection_update(new_state, :disconnected)
 
     # Attempt reconnection if not manually disconnected
     new_state =
-      if state.retry_count < state.max_retries do
+      if new_state.retry_count < new_state.max_retries do
         schedule_reconnect(new_state)
       else
         Logger.error("Max retry attempts reached, giving up")
@@ -1218,18 +1237,28 @@ defmodule Amarula.Connection do
     end
   end
 
+  # Catch-all: this process owns a socket and is long-lived — an unexpected
+  # message must not crash the whole per-connection tree.
+  @impl GenServer
+  def handle_info(msg, state) do
+    Logger.debug("Ignoring unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
   @impl GenServer
   def terminate(reason, state) do
     Logger.info("Connection manager terminating: #{inspect(reason)}")
 
     # Clean up timers
-    if state.retry_timer do
-      Process.cancel_timer(state.retry_timer)
-    end
-
-    if state.connection_timeout_timer do
-      Process.cancel_timer(state.connection_timeout_timer)
-    end
+    for timer <- [
+          state.retry_timer,
+          state.connection_timeout_timer,
+          state.keep_alive_timer,
+          state.qr_timer,
+          state.server_response_timeout_timer
+        ],
+        timer,
+        do: Process.cancel_timer(timer)
 
     # Disconnect WebSocket
     if state.websocket_client do
@@ -1241,6 +1270,10 @@ defmodule Amarula.Connection do
 
   defp attempt_connection(state) do
     Logger.debug("Attempting WebSocket connection (attempt #{state.retry_count + 1})")
+
+    # A re-entrant connect (e.g. :connect while still :connecting) must not
+    # orphan the previous client — tear it down before starting a new one.
+    state = if state.websocket_client, do: disconnect_websocket(state), else: state
 
     new_state = %{state | connection_state: :connecting}
 
@@ -1280,13 +1313,15 @@ defmodule Amarula.Connection do
         Process.unlink(websocket_pid)
         ref = Process.monitor(websocket_pid)
 
-        # Store websocket_pid and wait for :open event to initiate handshake
+        # Store websocket_pid and wait for :open event to initiate handshake.
+        # retry_count is NOT reset here — the socket process starting says nothing
+        # about the connection succeeding; finish_login resets it, so an
+        # accept-then-drop server still backs off and eventually gives up.
         %{
           new_state
           | websocket_client: websocket_pid,
             websocket_monitor: ref,
             connection_state: :connecting,
-            retry_count: 0,
             last_error: nil
         }
 
@@ -2370,15 +2405,35 @@ defmodule Amarula.Connection do
 
     state
     |> clear_server_response_waiting()
+    |> fail_pending_iqs(:not_connected)
     |> disconnect_websocket()
     |> Map.merge(%{
       noise_state: nil,
       handshake_state: nil,
       keep_alive_timer: nil,
-      retry_count: 0,
-      pending_iqs: %{}
+      retry_count: 0
     })
     |> attempt_connection()
+  end
+
+  # Drain pending IQs on a restart: blocked query_iq callers get an immediate
+  # error instead of hanging to their call timeout; tracked-IQ timers are
+  # cancelled (their continuations are abandoned with the old socket).
+  defp fail_pending_iqs(state, reason) do
+    Enum.each(state.pending_iqs, fn
+      {_id, {:waiter, from, timer}} ->
+        Process.cancel_timer(timer)
+        GenServer.reply(from, {:error, reason})
+
+      {_id, {:waiter, from, timer, _transform}} ->
+        Process.cancel_timer(timer)
+        GenServer.reply(from, {:error, reason})
+
+      {_id, {:tracked, _kind, timer}} ->
+        Process.cancel_timer(timer)
+    end)
+
+    %{state | pending_iqs: %{}}
   end
 
   defp handle_pair_device(state, node) do
@@ -2902,6 +2957,8 @@ defmodule Amarula.Connection do
   defp start_keep_alive_timer(state) do
     # Start keep-alive timer to send periodic ping messages
     # NO immediate ping after handshake - first ping sent after keep_alive_interval_ms
+    # Cancel any timer from a previous (re)connect so ping loops don't multiply.
+    if state.keep_alive_timer, do: Process.cancel_timer(state.keep_alive_timer)
     keep_alive_interval = state.config.keep_alive_interval_ms || 30_000
 
     # Schedule first ping after interval
@@ -3896,8 +3953,9 @@ defmodule Amarula.Connection do
   # Mirrors Baileys CB:success body (passive IQ, unified_session, digest key
   # bundle) plus the connection-open presence (markOnlineOnConnect default).
   defp finish_login(state) do
+    # Login succeeded — this is where the reconnect backoff counter resets.
     state =
-      state
+      %{state | retry_count: 0}
       |> send_passive_iq("active")
       |> send_unified_session()
       |> send_digest_iq()

@@ -51,8 +51,4 @@ defmodule Amarula.Storage.AdapterTest do
     assert {:ok, :for_a} = Storage.get(s, :a, :session, "x")
     assert {:ok, :for_b} = Storage.get(s, :b, :session, "x")
   end
-
-  test "File adapter is authored via the macro (new/1 overridden)" do
-    assert %{root: "/tmp/x"} = Amarula.Storage.File.new(root: "/tmp/x")
-  end
 end

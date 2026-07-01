@@ -49,6 +49,22 @@ defmodule Amarula.RetryCacheTest do
         assert :error = RetryCache.get(s, other, "id")
       end
 
+      test "reads for a never-started profile miss without minting atoms",
+           %{scope: s} do
+        # `profile` can be user-controlled; the read paths must not create the
+        # table-name atom (atoms aren't GC'd — that would be an exhaustion vector).
+        profile = "never_started_#{System.unique_integer([:positive])}"
+
+        assert :error = RetryCache.get(s, profile, "id")
+        assert RetryCache.count(s, profile) == 0
+
+        if unquote(adapter) == Amarula.RetryCache.ETS do
+          assert_raise ArgumentError, fn ->
+            String.to_existing_atom("amarula_retry_cache_#{profile}")
+          end
+        end
+      end
+
       test "evicts oldest beyond the cap (max_entries: 5)", %{scope: s, profile: p} do
         for i <- 1..8, do: RetryCache.put(s, p, "id#{i}", entry("a@s", i))
 

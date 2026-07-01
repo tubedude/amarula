@@ -16,7 +16,14 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
   import Bitwise
 
   alias Amarula.Protocol.Crypto.Crypto
-  alias Amarula.Protocol.Signal.{CryptoHelpers, SessionBuilder, SessionRecord, WhisperProtocol}
+
+  alias Amarula.Protocol.Signal.{
+    CryptoHelpers,
+    DecryptError,
+    SessionBuilder,
+    SessionRecord,
+    WhisperProtocol
+  }
 
   # (VERSION << 4) | VERSION where VERSION = 3 → 0x33
   @version_byte 0x33
@@ -73,11 +80,11 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
     message_key = Map.fetch!(chain.message_keys, counter)
     chain = %{chain | message_keys: Map.delete(chain.message_keys, counter)}
 
-    keys =
+    [cipher_key, mac_key, iv_material] =
       CryptoHelpers.derive_secrets(message_key, :binary.copy(<<0>>, 32), "WhisperMessageKeys", 3)
 
-    iv = binary_part(Enum.at(keys, 2), 0, 16)
-    ciphertext = CryptoHelpers.aes_cbc_encrypt(Enum.at(keys, 0), plaintext, iv)
+    iv = binary_part(iv_material, 0, 16)
+    ciphertext = CryptoHelpers.aes_cbc_encrypt(cipher_key, plaintext, iv)
 
     # ephemeralKey travels wire-form (33-byte 0x05-prefixed), like libsignal,
     # even though the chain is keyed on the raw 32-byte key.
@@ -98,7 +105,7 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
         <<@version_byte>> <>
         msg_proto
 
-    mac = binary_part(CryptoHelpers.calculate_mac(Enum.at(keys, 1), mac_input), 0, 8)
+    mac = binary_part(CryptoHelpers.calculate_mac(mac_key, mac_input), 0, 8)
     whisper = <<@version_byte>> <> msg_proto <> mac
 
     session = SessionRecord.put_chain(session, chain_key, chain)
@@ -147,10 +154,11 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
   end
 
   defp decrypt_with_sessions(data, [session | rest], store, errs) do
-    {plaintext, session} = do_decrypt_whisper_message(data, session, store)
-    {plaintext, session}
+    do_decrypt_whisper_message(data, session, store)
   rescue
-    e -> decrypt_with_sessions(data, rest, store, [e | errs])
+    # Only the expected trial-decrypt signal moves us to the next session;
+    # anything else is a real bug and must propagate.
+    e in DecryptError -> decrypt_with_sessions(data, rest, store, [e | errs])
   end
 
   # Core ratchet decrypt. `message_buffer` is the version-tupled WhisperMessage
@@ -166,7 +174,7 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
     chain = SessionRecord.get_chain(session, message.ephemeral_key)
 
     if chain.chain_type == SessionRecord.chain_sending() do
-      raise "Tried to decrypt on a sending chain"
+      raise DecryptError, message: "Tried to decrypt on a sending chain"
     end
 
     chain = fill_message_keys(chain, message.counter)
@@ -174,12 +182,12 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
     message_key =
       case Map.fetch(chain.message_keys, message.counter) do
         {:ok, mk} -> mk
-        :error -> raise "Key used already or never filled"
+        :error -> raise DecryptError, message: "Key used already or never filled"
       end
 
     chain = %{chain | message_keys: Map.delete(chain.message_keys, message.counter)}
 
-    keys =
+    [cipher_key, mac_key, iv_material] =
       CryptoHelpers.derive_secrets(message_key, :binary.copy(<<0>>, 32), "WhisperMessageKeys", 3)
 
     our_identity = store.our_identity
@@ -192,10 +200,10 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
         <<@version_byte>> <>
         message_proto
 
-    CryptoHelpers.verify_mac(mac_input, Enum.at(keys, 1), mac, 8)
+    CryptoHelpers.verify_mac(mac_input, mac_key, mac, 8)
 
-    iv = binary_part(Enum.at(keys, 2), 0, 16)
-    plaintext = CryptoHelpers.aes_cbc_decrypt(Enum.at(keys, 0), message.ciphertext, iv)
+    iv = binary_part(iv_material, 0, 16)
+    plaintext = CryptoHelpers.aes_cbc_decrypt(cipher_key, message.ciphertext, iv)
 
     session = SessionRecord.put_chain(session, message.ephemeral_key, chain)
     session = Map.delete(session, :pending_pre_key)
@@ -208,11 +216,11 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
   end
 
   defp fill_message_keys(%{chain_key: %{counter: cc}}, counter) when counter - cc > 2000 do
-    raise "Over 2000 messages into the future!"
+    raise DecryptError, message: "Over 2000 messages into the future!"
   end
 
   defp fill_message_keys(%{chain_key: %{key: nil}}, _counter) do
-    raise "Chain closed"
+    raise DecryptError, message: "Chain closed"
   end
 
   defp fill_message_keys(chain, counter) do
@@ -295,10 +303,10 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
   # --- helpers ---
 
   defp check_version!(vbyte) do
-    [max, min] = [vbyte >>> 4, vbyte &&& 0xF]
+    {max, min} = {vbyte >>> 4, vbyte &&& 0xF}
 
     if min > 3 or max < 3 do
-      raise "Incompatible version number on WhisperMessage"
+      raise DecryptError, message: "Incompatible version number on WhisperMessage"
     end
   end
 

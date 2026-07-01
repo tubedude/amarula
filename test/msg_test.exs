@@ -86,6 +86,7 @@ defmodule Amarula.MsgTest do
   test "unknown content type is :other with nil content" do
     msg = build(%Proto.Message{})
     assert msg.type == :other
+    assert msg.content == nil
   end
 
   test "structured classes carry a normalized Content struct (not the proto)" do

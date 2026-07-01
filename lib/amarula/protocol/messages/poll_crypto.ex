@@ -7,7 +7,7 @@ defmodule Amarula.Protocol.Messages.PollCrypto do
   the poll's `message_secret` and the ids of the poll, its creator, and the voter:
 
       sign   = poll_msg_id ++ poll_creator_jid ++ voter_jid ++ "Poll Vote" ++ <<1>>
-      key0   = HMAC-SHA256(key=message_secret, data=<<0::256>>)   # 32 zero bytes
+      key0   = HMAC-SHA256(key=<<0::256>>, data=message_secret)   # key is 32 zero bytes
       dec_key= HMAC-SHA256(key=key0, data=sign)
       aad    = "<poll_msg_id>\\0<voter_jid>"
       plain  = AES-256-GCM-decrypt(encPayload, key=dec_key, iv=encIv, aad)

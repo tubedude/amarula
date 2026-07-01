@@ -44,13 +44,10 @@ defmodule Amarula.Protocol.Socket.Types do
         }
 
   @doc """
-  Behavior for WebSocket client implementations.
+  Behavior for WebSocket client implementations. Connection lifecycle is
+  process lifecycle: `start_link` connects, `close/1` (or killing the process)
+  disconnects — there are no separate connect/state-predicate callbacks.
   """
-  @callback connect() :: :ok | {:error, term()}
   @callback close() :: :ok | {:error, term()}
   @callback send_data(data :: binary() | iodata()) :: :ok | {:error, term()}
-  @callback open?() :: boolean()
-  @callback closed?() :: boolean()
-  @callback connecting?() :: boolean()
-  @callback closing?() :: boolean()
 end

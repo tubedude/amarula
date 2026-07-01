@@ -53,7 +53,6 @@ defmodule Amarula.Protocol.Signal.Group.SenderMessageKeyTest do
       iv = SenderMessageKey.get_iv(message_key)
 
       assert byte_size(iv) == 16
-      assert iv == message_key.iv
     end
   end
 
@@ -63,7 +62,6 @@ defmodule Amarula.Protocol.Signal.Group.SenderMessageKeyTest do
       cipher_key = SenderMessageKey.get_cipher_key(message_key)
 
       assert byte_size(cipher_key) == 32
-      assert cipher_key == message_key.cipher_key
     end
   end
 

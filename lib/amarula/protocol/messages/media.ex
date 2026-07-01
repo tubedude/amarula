@@ -19,6 +19,8 @@ defmodule Amarula.Protocol.Messages.Media do
   `decrypt/2` reverses 2–3 for a downloaded blob.
   """
 
+  require Logger
+
   alias Amarula.Protocol.Binary.{Node, NodeUtils}
   alias Amarula.Protocol.Crypto.{Constants, Crypto}
   alias Amarula.Connection
@@ -204,8 +206,13 @@ defmodule Amarula.Protocol.Messages.Media do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, %{direct_path: body["direct_path"], url: body["url"] || ""}}
 
-      _ ->
+      other ->
+        # Status/reason only — the URL carries the auth token, keep it out of logs.
+        Logger.warning("Media upload to #{host} failed: #{inspect(upload_failure(other))}")
         put_to_hosts(rest, type, token, auth, enc)
     end
   end
+
+  defp upload_failure({:ok, %{status: status}}), do: {:status, status}
+  defp upload_failure({:error, reason}), do: reason
 end

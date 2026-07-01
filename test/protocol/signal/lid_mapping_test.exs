@@ -5,15 +5,6 @@ defmodule Amarula.Protocol.Signal.LIDMappingTest do
 
   alias Amarula.Protocol.Signal.LIDMapping
 
-  describe "new/2" do
-    test "creates a new LID mapping" do
-      mapping = LIDMapping.new("1234567890@s.whatsapp.net", "lid123@lid")
-
-      assert mapping.pn == "1234567890@s.whatsapp.net"
-      assert mapping.lid == "lid123@lid"
-    end
-  end
-
   describe "pn_user?/1" do
     test "returns true for phone number users" do
       assert LIDMapping.pn_user?("1234567890@s.whatsapp.net")

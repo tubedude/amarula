@@ -12,6 +12,11 @@ defmodule Amarula.Protocol.Crypto.XEdDSA do
     sign bit of A in the top bit of the last signature byte (libsignal sign_modified.c).
   - verify: convert the Montgomery public key to an Edwards key using the sign bit
     carried in the signature, clear that bit, then run standard Ed25519 verification.
+
+  Deviation from libsignal's C: the bignum double-and-add here is NOT
+  constant-time (it branches on secret scalar bits), so signing leaks timing.
+  Acceptable for a client — exploiting it needs a local high-resolution timing
+  oracle — but don't reuse this where a hostile co-tenant could measure it.
   """
 
   import Bitwise

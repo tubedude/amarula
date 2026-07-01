@@ -12,6 +12,8 @@ defmodule Amarula.Protocol.Signal.CryptoHelpers do
   `Amarula.Protocol.Crypto`.
   """
 
+  alias Amarula.Protocol.Signal.DecryptError
+
   @doc "HMAC-SHA256 of `data` keyed by `key`."
   @spec calculate_mac(binary(), binary()) :: binary()
   def calculate_mac(key, data), do: :crypto.mac(:hmac, :sha256, key, data)
@@ -40,15 +42,16 @@ defmodule Amarula.Protocol.Signal.CryptoHelpers do
 
   @doc """
   Verify that the first `length` bytes of HMAC-SHA256(key, data) equal `mac`.
-  Raises "Bad MAC" / "Bad MAC length" on failure, matching libsignal verifyMAC.
+  Raises `DecryptError` ("Bad MAC" / "Bad MAC length") on failure, matching
+  libsignal verifyMAC — the trial-decrypt signal.
   """
   @spec verify_mac(binary(), binary(), binary(), non_neg_integer()) :: :ok
   def verify_mac(data, key, mac, length) do
     calculated = binary_part(calculate_mac(key, data), 0, length)
 
     cond do
-      byte_size(mac) != length -> raise "Bad MAC length"
-      not secure_compare(mac, calculated) -> raise "Bad MAC"
+      byte_size(mac) != length -> raise DecryptError, message: "Bad MAC length"
+      not secure_compare(mac, calculated) -> raise DecryptError, message: "Bad MAC"
       true -> :ok
     end
   end
@@ -86,13 +89,8 @@ defmodule Amarula.Protocol.Signal.CryptoHelpers do
     end
   end
 
-  # Constant-time comparison
-  defp secure_compare(a, b) when byte_size(a) == byte_size(b) do
-    :crypto.hash_equals(a, b)
-  rescue
-    # hash_equals added in OTP 25; fall back if unavailable
-    UndefinedFunctionError -> a == b
-  end
-
+  # Constant-time comparison (hash_equals requires OTP 25+, which we target —
+  # no variable-time fallback for secret material).
+  defp secure_compare(a, b) when byte_size(a) == byte_size(b), do: :crypto.hash_equals(a, b)
   defp secure_compare(_, _), do: false
 end

@@ -1,7 +1,7 @@
 defmodule Amarula.Protocol.Messages.HistorySyncTest do
   use ExUnit.Case, async: true
 
-  alias Amarula.{Address, Chat, Contact}
+  alias Amarula.{Address, Chat}
   alias Amarula.Protocol.Proto
 
   # We can't unit-test the network download, but the decode/map logic (the part
@@ -38,22 +38,6 @@ defmodule Amarula.Protocol.Messages.HistorySyncTest do
     assert %Address{user: "5511999999999", kind: :pn} = Address.parse(c1.id)
     assert c1.displayName == "Alice"
     assert %Address{kind: :group} = Address.parse(c2.id)
-
-    # %Chat{} mapping fields
-    chat = %Chat{
-      address: Address.parse(c1.id),
-      archived: c1.archived,
-      pinned: c1.pinned > 0,
-      mute_end: c1.muteEndTime,
-      unread: c1.unreadCount
-    }
-
-    assert chat.archived == true
-    assert chat.pinned == true
-    assert chat.unread == 2
-
-    contact = %Contact{address: Address.parse(c1.id), full_name: c1.displayName}
-    assert contact.full_name == "Alice"
   end
 
   test "fetch/1 handles an inline (initialHistBootstrapInlinePayload) notification" do

@@ -54,7 +54,7 @@ defmodule Amarula.Protocol.Signal.CryptoHelpersTest do
       m = @vectors["mac"]
       bad = :binary.copy(<<0>>, 8)
 
-      assert_raise RuntimeError, "Bad MAC", fn ->
+      assert_raise Amarula.Protocol.Signal.DecryptError, "Bad MAC", fn ->
         CryptoHelpers.verify_mac(h(m["data"]), h(m["key"]), bad, 8)
       end
     end
@@ -62,7 +62,7 @@ defmodule Amarula.Protocol.Signal.CryptoHelpersTest do
     test "raises on wrong MAC length" do
       m = @vectors["mac"]
 
-      assert_raise RuntimeError, "Bad MAC length", fn ->
+      assert_raise Amarula.Protocol.Signal.DecryptError, "Bad MAC length", fn ->
         CryptoHelpers.verify_mac(h(m["data"]), h(m["key"]), <<0, 1, 2>>, 8)
       end
     end

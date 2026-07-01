@@ -18,7 +18,8 @@ defmodule Amarula.Protocol.Messages.HistorySync do
   @type result :: %{
           sync_type: atom(),
           chats: [Chat.t()],
-          contacts: [Contact.t()]
+          contacts: [Contact.t()],
+          push_names: [{String.t(), String.t()}]
         }
 
   @doc """

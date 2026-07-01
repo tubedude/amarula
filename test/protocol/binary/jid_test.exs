@@ -86,6 +86,16 @@ defmodule Amarula.Protocol.Binary.JIDTest do
       assert JID.decode("1234@hosted.lid") ==
                %{user: "1234", server: "hosted.lid", domain_type: 129}
     end
+
+    test "a malformed device or agent segment degrades to nil instead of raising" do
+      # JIDs are server-supplied; garbage must not crash the decode.
+      assert %{user: "1234", server: "s.whatsapp.net"} =
+               decoded = JID.decode("1234:xx@s.whatsapp.net")
+
+      refute Map.has_key?(decoded, :device)
+
+      assert %{user: "1234", domain_type: 0} = JID.decode("1234_ab@s.whatsapp.net")
+    end
   end
 
   describe "predicates" do

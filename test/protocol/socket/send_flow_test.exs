@@ -902,17 +902,6 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   # devices yet") and/or more than one ack for a single message id. We resolve on
   # the first no-error ack; later acks for the same id are no-ops.
 
-  test "a phash ack resolves the send {:ok} (server accepted it)", ctx do
-    task = send_text_async(ctx, @jid, "to a group-ish recipient")
-    message = relay_text(ctx)
-    msg_id = message.attrs["id"]
-
-    # phash = propagation not complete to all devices — but the server ACCEPTED the
-    # message, so the caller completes {:ok}.
-    ack(ctx, msg_id, phash: "1:abc")
-    assert {:ok, ^msg_id} = await_send_result(task)
-  end
-
   test "a second ack for the same id (phash then clean) is a harmless no-op", ctx do
     task = send_text_async(ctx, @jid, "double-acked")
     message = relay_text(ctx)

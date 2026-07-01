@@ -1,6 +1,9 @@
 defmodule Amarula.Protocol.Crypto.CryptoTest do
   use ExUnit.Case, async: true
 
+  # The unexpected-key-size test logs an intentional warning.
+  @moduletag :capture_log
+
   alias Amarula.Protocol.Crypto.Crypto
 
   describe "generate_signal_pub_key/1" do

@@ -147,9 +147,9 @@ defmodule Amarula.Protocol.Groups.Metadata do
   end
 
   defp size(group, participants) do
-    case NodeUtils.get_attr(group, "size") do
-      nil -> length(participants)
-      s -> String.to_integer(s)
+    case Integer.parse(NodeUtils.get_attr(group, "size") || "") do
+      {s, _} -> s
+      :error -> length(participants)
     end
   end
 

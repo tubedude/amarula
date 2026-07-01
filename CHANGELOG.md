@@ -38,6 +38,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`:pairing_failure` added to the `t:event/0` typespec.** The event was already
   emitted on a failed pair-success but was missing from the documented event list.
+- **Keep-alive pings no longer multiply across reconnects.** The generic reconnect
+  path armed a new ping timer without cancelling the old one, so every reconnect
+  added a permanent extra ping loop (which can itself provoke server disconnects).
+- **Reconnect backoff and give-up actually work.** `retry_count` was reset the
+  moment the socket process started, so backoff never grew and `max_retries`
+  never triggered — a server that accepts-then-drops caused a tight reconnect
+  storm. The counter now resets only on a successful login, and a server close
+  counts toward the limit; exhausting it transitions to `:closed`.
+- **A malformed `<enc>` payload can't take down the connection.** `skmsg` and
+  `plaintext` decrypt paths were unguarded, so garbage bytes crashed the whole
+  `Connection` (dropping the batch and forcing a reconnect). Every enc type now
+  degrades to a per-enc error entry.
+- **Constant-time pairing HMAC verification.** The ADV device-identity HMAC was
+  compared with `==`; it now uses `:crypto.hash_equals/2` with a length pre-check,
+  like every other MAC comparison in the codebase.
+- **Retry-cache reads no longer mint atoms from `profile`.** Unknown profiles
+  resolved through `:"amarula_retry_cache_#{profile}"` on every read — an atom
+  exhaustion vector for multi-tenant bots with user-derived profiles. Reads now
+  use `String.to_existing_atom`; the atom is created once, at connection init.
+- **`send_media` can't hang its caller.** A raise inside the media encrypt/upload
+  task left the caller blocked for the full 90s call timeout; it now replies
+  `{:error, {:media_prepare_failed, _}}`.
+- **A 515 restart fails parked IQ callers fast.** Pending `query_iq` waiters were
+  silently dropped on restart and hung to their 25s call timeout; they now get
+  `{:error, :not_connected}` immediately.
+- **Unexpected messages no longer crash `Connection`.** Catch-all `handle_call`/
+  `handle_info` clauses log and ignore instead of `FunctionClauseError`-ing the
+  whole per-connection tree.
+- **Hosted JIDs decode correctly off the wire.** The binary decoder read AD_JID
+  domain types 2/3 for `hosted`/`hosted.lid` while the encoder (and Baileys'
+  `WAJIDDomains`) use 128/129 — hosted device jids silently mangled to
+  `s.whatsapp.net` on receive.
+- **Server-supplied integers degrade instead of crashing.** Malformed receipt
+  `t`, group `size`, and JID device/agent segments (decode and encode paths) now
+  parse via `Integer.parse` with a fallback rather than raising mid-frame.
+- **Trial decryption can't mask real bugs.** The Signal session trial-decrypt
+  loop rescued *every* exception as "wrong session, try next"; it now rescues
+  only the new `DecryptError` (bad MAC / version / chain), so programming errors
+  propagate instead of surfacing as "No matching sessions found".
+
+### Changed
+
+- **Binary node encoding is O(n).** The encoder accumulated a byte list with tail
+  appends and exploded binaries via `bin_to_list` — quadratic time and ~10x
+  memory on large payloads. It now builds iodata.
+- Removed dead internal modules: `Signal.Repository` and `Signal.LIDMappingStore`
+  (unused, superseded by `LidMappingFileStore`), the unused `SenderKeyName`
+  hash/parse helpers, and the vestigial `WebSocketClient` connect/state-predicate
+  API.
 
 ## [0.3.1] - 2026-06-26
 

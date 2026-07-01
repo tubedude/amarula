@@ -538,7 +538,7 @@ defmodule Amarula do
     GenServer.call(conn, {:send_text, jid, text, opts}, @send_call_timeout)
   end
 
-  @doc "Set your global presence: `:available` (online) or `:unavailable`. Needs a profile name."
+  @doc "Set your global presence: `:available` (online) or `:unavailable`."
   @spec set_presence(conn(), :available | :unavailable) :: :ok | {:error, term()}
   def set_presence(conn, type), do: GenServer.call(conn, {:set_presence, type})
 

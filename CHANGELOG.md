@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   struct (`title`, `body`, `footer`, `button_text`, and `options: [%{id, text,
   description}]`). The option `id` matches the `id` on the user's later
   `%Amarula.Content.Response{}`.
+- **Link previews surfaced on received messages.** A text message carrying a URL
+  preview now exposes it on the new `%Amarula.Msg{}.preview` field — an
+  `%Amarula.Content.LinkPreview{}` with `url`/`title`/`description`/`thumbnail`
+  (raw JPEG bytes)/`type`, or `nil` when there's no preview. The message `type`
+  stays `:text` and `content` stays the body string, so it's non-breaking.
+  Receiving only — sending previews isn't supported yet.
 
 ### Fixed
 

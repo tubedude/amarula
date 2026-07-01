@@ -202,6 +202,21 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     message |> unwrap() |> sub_message() |> ctx_of()
   end
 
+  @doc """
+  The `%Proto.Message.ExtendedTextMessage{}` of an inbound text message (after
+  unwrapping device-sent/ephemeral envelopes), or `nil` when the message isn't an
+  extended-text message. Callers read its link-preview fields
+  (`matchedText`/`title`/`description`/`jpegThumbnail`/`previewType`); see
+  `Amarula.Content.LinkPreview`.
+  """
+  @spec extended_text(Proto.Message.t()) :: Proto.Message.ExtendedTextMessage.t() | nil
+  def extended_text(%Proto.Message{} = message) do
+    case unwrap(message) do
+      %Proto.Message{extendedTextMessage: %Proto.Message.ExtendedTextMessage{} = ext} -> ext
+      _ -> nil
+    end
+  end
+
   # The content-bearing sub-struct (the one classify keys on), or nil.
   defp sub_message(%Proto.Message{} = m) do
     [

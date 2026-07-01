@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-01
+
+First hex release since 0.3.0 — the 0.3.1 section below landed in git but was
+never published; its changes ship in this release too.
+
 ### Added
 
 - **`%Amarula.Msg{}.forwarded`** — a boolean, `true` when the message was forwarded

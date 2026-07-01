@@ -153,6 +153,33 @@ defmodule Amarula.Content.OptionsTest do
     end
   end
 
+  test "a template delivered via the format oneof is still mapped" do
+    proto = %Proto.Message{
+      templateMessage: %Proto.Message.TemplateMessage{
+        format:
+          {:hydratedFourRowTemplate,
+           %Proto.Message.TemplateMessage.HydratedFourRowTemplate{
+             hydratedContentText: "Via oneof",
+             hydratedButtons: [
+               %Proto.HydratedTemplateButton{
+                 hydratedButton:
+                   {:quickReplyButton,
+                    %Proto.HydratedTemplateButton.HydratedQuickReplyButton{
+                      displayText: "Tap",
+                      id: "t1"
+                    }}
+               }
+             ]
+           }}
+      }
+    }
+
+    msg = classify(proto)
+    assert msg.type == :template
+    assert msg.content.body == "Via oneof"
+    assert msg.content.options == [%{id: "t1", text: "Tap", description: nil}]
+  end
+
   test "a template with no hydrated form degrades gracefully" do
     proto = %Proto.Message{templateMessage: %Proto.Message.TemplateMessage{}}
     msg = classify(proto)

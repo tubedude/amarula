@@ -69,9 +69,10 @@ defmodule Amarula.Content.Options do
   end
 
   def from_proto(:template, %{} = m) do
-    # Received templates carry the hydrated form on either `hydratedTemplate`
-    # (the standalone field) or the `hydratedFourRowTemplate` oneof.
-    case Map.get(m, :hydratedTemplate) || Map.get(m, :hydratedFourRowTemplate) do
+    # Received templates carry the hydrated form on either the standalone
+    # `hydratedTemplate` field or the `format` oneof (as `{:hydratedFourRowTemplate,
+    # tpl}` — oneof members live under the oneof name, not as plain fields).
+    case Map.get(m, :hydratedTemplate) || hydrated_from_format(Map.get(m, :format)) do
       %{} = tpl ->
         %__MODULE__{
           kind: :template,
@@ -117,6 +118,11 @@ defmodule Amarula.Content.Options do
       description: nil
     }
   end
+
+  # The hydrated template when it rides in the `format` oneof rather than the
+  # standalone `hydratedTemplate` field.
+  defp hydrated_from_format({:hydratedFourRowTemplate, %{} = tpl}), do: tpl
+  defp hydrated_from_format(_), do: nil
 
   # --- template: hydrated button is a `:hydratedButton` oneof (quick-reply/url/call) ---
   defp template_option(%{hydratedButton: {:quickReplyButton, %{} = qr}}),

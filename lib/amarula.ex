@@ -337,6 +337,53 @@ defmodule Amarula do
   end
 
   @doc """
+  A child specification, so a **fixed, known-at-boot set of profiles** can be
+  started declaratively in your own supervision tree instead of calling
+  `connect/2` by hand:
+
+      children = [
+        MyApp.WhatsAppRouter,                                  # your event sink (a named process)
+        {Amarula, profile: :sales,   parent: MyApp.WhatsAppRouter},
+        {Amarula, profile: :support, parent: MyApp.WhatsAppRouter}
+      ]
+
+      Supervisor.start_link(children, strategy: :one_for_one)
+
+  The argument is a keyword list (or map): the `new/1` config, plus `:parent` —
+  the event sink (a **registered name**, so it survives restarts; see `connect/2`).
+  Each child gets a distinct `id` of `{Amarula, profile}`, so several profiles
+  coexist under one supervisor.
+
+  This is for the **static** set of accounts you know at boot; they should already
+  be **paired** (a supervised connection has no one to scan a QR — pair first with
+  `mix amarula.pair`). For an **unbounded/dynamic** set (profiles your users add at
+  runtime), start connections under your own `DynamicSupervisor` with `connect/2`
+  instead.
+
+  Notes:
+    * The connection is supervised in Amarula's own tree; this child is a small
+      owner that survives the socket's internal restarts and re-adopts it, so your
+      supervisor doesn't see spurious restarts. See `Amarula.SupervisedConnection`.
+    * An already-running profile is adopted (not an error), so a restart is safe.
+    * To stop such a connection, remove the child from your supervisor (that tears
+      the connection down); calling `stop/1` directly would just have your
+      supervisor restart it.
+  """
+  @spec child_spec(keyword() | map()) :: Supervisor.child_spec()
+  def child_spec(arg) do
+    config = if is_list(arg), do: Map.new(arg), else: arg
+    profile = Map.fetch!(config, :profile)
+
+    %{
+      id: {__MODULE__, profile},
+      start: {Amarula.SupervisedConnection, :start_link, [config]},
+      type: :worker,
+      restart: :permanent,
+      shutdown: 10_000
+    }
+  end
+
+  @doc """
   Re-attach the consumer event sink of a live connection to `sink` without
   bouncing the websocket — the recovery path when the process that called
   `connect/2` restarts while the connection survives in the registry.

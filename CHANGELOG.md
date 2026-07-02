@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Amarula.child_spec/1`** — start a fixed, known-at-boot set of profiles
+  declaratively in your own supervision tree: `{Amarula, profile: :sales, parent:
+  MyRouter}`. Each child gets a distinct `id` of `{Amarula, profile}`, so several
+  coexist under one supervisor; an already-running profile is *adopted* (not an
+  error), so a restart is safe. For **already-paired** accounts (pair first with
+  `mix amarula.pair`) — an unbounded/dynamic set should use a `DynamicSupervisor` +
+  `connect/2` instead. Backed by the new `Amarula.SupervisedConnection`, a thin
+  owner that survives the socket's internal restarts so your supervisor never sees
+  spurious child deaths, and tears the connection down on a deliberate shutdown.
+
+## [0.4.2] - 2026-07-02
+
 ### Fixed
 
 - **Pre-key pool now refills before it drains (Baileys #2643).** The server-side

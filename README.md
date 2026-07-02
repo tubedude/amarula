@@ -76,6 +76,28 @@ Amarula.send_text(conn, "5511999999999@s.whatsapp.net", "hello from Elixir!")
 without a new QR. See `Amarula` (the public API) for the full set of send/receive
 functions.
 
+### In your supervision tree
+
+For a **fixed, known-at-boot set of accounts**, start them declaratively with
+`Amarula.child_spec/1` instead of calling `connect/2` by hand — each `{Amarula, …}`
+child comes up (and is restarted) with your app:
+
+```elixir
+children = [
+  MyApp.WhatsAppRouter,                                  # your event sink (a named process)
+  {Amarula, profile: :sales,   parent: MyApp.WhatsAppRouter},
+  {Amarula, profile: :support, parent: MyApp.WhatsAppRouter}
+]
+
+Supervisor.start_link(children, strategy: :one_for_one)
+```
+
+`:parent` is the event sink (pass a **registered name** so it survives restarts);
+the rest is the `new/1` config. Each child gets a distinct id of `{Amarula, profile}`,
+so profiles coexist. This is for **already-paired** accounts (pair first with
+`mix amarula.pair`) — for an unbounded/dynamic set your users add at runtime, start
+connections under your own `DynamicSupervisor` with `connect/2`.
+
 ### The QR code
 
 `qr` is a plain string — you render it to a scannable image however you like

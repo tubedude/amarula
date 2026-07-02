@@ -8,6 +8,7 @@ defmodule Amarula.ConnectionTest do
   @moduletag :capture_log
 
   alias Amarula.Protocol.Binary.{Decoder, Encoder, Node, NodeUtils}
+  alias Amarula.Protocol.Socket.Router
   alias Amarula.Connection
 
   setup do
@@ -347,6 +348,64 @@ defmodule Amarula.ConnectionTest do
       assert Process.alive?(pid)
 
       GenServer.stop(pid)
+    end
+  end
+
+  describe "reconnect is in-process (the invariant Amarula.SupervisedConnection relies on)" do
+    # `Amarula.SupervisedConnection` monitors the Connection pid and treats a `:DOWN`
+    # as true death, re-adopting the rest_for_one-restarted pid. That is only correct
+    # because a *routine* reconnect — the server-mandated 515 stream-restart after
+    # pairing, or any socket drop — is handled IN-PROCESS (`restart_connection/1` →
+    # `attempt_connection/1`), keeping the SAME Connection pid and profile
+    # registration. These two tests guard that invariant. (Driving a real 515
+    # end-to-end needs a completed Noise handshake, since post-handshake frames are
+    # encrypted — so we assert the 515 *routing* here, and the pid stability via the
+    # shared reconnect path a socket drop takes.)
+
+    test "a 515 stream:error routes to the stream-error handler (in-process restart), not a crash path" do
+      node = %Node{
+        tag: "stream:error",
+        attrs: %{"code" => "515"},
+        content: [%Node{tag: "xml-not-well-formed", attrs: %{}, content: nil}]
+      }
+
+      assert Router.route(node) == :stream_error
+    end
+
+    test "a reconnect keeps the same Connection pid and swaps the websocket", %{config: config} do
+      {:ok, pid} = Connection.start_link(%{config | retry_delay: 50}, parent_pid: self())
+      :ok = GenServer.call(pid, :connect)
+
+      ws1 = :sys.get_state(pid).websocket_client
+      assert is_pid(ws1)
+
+      # Kill the socket → drives the same in-process reconnect a 515 restart takes.
+      Process.exit(ws1, :kill)
+      assert_receive {:amarula, :connection_update, %{connection: :disconnected}}, 1000
+
+      # The Connection GenServer is the SAME process; only its websocket is replaced.
+      ws2 = wait_for_new_ws(pid, ws1, 60)
+      assert is_pid(ws2) and ws2 != ws1
+      assert Process.alive?(pid)
+
+      # Brutal-kill teardown: ws2 is a live WebSockex mid-connect to the fake URL,
+      # and a graceful stop would run terminate → :close on it and error out. Unlink
+      # first so the kill doesn't reach the test process.
+      Process.unlink(pid)
+      Process.exit(pid, :kill)
+    end
+
+    defp wait_for_new_ws(_pid, _old, 0), do: nil
+
+    defp wait_for_new_ws(pid, old, tries) do
+      case :sys.get_state(pid).websocket_client do
+        ws when is_pid(ws) and ws != old ->
+          ws
+
+        _ ->
+          Process.sleep(25)
+          wait_for_new_ws(pid, old, tries - 1)
+      end
     end
   end
 

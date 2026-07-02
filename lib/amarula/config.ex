@@ -1,5 +1,5 @@
 defmodule Amarula.Config do
-  @wa_version [2, 3000, 1_035_194_821]
+  @wa_version [2, 3000, 1_042_537_629]
 
   @moduledoc """
   Connection config + the single source of truth for protocol/connection defaults.
@@ -18,7 +18,7 @@ defmodule Amarula.Config do
   | `:retry_cache` | ETS (see `Amarula.RetryCache`) | sent-message cache backend + opts, e.g. `{Amarula.RetryCache.ETS, max_entries: 1000}` to raise the cap (default 200, evicts oldest). See `Amarula.RetryCache` |
   | `:registry` | `Amarula.ProfileRegistry` (local) | `{module, name}` or bare `name` for the profile→connection registry; swap for `Horde.Registry` to enforce one-conn-per-profile cluster-wide (default: per node). See `Amarula.ProfileRegistry` |
   | `:auth` | loaded from storage | explicit creds (advanced; normally Amarula loads/persists these itself) |
-  | `:version` | `#{inspect(@wa_version)}` | WhatsApp Web *protocol* version — MUST track `src/Defaults/index.ts` or the handshake is rejected. (Distinct from Baileys *source* parity — see `Amarula.Baileys` / `docs/PARITY.md`.) |
+  | `:version` | `#{inspect(@wa_version)}` | WhatsApp Web *protocol* version — MUST track a version WhatsApp still accepts or the handshake is rejected. The live value drifts; override the pinned default without recompiling via the `AMARULA_WA_VERSION` env var (see `wa_version/0`), or bump the pinned literal with `mix run scripts/update_wa_version.exs`. (Distinct from Baileys *source* parity — see `Amarula.Baileys` / `docs/PARITY.md`.) |
   | `:browser` | `["Mac OS", "Chrome", "14.4.1"]` | browser triple `[os, client, version]` shown as the linked device. If the **client** (2nd element) contains `"Android"` (case-insensitive, e.g. `["MyApp", "Android", ""]`), the connection registers as an **Android client** instead of WhatsApp Web — see the impact note below. |
   | `:max_retries` | `5` | reconnect attempts |
   | `:retry_delay` | `1000` | base reconnect backoff (ms) |
@@ -99,11 +99,58 @@ defmodule Amarula.Config do
     agent: nil
   }
 
-  @doc "The default config map (without `:profile`/`:auth`/`:storage`, which are caller-supplied)."
+  @doc """
+  The default config map (without `:profile`/`:auth`/`:storage`, which are caller-supplied).
+
+  `:version` is the pinned `#{inspect(@wa_version)}` unless the `AMARULA_WA_VERSION`
+  env var overrides it (see `wa_version/0`).
+  """
   @spec defaults() :: map()
-  def defaults, do: @defaults
+  def defaults, do: %{@defaults | version: wa_version()}
 
   @doc "Merge `config` over the defaults (caller values win)."
   @spec merge(map()) :: map()
-  def merge(config) when is_map(config), do: Map.merge(@defaults, config)
+  def merge(config) when is_map(config), do: Map.merge(defaults(), config)
+
+  @doc """
+  The WhatsApp Web protocol version to present on the wire.
+
+  Returns the compiled-in pinned default (`#{inspect(@wa_version)}`) unless the
+  `AMARULA_WA_VERSION` env var is set to a dotted triple (e.g. `"2.3000.1042537629"`),
+  which lets a consumer track a newer WhatsApp version without recompiling. A
+  malformed value is ignored (with a warning) and the pinned default is used.
+  """
+  @spec wa_version() :: [non_neg_integer()]
+  def wa_version do
+    case System.get_env("AMARULA_WA_VERSION") do
+      nil -> @wa_version
+      raw -> parse_version(raw) || @wa_version
+    end
+  end
+
+  defp parse_version(raw) do
+    parts = raw |> String.trim() |> String.split(".", trim: true)
+
+    with 3 <- length(parts),
+         [_, _, _] = ints <- Enum.map(parts, &parse_int/1),
+         false <- Enum.any?(ints, &is_nil/1) do
+      ints
+    else
+      _ ->
+        require Logger
+
+        Logger.warning(
+          "ignoring malformed AMARULA_WA_VERSION #{inspect(raw)}; expected \"a.b.c\""
+        )
+
+        nil
+    end
+  end
+
+  defp parse_int(str) do
+    case Integer.parse(str) do
+      {n, ""} when n >= 0 -> n
+      _ -> nil
+    end
+  end
 end

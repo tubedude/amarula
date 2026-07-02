@@ -30,8 +30,9 @@ defmodule Amarula.Protocol.Crypto.Constants do
   # WhatsApp server JID
   @s_whatsapp_net "@s.whatsapp.net"
 
-  # WhatsApp version used by Baileys (updated Nov 2025)
-  @wa_version [2, 3000, 1_029_710_215]
+  # WhatsApp Web protocol version. `Amarula.Config` is the source of truth for the
+  # on-the-wire version (the connection's `:version`); keep this in sync with it.
+  @wa_version [2, 3000, 1_042_537_629]
 
   # Default origin for WebSocket connections
   @default_origin "https://web.whatsapp.com"

@@ -1,13 +1,13 @@
 # Amarula usage rules
 
-Amarula is a WhatsApp Web client for Elixir — an idiomatic OTP port of Baileys. You
-connect the way the web/desktop app does: pair once by scanning a QR code (or with a
-phone-number link code), then send and receive messages from Elixir.
+Amarula is a WhatsApp Web client for Elixir. You connect the way the web/desktop
+app does: pair once by scanning a QR code (or with a phone-number link code), then send
+and receive messages from Elixir.
 
 These rules describe how to **use** the `Amarula.*` public API correctly. They are for
 agents writing consumer code against the library, not for working on the library itself.
 
-These rules track Amarula **0.2.3**. They are a curated subset, not the full API — do
+These rules track Amarula **0.4.2**. They are a curated subset, not the full API — do
 not assume an undocumented function exists. When a signature, return shape, or option is
 unclear, **read the `@doc`/`@spec` on the relevant `Amarula.*` module (hexdocs) before
 calling it** rather than guessing.
@@ -47,6 +47,11 @@ starts it. Events go to `:parent_pid` (default: the caller).
 connecting an already-live profile returns `{:error, {:already_running, pid}}`; use
 `Amarula.whereis(profile)` to get the existing one.
 
+WhatsApp periodically bumps the Web protocol version and a stale one silently breaks
+pairing (the code/QR shows but the phone reports "Couldn't link device"). If that
+happens, override the pinned default without upgrading Amarula by setting the
+`AMARULA_WA_VERSION` env var to a dotted triple (e.g. `2.3000.1042537629`).
+
 Lifecycle:
 - `disconnect/1` — close the websocket; keep the tree up (pair with `reconnect/1`).
 - `stop/1` — take the whole tree down and free the profile slot (accepts a pid or a profile name).
@@ -77,6 +82,12 @@ Phone-number (link-code) pairing instead of QR: during the QR window (on the fir
 `qr` event), call `Amarula.request_pairing_code(conn, phone, opts)`. Returns
 `{:ok, code}` — an 8-char code the user types into WhatsApp → Linked Devices → "Link
 with phone number". Also delivered as a `:pairing_code` event.
+
+To pair from the shell without writing this loop yourself, run the bundled Mix task
+(it ships in the package, so it works from your app): `mix amarula.pair <profile>`
+for QR, or `mix amarula.pair <profile> --phone <e164>` for a phone code. It links,
+persists creds under the profile, and exits — then your app connects with
+`Amarula.new(%{profile: <profile>})` without re-pairing.
 
 ## Addressing
 
@@ -121,7 +132,9 @@ Presence/typing: `set_presence/2` (`:available`/`:unavailable`),
 
 Incoming events arrive at `parent_pid` as `{:amarula, type, data}`. The main one is
 `:messages_upsert`, whose `data.messages` is `[%Amarula.Msg{}]` — the consumer-friendly
-view (`type` + `content`), **never the raw protobuf**. Match on `msg.type`.
+view (`type` + `content`), **never the raw protobuf**. Match on `msg.type`; for text
+messages with link previews, read `msg.preview`, and for forwarded messages check
+`msg.forwarded`.
 
 ```elixir
 def handle_info({:amarula, :messages_upsert, %{messages: messages}}, state) do
@@ -133,7 +146,12 @@ end
 Event types (see `t:Amarula.event/0` for the full list): `:connection_update`,
 `:messages_upsert`, `:chats_update`, `:contacts_update`, `:group_update`,
 `:receipt_update`, `:presence_update`, `:blocklist_update`, `:lid_mapping_update`,
-`:pairing_code`, `:pairing_success`, `:history_sync`, `:error`.
+`:pairing_code`, `:pairing_success`, `:pairing_failure`, `:call_update`,
+`:history_sync`, `:error`.
+
+Interactive business/automation prompts can also arrive as message types
+`:list`, `:buttons`, `:template`, or `:interactive`; their content is an
+`%Amarula.Content.Options{}` payload.
 
 There is **no `:creds_update`** — Amarula persists credentials itself, scoped to the
 profile. Do not write credential-saving code; name a profile and it reloads on connect.

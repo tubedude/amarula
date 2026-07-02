@@ -65,3 +65,37 @@ structure"). In short: `src/Socket/*` → `lib/amarula/connection.ex` +
 `src/WABinary/*` → `lib/amarula/protocol/binary/`; `src/Utils/noise-handler.ts` →
 `lib/amarula/protocol/crypto/noise_handler.ex`; `src/Defaults/index.ts` →
 `lib/amarula/config.ex`.
+
+## Upstream review — 2026-07-02 (rc12→rc13 + open items)
+
+Audited the rc12→rc13 diff and the notable open Baileys issues/PRs against Amarula.
+
+**Ported:**
+
+- **#2643** pre-key pool refill — was refilling only at exactly 0; now refills
+  toward the initial count below a low-water mark. `pre_key_ops.ex` + `connection.ex`.
+- **#2435 / #2678** view-once media `mediatype` on send — `message_content.ex`
+  (`media_type/1`) + `send_ops.ex` + group relay.
+
+**Deferred (not yet ported):**
+
+- **#2547** decrypt `secretEncryptedMessage` (secretEncType `:MESSAGE_EDIT`) — edits
+  from newer clients arrive as an extra encryption layer keyed by the original
+  message's `messageContextInfo.messageSecret`. Amarula handles only the legacy
+  inline `editedMessage`; the new envelope falls through to `{:other, _}` still
+  encrypted. Needs a small TTL cache of inbound message secrets (~15-min edit
+  window, modelled on `DeviceListCache`'s lazy-expiry-on-read) + `PollCrypto`-style
+  HMAC+GCM decrypt. NB: the retry cache is *not* usable for the secret (outbound,
+  LRU-bounded). See the KNOWN GAP note at the `:MESSAGE_EDIT` clause in
+  `message_content.ex`.
+
+**Reviewed, NOT affected (no action needed):**
+
+- **rc13** `fromMe` for peer-routed self stanzas — Amarula computes `from_me?` by
+  matching the sender against our own account unconditionally (`connection.ex`), so
+  it never had the gap rc13 patches.
+- **#2665** `bufferToUInt` OOB read — Amarula's decoder is bounds-guarded (safe
+  binary matches / pre-checked slices / `decode_frame` rescue); no `bufferToUInt`
+  analog.
+- **#2640** LIDMappingStore unbounded cache — Amarula's LID/device stores are
+  file-backed with lazy TTL, no in-memory map or per-entry timers.

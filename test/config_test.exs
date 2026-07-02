@@ -29,7 +29,8 @@ defmodule Amarula.ConfigTest do
     end
 
     test "a malformed value is ignored and falls back to the pinned default" do
-      pinned = (System.delete_env(@env) && nil) || Config.wa_version()
+      System.delete_env(@env)
+      pinned = Config.wa_version()
 
       for bad <- ["garbage", "2.3000", "2.3000.x", "2.3000.-1", "1.2.3.4"] do
         System.put_env(@env, bad)

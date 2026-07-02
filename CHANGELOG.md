@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-02
+
+A security fix, ported from upstream Baileys.
+
+### Security
+
+- **Dropped spoofed self-only `protocolMessage`s.** `APP_STATE_SYNC_KEY_SHARE`
+  and `HISTORY_SYNC_NOTIFICATION` are only ever legitimate from our own linked
+  device, but `Connection` acted on them from any sender that could open a
+  session with us — letting an attacker poison our app-state sync keys or feed
+  us fake chat history. Both are now gated on `own_sender?/3` (participant, or
+  `from` when absent, matched against our own id/lid), mirroring Baileys'
+  fix for [GHSA-qvv5-jq5g-4cgg / CVE-2026-48063](https://github.com/WhiskeySockets/Baileys/security/advisories/GHSA-qvv5-jq5g-4cgg)
+  (`v7.0.0-rc12`). A spoofed message is dropped with a warning log instead of
+  processed; the node is still acked/receipted as normal so the offline queue
+  drains.
+
 ## [0.4.0] - 2026-07-01
 
 First hex release since 0.3.0 — the 0.3.1 section below landed in git but was

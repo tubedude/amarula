@@ -3125,9 +3125,27 @@ defmodule Amarula.Connection do
 
   defp own_account?(_state, _), do: false
 
+  # Who actually sent this stanza, server-attested (participant for a group,
+  # else the stanza `from`) — the same identity build_msg/6 uses for `from_me?`.
+  # Exposed (not private) so it can be unit-tested directly, like build_msg/6.
+  #
+  # Callers gate the self-only protocolMessage types on this BEFORE any
+  # per-message classification: APP_STATE_SYNC_KEY_SHARE and
+  # HISTORY_SYNC_NOTIFICATION are only ever legitimate from our own linked
+  # device. Baileys shipped this as a security fix (GHSA-qvv5-jq5g-4cgg /
+  # CVE-2026-48063) — without it, anyone who can open a session with us can
+  # spoof one of these to poison our app-state sync keys or feed us fake
+  # history.
+  @doc false
+  def own_sender?(state, node, from) do
+    participant = node |> NodeUtils.get_attr("participant") |> maybe_address()
+    own_account?(state, participant || maybe_address(from))
+  end
+
   defp handle_message(state, node) do
     msg_id = NodeUtils.get_attr(node, "from") && NodeUtils.get_attr(node, "id")
     from = NodeUtils.get_attr(node, "from")
+    own_sender? = own_sender?(state, node, from)
 
     store = SessionStore.build(state.auth_creds)
 
@@ -3140,8 +3158,21 @@ defmodule Amarula.Connection do
     state = remove_used_pre_keys(state, used_pre_key_ids)
 
     # The primary device shares app-state-sync keys via an APP_STATE_SYNC_KEY_SHARE
-    # protocol message. Store them and (re)sync app state once we have keys.
-    state = maybe_handle_app_state_key_share(state, messages)
+    # protocol message. Store them and (re)sync app state once we have keys — but
+    # only when it genuinely came from us (own_sender? above); otherwise it's a
+    # spoof attempt (CVE-2026-48063) and must be dropped.
+    state =
+      if own_sender? do
+        maybe_handle_app_state_key_share(state, messages)
+      else
+        if AppStateOps.sync_keys_in(messages) != [] do
+          Logger.warning(
+            "dropping spoofed app-state-sync-key-share protocolMessage from non-self origin (#{from})"
+          )
+        end
+
+        state
+      end
 
     # Run the receive plugin pipeline over each decrypted message: steps may
     # transform a message or drop it (halt). Dropped messages never reach the
@@ -3206,11 +3237,25 @@ defmodule Amarula.Connection do
         # mark the companion's initial sync complete (Baileys messages-recv.ts).
         # Without it the phone shows the device as "Paused" / times out, and the
         # server treats the companion as not fully linked.
-        if Enum.any?(messages, &history_sync_message?/1) do
-          download_history_sync(state, messages)
-          send_hist_sync_receipt(state, node)
-        else
-          state
+        #
+        # Only our own linked device legitimately sends this — gated on
+        # own_sender? for the same reason as the app-state-key-share branch
+        # above (CVE-2026-48063): anyone else's historySyncNotification is a
+        # spoof attempt, dropped without downloading or acking hist_sync.
+        cond do
+          not Enum.any?(messages, &history_sync_message?/1) ->
+            state
+
+          own_sender? ->
+            download_history_sync(state, messages)
+            send_hist_sync_receipt(state, node)
+
+          true ->
+            Logger.warning(
+              "dropping spoofed history-sync-notification protocolMessage from non-self origin (#{from})"
+            )
+
+            state
         end
 
       # A consumed-key error ("Key used already or never filled" /

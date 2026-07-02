@@ -558,6 +558,50 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "own_sender?/3 — gate for self-only protocolMessage types (CVE-2026-48063)" do
+    alias Amarula.Address
+
+    # app-state-sync-key-share and history-sync-notification are only ever
+    # legitimate from our own linked device; own_sender? is what
+    # handle_message/2 gates them on before acting on the payload.
+    @me_pn "5511999999999@s.whatsapp.net"
+    @me_lid "147451226890315@lid"
+    @other "5511888888888@s.whatsapp.net"
+    @state %{auth_creds: %{me: %{id: @me_pn, lid: @me_lid}}}
+
+    defp own_sender_node(attrs), do: %Node{tag: "message", attrs: attrs, content: nil}
+
+    test "a stanza from our own account is our own sender" do
+      node = own_sender_node(%{"from" => @me_pn})
+      assert Connection.own_sender?(@state, node, @me_pn)
+    end
+
+    test "a stanza from another contact is not our own sender (the spoof case)" do
+      node = own_sender_node(%{"from" => @other})
+      refute Connection.own_sender?(@state, node, @other)
+    end
+
+    test "our LID counts as our own account too" do
+      node = own_sender_node(%{"from" => @me_lid})
+      assert Connection.own_sender?(@state, node, @me_lid)
+    end
+
+    test "a group stanza uses participant, not the group jid, as the sender" do
+      group = "123456789@g.us"
+      node = own_sender_node(%{"from" => group, "participant" => @me_pn})
+      assert Connection.own_sender?(@state, node, group)
+
+      node = own_sender_node(%{"from" => group, "participant" => @other})
+      refute Connection.own_sender?(@state, node, group)
+    end
+
+    test "an unparseable sender is not our own sender, and does not crash" do
+      bad = "x@unknown-server"
+      node = own_sender_node(%{"from" => bad})
+      refute Connection.own_sender?(@state, node, bad)
+    end
+  end
+
   describe "own_chat?/2 — the self-chat command channel (LID/PN agnostic)" do
     alias Amarula.{Address, Msg, Storage}
     alias Amarula.Protocol.Proto

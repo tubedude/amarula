@@ -51,6 +51,52 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     message |> unwrap() |> do_classify()
   end
 
+  @doc """
+  The `mediatype` stanza attribute for an *outgoing* message (Baileys
+  `getMediaType`), unwrapping view-once/ephemeral envelopes first. Returns `nil` for
+  a message that carries no media type (plain text, etc.).
+
+  WhatsApp expects this attribute on the `<message>` stanza for media and **silently
+  drops view-once video/audio sent without it** (the media is nested inside a
+  `viewOnceMessage`, so a naive top-level check misses it) — see #2435 / issue #2678.
+  """
+  @spec media_type(Proto.Message.t()) :: String.t() | nil
+  def media_type(%Proto.Message{} = message) do
+    message |> unwrap() |> do_media_type()
+  end
+
+  defp do_media_type(%Proto.Message{imageMessage: m}) when not is_nil(m), do: "image"
+  defp do_media_type(%Proto.Message{videoMessage: %{gifPlayback: true}}), do: "gif"
+  defp do_media_type(%Proto.Message{videoMessage: m}) when not is_nil(m), do: "video"
+  defp do_media_type(%Proto.Message{audioMessage: %{ptt: true}}), do: "ptt"
+  defp do_media_type(%Proto.Message{audioMessage: m}) when not is_nil(m), do: "audio"
+  defp do_media_type(%Proto.Message{contactMessage: m}) when not is_nil(m), do: "vcard"
+  defp do_media_type(%Proto.Message{documentMessage: m}) when not is_nil(m), do: "document"
+
+  defp do_media_type(%Proto.Message{contactsArrayMessage: m}) when not is_nil(m),
+    do: "contact_array"
+
+  defp do_media_type(%Proto.Message{liveLocationMessage: m}) when not is_nil(m),
+    do: "livelocation"
+
+  defp do_media_type(%Proto.Message{stickerMessage: m}) when not is_nil(m), do: "sticker"
+  defp do_media_type(%Proto.Message{listMessage: m}) when not is_nil(m), do: "list"
+
+  defp do_media_type(%Proto.Message{listResponseMessage: m}) when not is_nil(m),
+    do: "list_response"
+
+  defp do_media_type(%Proto.Message{buttonsResponseMessage: m}) when not is_nil(m),
+    do: "buttons_response"
+
+  defp do_media_type(%Proto.Message{orderMessage: m}) when not is_nil(m), do: "order"
+  defp do_media_type(%Proto.Message{productMessage: m}) when not is_nil(m), do: "product"
+
+  defp do_media_type(%Proto.Message{interactiveResponseMessage: m}) when not is_nil(m),
+    do: "native_flow_response"
+
+  defp do_media_type(%Proto.Message{groupInviteMessage: m}) when not is_nil(m), do: "url"
+  defp do_media_type(_message), do: nil
+
   # Unwrap device-sent / ephemeral envelopes to the inner content message.
   defp unwrap(%Proto.Message{deviceSentMessage: %{message: inner}}) when not is_nil(inner),
     do: unwrap(inner)
@@ -82,6 +128,17 @@ defmodule Amarula.Protocol.Messages.MessageContent do
        when not is_nil(key),
        do: {:reaction, key, emoji || ""}
 
+  # Legacy edit path: the new content rides inline as `editedMessage`.
+  #
+  # KNOWN GAP (Baileys #2547, deferred): newer clients instead send the edit as a
+  # `secretEncryptedMessage` (secretEncType: :MESSAGE_EDIT) — an extra encryption
+  # layer keyed by the ORIGINAL message's `messageContextInfo.messageSecret`. That
+  # envelope falls through to `{:other, _}` below with its text still encrypted, so
+  # edits from newer clients aren't surfaced yet. Handling it needs us to retain
+  # each received message's secret for the ~15-min edit window (a small TTL cache,
+  # modelled on `DeviceListCache`'s lazy-expiry-on-read), then decrypt with the same
+  # HMAC+GCM scheme as `PollCrypto`. Tracked as future work; do not use the retry
+  # cache for the secret (it holds *outbound* sends, LRU-bounded, not inbound/TTL).
   defp do_classify(%Proto.Message{
          protocolMessage: %{type: :MESSAGE_EDIT, key: key, editedMessage: edited}
        })

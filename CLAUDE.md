@@ -293,9 +293,49 @@ Generated modules are in `lib/amarula/protocol/proto/proto/`. These provide `enc
 
 ## WhatsApp Version
 
-The current WhatsApp Web version must match the Baileys implementation. Check `../src/Defaults/index.ts` for the current version:
+The current WhatsApp Web version must match a version WhatsApp still accepts. Check `../baileys/src/Defaults/index.ts` for Baileys' bundled default:
 ```typescript
-const version = [2, 3000, 1027934701]  // Baileys version
+const version = [2, 3000, 1042537629]  // Baileys version
 ```
 
-This is configured in Amarula at `examples/connection.ex` (the `config/1` helper) and `lib/amarula/protocol/auth/auth_utils.ex:81` (used for MD5 buildHash calculation). If Baileys updates their version, Amarula must match it exactly or WhatsApp will reject the connection.
+Note: Baileys' bundled default can lag the *live* WA Web version and a stale
+version silently breaks new-device pairing (QR/pairing code generates, but the
+phone reports "Couldn't link device"). When pairing fails, check the current live
+version (e.g. Baileys' `fetchLatestWaWebVersion()` or the WA Web client) — it may
+be ahead of the bundled default.
+
+The single source of truth in Amarula is `Amarula.Config` (`lib/amarula/config.ex`,
+the `@wa_version` module attribute → the connection's `:version`); the mirror in
+`lib/amarula/protocol/crypto/constants.ex` is kept in sync. The version also feeds
+the MD5 buildHash in `lib/amarula/protocol/auth/auth_utils.ex`. If the version
+drifts, Amarula must match it or WhatsApp will reject the connection.
+
+### When to update the version
+
+WhatsApp bumps this version periodically. **When you should suspect it's stale:**
+
+- New-device pairing fails: the QR / pairing code generates, but the phone reports
+  **"Couldn't link device — An error occurred"** and `:pairing_success` never fires
+  (the socket eventually 408s and retries with the same result).
+- The handshake is rejected outright on connect.
+
+**How to check and update (maintainer):**
+
+```bash
+# Compare the pinned version against the live WhatsApp Web version — changes nothing
+mix run scripts/update_wa_version.exs --check
+
+# If out of date: rewrite the pinned literal in config.ex + constants.ex
+mix run scripts/update_wa_version.exs
+#   → review `git diff`, then commit (bump the CLAUDE.md example above too)
+```
+
+The script fetches the live version from WhatsApp Web's own service worker
+(`https://web.whatsapp.com/sw.js`, the `client_revision` field) — the same source
+Baileys uses. **The running library never fetches the version itself**; it always
+uses the pinned value, so a version bump is a deliberate, reviewed commit.
+
+**Consumer override (no recompile):** set the `AMARULA_WA_VERSION` env var to a
+dotted triple (e.g. `AMARULA_WA_VERSION=2.3000.1042537629`) to override the pinned
+default at runtime — useful to track a new WhatsApp version before the pinned one
+is bumped. A malformed value is ignored (warned) and the pinned default is used.

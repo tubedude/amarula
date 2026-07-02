@@ -38,21 +38,27 @@ defmodule Amarula.Connection.PreKeyOps do
   end
 
   @doc """
-  Upload target for a given server count: the big initial batch when the server
-  holds none, otherwise the min top-up count.
+  How many new prekeys to upload for a given server count: enough to restore the
+  server pool back to `initial_pre_key_count` (never fewer than `min_pre_key_count`).
+
+  Baileys only uploaded the deep batch when the server held *exactly* 0, and topped
+  up by `min` (5) otherwise — so the pool idled near-empty and dropped first-contact
+  messages (#2643). Refilling toward the initial count keeps the pool healthy.
   """
   @spec upload_target(non_neg_integer()) :: pos_integer()
-  def upload_target(0), do: PreKeys.initial_pre_key_count()
-  def upload_target(_server_count), do: PreKeys.min_pre_key_count()
+  def upload_target(server_count) do
+    max(PreKeys.min_pre_key_count(), PreKeys.initial_pre_key_count() - server_count)
+  end
 
   @doc """
   Whether to upload, given the server count and our creds. True when the server
-  is at/below the target, or our most-recently-generated prekey is gone locally
-  (Baileys `verifyCurrentPreKeyExists`).
+  pool has dropped to/below the low-water mark, or our most-recently-generated
+  prekey is gone locally (Baileys `verifyCurrentPreKeyExists`). `target` is unused
+  here (kept for call-site symmetry with `upload_target/1`).
   """
   @spec upload_needed?(non_neg_integer(), pos_integer(), map()) :: boolean()
-  def upload_needed?(server_count, target, creds) do
-    server_count <= target or missing_current_pre_key?(creds)
+  def upload_needed?(server_count, _target, creds) do
+    server_count <= PreKeys.low_water_pre_key_count() or missing_current_pre_key?(creds)
   end
 
   @doc "True when the last-generated one-time prekey is no longer in local storage."

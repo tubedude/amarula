@@ -89,6 +89,51 @@ as-is; don't reformat. Example with [`qr_code`](https://hex.pm/packages/qr_code)
   qr |> QRCode.create() |> QRCode.render(:png) |> QRCode.save("qr.png")
 ```
 
+### Pairing with a phone code
+
+When you can't scan a screen — a headless server, CI, or a consumer that drives
+pairing programmatically — link with an **8-character phone code** instead of a QR.
+On the phone it's *WhatsApp → Linked Devices → Link with phone number instead*.
+
+Call `Amarula.request_pairing_code/3` **during the QR window** (on the first
+`:connection_update` that carries a `qr`, while still unregistered). It returns the
+code and also emits a `:pairing_code` event; from there the flow is identical to QR
+(`:pairing_success` → 515 restart → `:open`):
+
+```elixir
+{:ok, conn} =
+  Amarula.new(%{profile: :me})
+  |> Amarula.connect(parent_pid: self())
+
+# The first qr event is your cue to request a code instead of rendering the QR.
+receive do
+  {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
+    {:ok, code} = Amarula.request_pairing_code(conn, "5511999999999")  # E.164 digits
+    IO.puts("Enter this in WhatsApp → Linked Devices → Link with phone number: #{code}")
+end
+
+receive do
+  {:amarula, :connection_update, %{connection: :open}} -> :ready
+end
+```
+
+Pass `custom_code: "ABCD1234"` to fix the code instead of taking a random one.
+
+**Pair from the shell — `mix amarula.pair`.** This Mix task ships in the package,
+so it works from **any project that depends on Amarula** (the `examples/` scripts
+do not ship — they're only in the Amarula repo). It's the intended way to get a
+user linked before starting your app/agent:
+
+```bash
+mix amarula.pair my_profile                       # QR
+mix amarula.pair my_profile --phone 5511999999999 # phone code
+```
+
+Credentials persist under `AMARULA_DATA_DIR` (default `./amarula_data`), scoped to
+the profile, so your app then connects with `Amarula.new(%{profile: :my_profile})`
+without re-pairing. (Inside the Amarula repo itself, `mix run examples/pair.exs
+<profile> [phone]` does the same for local development.)
+
 ## Events & connection flow
 
 Everything reaches you as `{:amarula, type, data}` messages at `parent_pid`. You

@@ -110,6 +110,36 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     assert {:media, :image, _} = MessageContent.classify(wrapped)
   end
 
+  describe "media_type/1 (outgoing stanza mediatype, #2435)" do
+    test "maps each media message to its wire type" do
+      assert MessageContent.media_type(MessageEncoder.media(:image, @info, [])) == "image"
+      assert MessageContent.media_type(MessageEncoder.media(:video, @info, [])) == "video"
+      assert MessageContent.media_type(MessageEncoder.media(:audio, @info, [])) == "audio"
+      assert MessageContent.media_type(MessageEncoder.media(:document, @info, [])) == "document"
+
+      sticker = %Proto.Message{stickerMessage: %Proto.Message.StickerMessage{}}
+      assert MessageContent.media_type(sticker) == "sticker"
+    end
+
+    test "distinguishes gif and ptt variants" do
+      gif = %Proto.Message{videoMessage: %Proto.Message.VideoMessage{gifPlayback: true}}
+      assert MessageContent.media_type(gif) == "gif"
+
+      ptt = %Proto.Message{audioMessage: %Proto.Message.AudioMessage{ptt: true}}
+      assert MessageContent.media_type(ptt) == "ptt"
+    end
+
+    test "sees through a view-once wrapper (the #2678 case)" do
+      inner = MessageEncoder.media(:video, @info, [])
+      wrapped = %Proto.Message{viewOnceMessage: %Proto.Message.FutureProofMessage{message: inner}}
+      assert MessageContent.media_type(wrapped) == "video"
+    end
+
+    test "nil for a message that carries no media type" do
+      assert MessageContent.media_type(MessageEncoder.text("hi")) == nil
+    end
+  end
+
   test "classifies a round video note (ptvMessage) as media :video" do
     ptv = MessageEncoder.media(:video, @info, ptv: true)
     assert {:media, :video, _} = MessageContent.classify(ptv)

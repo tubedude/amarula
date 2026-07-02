@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pre-key pool now refills before it drains (Baileys #2643).** The server-side
+  one-time pre-key pool was only deep-refilled when it hit *exactly* 0; otherwise it
+  topped up by just 5, so it idled near-empty and dropped first-contact messages
+  under any burst. It now refills back toward the initial count (812) once it drops
+  to/below a low-water mark (100), on both the login count-check and the server's
+  `<notification type=encrypt>` top-up path.
+- **View-once media now sends reliably (Baileys #2435 / #2678).** Outgoing media
+  stanzas carry a `mediatype` attribute (`image`/`video`/`gif`/`audio`/`ptt`/
+  `document`/`sticker`/…), derived through the view-once wrapper. WhatsApp silently
+  dropped view-once video/audio sent without it. Applies to both 1:1 and group
+  sends (the group relay now threads stanza attrs too).
+
+### Changed
+
+- **Bumped the WhatsApp Web protocol version** to `[2, 3000, 1_042_537_629]` (was
+  `1_035_194_821`). The stale value silently broke new-device pairing — the QR /
+  pairing code generated, but the phone reported "Couldn't link device" and
+  `:pairing_success` never fired. Also aligned the (previously divergent, unused)
+  mirror in `Amarula.Protocol.Crypto.Constants`.
+
+### Added
+
+- **`AMARULA_WA_VERSION` env override.** Set it to a dotted triple (e.g.
+  `2.3000.1042537629`) to override the pinned WhatsApp Web version at runtime
+  without recompiling — useful to track a new WhatsApp version before the pinned
+  default is bumped. Malformed values are ignored (warned) and fall back to the
+  pinned default. See `Amarula.Config.wa_version/0`.
+- **`scripts/update_wa_version.exs`** — maintainer tool that fetches the live
+  version from WhatsApp's own service worker (`client_revision` in `sw.js`, mirroring
+  Baileys' `fetchLatestWaWebVersion()`) and rewrites the pinned literal for review +
+  commit (`--check` to compare without writing). **The running library never fetches
+  the version itself** — it always uses the pinned/overridden default.
+- **`mix amarula.pair` task** — link an account by QR or phone code from any project
+  that depends on Amarula (`mix amarula.pair <profile> [--phone <e164>]`). Unlike the
+  `examples/` scripts, this ships in the Hex package (it lives under `lib/`), so a
+  downstream integration can pair a user without vendoring a script. Addresses the
+  "no easy way to pair an account" gap for consumers like agentjido/jido_chat#25.
+- **Phone-code pairing docs + example.** `examples/pair.exs` now links by QR *or*
+  by 8-char phone code (`mix run examples/pair.exs <profile> [phone-e164]`), and the
+  README documents `Amarula.request_pairing_code/3` / the `:pairing_code` event for
+  headless/programmatic pairing (the API already existed; this makes it discoverable).
+
 ## [0.4.1] - 2026-07-02
 
 A security fix, ported from upstream Baileys.

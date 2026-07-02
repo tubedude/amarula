@@ -19,8 +19,16 @@ defmodule Amarula.Protocol.Signal.PreKeys do
   @initial_pre_key_count 812
   @key_bundle_type <<5>>
 
+  # Low-water mark: refill the server pool back toward the initial count once it
+  # drops to/below this, rather than waiting for it to hit exactly 0 (Baileys only
+  # deep-refills at 0, letting the pool sit near-empty — see #2643). WhatsApp
+  # consumes one prekey per new inbound session, so a pool that idles at
+  # `@min_pre_key_count` (5) drops first-contact messages under any burst.
+  @low_water_pre_key_count 100
+
   def min_pre_key_count, do: @min_pre_key_count
   def initial_pre_key_count, do: @initial_pre_key_count
+  def low_water_pre_key_count, do: @low_water_pre_key_count
 
   @doc """
   Ensure `range` prekeys exist past the uploaded watermark, generating only the

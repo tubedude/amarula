@@ -134,10 +134,9 @@ defmodule Amarula.Protocol.Messages.Relay do
       [skmsg_enc, participants_node] ++ maybe_device_identity(any_pkmsg?(participants), account)
 
     attrs =
-      put_edit(
-        %{"id" => msg_id, "to" => to, "type" => "text", "t" => Integer.to_string(ts)},
-        opts
-      )
+      %{"id" => msg_id, "to" => to, "type" => "text", "t" => Integer.to_string(ts)}
+      |> put_edit(opts)
+      |> Map.merge(Keyword.get(opts, :extra_attrs, %{}))
 
     stanza = Node.create("message", attrs, children)
 

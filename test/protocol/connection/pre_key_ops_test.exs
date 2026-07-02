@@ -29,29 +29,43 @@ defmodule Amarula.Connection.PreKeyOpsTest do
   end
 
   describe "upload_target/1" do
-    test "server holding none → the big initial batch" do
+    test "server holding none → the full initial batch" do
       assert PreKeyOps.upload_target(0) == PreKeys.initial_pre_key_count()
     end
 
-    test "server holding some → the min top-up" do
-      assert PreKeyOps.upload_target(5) == PreKeys.min_pre_key_count()
+    test "server holding some → tops up back toward the initial count (not just min)" do
+      # #2643: refill restores the pool to initial, so a non-empty server uploads
+      # (initial - server_count), not the old flat min top-up of 5.
+      assert PreKeyOps.upload_target(50) == PreKeys.initial_pre_key_count() - 50
+      assert PreKeyOps.upload_target(50) > PreKeys.min_pre_key_count()
+    end
+
+    test "never uploads fewer than the min, even if the server is already full" do
+      assert PreKeyOps.upload_target(PreKeys.initial_pre_key_count()) ==
+               PreKeys.min_pre_key_count()
     end
   end
 
   describe "upload_needed?/3 and missing_current_pre_key?/1" do
-    test "uploads when server is at/below target" do
-      assert PreKeyOps.upload_needed?(3, 5, %{next_pre_key_id: 1, pre_keys: %{}})
+    test "uploads when the server pool is at/below the low-water mark" do
+      assert PreKeyOps.upload_needed?(3, 0, %{next_pre_key_id: 1, pre_keys: %{}})
+      # #2643: the trigger is the low-water mark, not min — a pool that idled at
+      # a few dozen keys must still refill before it drains to zero.
+      assert PreKeyOps.upload_needed?(PreKeys.low_water_pre_key_count(), 0, %{
+               next_pre_key_id: 1,
+               pre_keys: %{}
+             })
     end
 
-    test "skips when server is above target and current prekey is present" do
+    test "skips when the server pool is above the low-water mark and current prekey is present" do
       creds = %{next_pre_key_id: 3, pre_keys: %{2 => :pair}}
-      refute PreKeyOps.upload_needed?(100, 5, creds)
+      refute PreKeyOps.upload_needed?(PreKeys.low_water_pre_key_count() + 1, 0, creds)
     end
 
     test "uploads when the current prekey is missing locally, even with plenty on server" do
       creds = %{next_pre_key_id: 3, pre_keys: %{}}
       assert PreKeyOps.missing_current_pre_key?(creds)
-      assert PreKeyOps.upload_needed?(100, 5, creds)
+      assert PreKeyOps.upload_needed?(500, 0, creds)
     end
 
     test "no current prekey to verify when next_pre_key_id is 1" do

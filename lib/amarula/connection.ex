@@ -2225,11 +2225,12 @@ defmodule Amarula.Connection do
         _ -> 0
       end
 
-    min = PreKeys.min_pre_key_count()
+    low_water = PreKeys.low_water_pre_key_count()
 
-    if count < min do
-      Logger.debug("encrypt: #{count} pre-keys left (< #{min}) — uploading more")
-      upload_pre_keys(state, min, :prekey_reupload)
+    if count <= low_water do
+      target = PreKeyOps.upload_target(count)
+      Logger.debug("encrypt: #{count} pre-keys left (<= #{low_water}) — uploading #{target}")
+      upload_pre_keys(state, target, :prekey_reupload)
     else
       Logger.debug("encrypt: #{count} pre-keys left — no upload needed")
       state

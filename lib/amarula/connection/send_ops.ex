@@ -16,7 +16,7 @@ defmodule Amarula.Connection.SendOps do
   most sends use `default_send_reply/2`, polls override it to carry the secret.
   """
 
-  alias Amarula.Protocol.Messages.MessageEncoder
+  alias Amarula.Protocol.Messages.{MessageContent, MessageEncoder}
 
   @type target :: term()
   @type payload :: map()
@@ -67,7 +67,17 @@ defmodule Amarula.Connection.SendOps do
   ready message for dispatch.
   """
   @spec media(term(), struct()) :: build()
-  def media(jid, message), do: {jid, %{message: message}, &default_send_reply/2}
+  def media(jid, message) do
+    # Tag the stanza with its `mediatype` (Baileys `getMediaType`). Required for
+    # view-once video/audio — WhatsApp silently drops them otherwise (#2435/#2678).
+    payload =
+      case MessageContent.media_type(message) do
+        nil -> %{message: message}
+        type -> %{message: message, stanza_attrs: %{"mediatype" => type}}
+      end
+
+    {jid, payload, &default_send_reply/2}
+  end
 
   @doc """
   Placeholder-resend request: a PEER_DATA_OPERATION sent to OURSELVES (`me_id`)

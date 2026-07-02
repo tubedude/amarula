@@ -631,7 +631,8 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         ctx.skmsg,
         ctx.participants,
         ctx.creds.account,
-        edit: ctx.edit_attr
+        edit: ctx.edit_attr,
+        extra_attrs: ctx.stanza_attrs
       )
 
     Logger.debug("Relaying group #{ctx.msg_id} (#{length(ctx.participants)} devices)")

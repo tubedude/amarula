@@ -45,6 +45,21 @@ defmodule Amarula.Connection.SendOpsTest do
       assert payload == %{message: msg}
       assert shape.(:ok, "MID") == {:ok, "MID"}
     end
+
+    test "media tags the stanza with its mediatype (#2435)" do
+      msg = %Proto.Message{imageMessage: %Proto.Message.ImageMessage{}}
+      {_t, payload, _s} = SendOps.media("123@s.whatsapp.net", msg)
+
+      assert payload == %{message: msg, stanza_attrs: %{"mediatype" => "image"}}
+    end
+
+    test "media tags a view-once wrapper by its inner type (#2678)" do
+      inner = %Proto.Message{videoMessage: %Proto.Message.VideoMessage{}}
+      msg = %Proto.Message{viewOnceMessage: %Proto.Message.FutureProofMessage{message: inner}}
+      {_t, payload, _s} = SendOps.media("123@s.whatsapp.net", msg)
+
+      assert payload.stanza_attrs == %{"mediatype" => "video"}
+    end
   end
 
   describe "poll/4" do

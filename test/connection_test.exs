@@ -373,7 +373,16 @@ defmodule Amarula.ConnectionTest do
     end
 
     test "a reconnect keeps the same Connection pid and swaps the websocket", %{config: config} do
-      {:ok, pid} = Connection.start_link(%{config | retry_delay: 50}, parent_pid: self())
+      # A local listener that accepts TCP but never answers the WS upgrade: the
+      # replacement WebSockex stays alive mid-handshake, so the swap is observable.
+      # (The default wss://test.example.com resolves differently across CI runners —
+      # an instant :nxdomain kills each new socket before the poll can see it.)
+      {:ok, listen} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
+      {:ok, port} = :inet.port(listen)
+      on_exit(fn -> :gen_tcp.close(listen) end)
+
+      config = %{config | wa_websocket_url: "ws://127.0.0.1:#{port}/ws", retry_delay: 50}
+      {:ok, pid} = Connection.start_link(config, parent_pid: self())
       :ok = GenServer.call(pid, :connect)
 
       ws1 = :sys.get_state(pid).websocket_client

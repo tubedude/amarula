@@ -384,8 +384,6 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
     end
 
     test "encrypt from the server with a low count: uploads fresh prekeys", ctx do
-      ref = attach_telemetry([[:amarula, :prekey, :upload]])
-
       node =
         Node.create("notification", %{"type" => "encrypt", "from" => @server, "id" => "N2"}, [
           Node.create("count", %{"value" => "7"}, nil)
@@ -404,8 +402,6 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       list = NodeUtils.get_binary_node_child(upload, "list")
       assert length(list.content) == 805
       assert Enum.all?(list.content, &(&1.tag == "key"))
-
-      assert_receive {[:amarula, :prekey, :upload], ^ref, %{count: 805}, _}
     end
 
     test "encrypt from the server with a healthy count: no upload", ctx do

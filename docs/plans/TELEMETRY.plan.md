@@ -16,6 +16,13 @@ shapes are authoritative in `Amarula.Telemetry`'s moduledoc):
 - `[:amarula, :iq, :timeout]` — an interim counter (with the tracked `kind` when
   known); the full IQ round-trip span below remains **deferred**.
 
+Trimmed since the initial implementation (redundant with events above):
+`[:amarula, :send, :not_on_whatsapp]` (tag `send :stop` by
+`error_reason: :not_on_whatsapp` instead — the note below is superseded),
+`[:amarula, :stream_error, :restart]` (`stream_error :received` fires for every
+stream error; its `code` identifies the 515 restart), and
+`[:amarula, :prekey, :upload]` (diagnostic-log material, not a metric).
+
 ## Goal
 
 Let an operator observe the health of a live WhatsApp connection without reading

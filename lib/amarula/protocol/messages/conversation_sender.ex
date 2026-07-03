@@ -319,7 +319,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       profile,
       %{kind: kind, media?: media?, media_kind: media_kind},
       fn ->
-        {result, outcome} = run_pipe(ctx, msg_id, jid, profile)
+        {result, outcome} = run_pipe(ctx, msg_id, jid)
         {result, %{bytes: bytes}, outcome}
       end
     )
@@ -330,17 +330,13 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   # timed-out IQ, an unreachable recipient) is logged and returned; unexpected
   # errors still crash the (disposable) process. Returns `{result, outcome}` —
   # the pipe result plus the JID-free outcome metadata for the send :stop event.
-  defp run_pipe(ctx, msg_id, jid, profile) do
+  defp run_pipe(ctx, msg_id, jid) do
     with {:ok, ctx} <- resolve_devices(ctx),
          {:ok, ctx} <- ensure_sessions(ctx),
          {:ok, ctx} <- encrypt(ctx),
          :ok <- relay(ctx) do
       {:ok, %{result: :ok, error_stage: nil, error_reason: nil}}
     else
-      {:error, {:resolve_devices, :not_on_whatsapp} = stage_reason} ->
-        Amarula.Telemetry.emit([:amarula, :send, :not_on_whatsapp], profile)
-        log_drop(msg_id, jid, stage_reason)
-
       {:error, {_stage, _reason} = stage_reason} ->
         log_drop(msg_id, jid, stage_reason)
     end

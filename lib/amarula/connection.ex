@@ -2406,24 +2406,19 @@ defmodule Amarula.Connection do
   defp handle_stream_error(state, node) do
     {code, reason} = stream_error_details(node)
 
+    Amarula.Telemetry.emit([:amarula, :stream_error, :received], profile(state), %{count: 1}, %{
+      code: code
+    })
+
     if code == @stream_error_restart_required do
       Logger.debug(
         "Stream error 515 (restart required) — reconnecting to log in with paired credentials"
       )
 
-      Amarula.Telemetry.emit([:amarula, :stream_error, :restart], profile(state), %{count: 1}, %{
-        code: code
-      })
-
       # Creds were already persisted at pairing; just reconnect.
       restart_connection(state)
     else
       Logger.error("Stream error: code=#{code}, reason=#{reason}")
-
-      Amarula.Telemetry.emit([:amarula, :stream_error, :received], profile(state), %{count: 1}, %{
-        code: code
-      })
-
       handle_connection_error(state, {:stream_error, code, reason})
     end
   end
@@ -4100,7 +4095,6 @@ defmodule Amarula.Connection do
 
   defp upload_pre_keys(state, count, kind \\ :prekey_upload) do
     Logger.debug("Uploading #{count} pre-keys")
-    Amarula.Telemetry.emit([:amarula, :prekey, :upload], profile(state), %{count: count})
     {updated_creds, node} = PreKeys.get_next_pre_keys_node(state.auth_creds, count)
 
     # Persist the generated prekeys before the upload round-trip so a crash

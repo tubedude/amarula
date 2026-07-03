@@ -26,13 +26,11 @@ defmodule Amarula.Telemetry do
   | `[:amarula, :send, :start]` | `%{monotonic_time, system_time}` | `%{profile, kind, media?, media_kind}` |
   | `[:amarula, :send, :stop]` | `%{duration, bytes}` | `%{profile, kind, media?, media_kind, result, error_stage, error_reason}` — `result` is `:ok`/`:error`; on `:error`, `error_stage` is the failing pipe stage (`:resolve_devices`/`:ensure_sessions`/`:encrypt`/`:relay`) and `error_reason` a normalized, JID-free reason atom (e.g. `:not_on_whatsapp`, `:timeout`) or nil; all three are nil-safe tags on success (`:ok`/nil/nil) |
   | `[:amarula, :send, :exception]` | `%{duration}` | `%{profile, kind, kind: :error/:exit/:throw, reason}` |
-  | `[:amarula, :send, :not_on_whatsapp]` | `%{count: 1}` | `%{profile}` |
   | `[:amarula, :send, :ack]` | `%{count}` | `%{profile, outcome, code}` — the server-side verdict on a relayed, tracked send (the send span closes at relay time, before the `<ack>`). `outcome` is `:ok` \| `:rejected` \| `:timeout` \| `:sender_crashed`; `code` the server's rejection code (only for `:rejected`, else nil). One event per tracked send (duplicate acks don't count); a sender crash emits once with `count` = the parked sends it took out. |
   | `[:amarula, :message, :received]` | `%{count: 1, media_bytes}` | `%{profile, from_me?, group?, offline?, media?, media_kind}` |
   | `[:amarula, :decrypt, :exception]` | `%{count: 1}` | `%{profile, reason}` |
   | `[:amarula, :reconnect, :scheduled]` | `%{count: 1, delay_ms, attempt}` | `%{profile}` |
-  | `[:amarula, :stream_error, :restart]` / `:received` | `%{count: 1}` | `%{profile, code}` |
-  | `[:amarula, :prekey, :upload]` | `%{count}` | `%{profile}` |
+  | `[:amarula, :stream_error, :received]` | `%{count: 1}` | `%{profile, code}` — every `<stream:error>`, including the post-pairing 515 restart (`code` distinguishes) |
   | `[:amarula, :retry, :received]` | `%{count: 1}` | `%{profile}` |
   | `[:amarula, :retry, :sent]` | `%{count: 1, attempt}` | `%{profile}` — `attempt` = escalating per-peer retry count; a high/rising value flags an unrecoverable peer |
   | `[:amarula, :iq, :timeout]` | `%{count: 1}` | `%{profile, kind}` — an outbound IQ got no reply within the timeout (the primary sick-connection signal). `kind` is the tracked bootstrap kind (`:prekey_count`/`:digest`/`:app_state_sync`/…); a blocking waiter (send-path USync/bundle/metadata) carries no kind, so the key is absent. |
@@ -75,14 +73,11 @@ defmodule Amarula.Telemetry do
       [:amarula, :send, :start],
       [:amarula, :send, :stop],
       [:amarula, :send, :exception],
-      [:amarula, :send, :not_on_whatsapp],
       [:amarula, :send, :ack],
       [:amarula, :message, :received],
       [:amarula, :decrypt, :exception],
       [:amarula, :reconnect, :scheduled],
-      [:amarula, :stream_error, :restart],
       [:amarula, :stream_error, :received],
-      [:amarula, :prekey, :upload],
       [:amarula, :retry, :received],
       [:amarula, :retry, :sent],
       [:amarula, :iq, :timeout]

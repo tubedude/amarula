@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Merge Socket + ConnectionManager — design plan
 
 ## Why

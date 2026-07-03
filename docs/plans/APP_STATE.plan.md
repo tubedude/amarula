@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # C2 — App-state sync (chat list, contacts, chat mutations)
 
 The big subsystem. Source: `src/Utils/chat-utils.ts`, `lt-hash.ts`,

@@ -1,8 +1,8 @@
 # TELEMETRY plan — `:telemetry` instrumentation for Amarula
 
-Status: **plan only**. No instrumentation has been written. This document defines
-*what* to emit, *where*, and *in what order of value*. Implementation is a
-follow-up.
+Status: **implemented** — see `Amarula.Telemetry` (`lib/amarula/telemetry.ex`) for
+the events that ship. This document remains the design rationale and lists the
+deferred items (`Amarula.Telemetry`'s moduledoc points here for those).
 
 ## Goal
 

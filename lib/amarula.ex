@@ -33,8 +33,10 @@ defmodule Amarula do
 
   `:profile` names this account's stored credentials, so the next run reconnects
   without a new QR. `Amarula.new/1` fills in all protocol defaults; you usually
-  pass only `:profile`. For a ready-made supervised wrapper, see
-  `Amarula.Examples.Connection`.
+  pass only `:profile`. To run under a supervisor, see `child_spec/1`
+  (`{Amarula, profile: ...}`); for a full GenServer wrapper, see the
+  [examples on GitHub](https://github.com/tubedude/amarula/tree/main/examples)
+  (not part of the hex package).
 
   ## Testing your bot
 

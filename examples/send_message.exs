@@ -8,7 +8,7 @@
 #   mix run examples/send_message.exs "120363000000000000@g.us" "hi group"
 #
 # A bare number becomes an %Amarula.Address{} PN; a full jid is parsed.
-# Requires an already-paired ./amarula_auth — run connection.ex to pair first.
+# Requires an already-paired ./amarula_data — run connection.ex to pair first.
 
 Code.require_file("examples/connection.ex")
 

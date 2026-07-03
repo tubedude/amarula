@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Message features to re-implement (on the real send path)
 
 The legacy stack (`sender.ex`, `receiver.ex`, `messages.ex`, `reactions.ex`,

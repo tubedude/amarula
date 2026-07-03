@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Baileys feature gap — what Amarula does NOT implement
 
 Audit of the Baileys socket public surface (`src/Socket/{socket,chats,messages-send,

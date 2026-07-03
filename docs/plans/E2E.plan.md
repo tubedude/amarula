@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Two-Amarula-client e2e (hands-off, plugin-driven)
 
 Boot two `Amarula.Examples.Connection` GenServers (two real accounts we control)

@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Plan: fix #7 — sender crash leaves parked sends hanging to :ack_timeout
 
 ## The bug

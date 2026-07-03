@@ -22,8 +22,8 @@ defmodule Amarula.Examples.Connection do
       iex> Amarula.Examples.Connection.send_text(:wa, Amarula.Address.pn("5511999999999"), "hi")
       # (a plain jid string works too)
 
-  Credentials live under `AMARULA_AUTH_DIR` (default `./amarula_auth`); delete
-  that directory to force a fresh pairing.
+  Credentials live under the library default `./amarula_data/<profile>/` (set
+  `AMARULA_DATA_DIR` to relocate); delete that directory to force a fresh pairing.
 
   In a real app you'd put this under your supervision tree:
 
@@ -42,8 +42,8 @@ defmodule Amarula.Examples.Connection do
       # → ./amarula_data/primary/  and  ./amarula_data/work/
 
   `:profile` goes into the connection **config** (storage is a config concern);
-  the GenServer just forwards it. Without a profile it uses the legacy single
-  dir (`AMARULA_AUTH_DIR`, default `./amarula_auth`) — unchanged.
+  the GenServer just forwards it. Without an explicit profile this example uses
+  `:default` → `./amarula_data/default/`.
 
   (Distinct devices only — two connections on the *same* identity get kicked by
   the server with a conflict error.)
@@ -62,7 +62,7 @@ defmodule Amarula.Examples.Connection do
 
     * `:name`    — registered name (so callers can address it; default: unregistered)
     * `:profile` — scopes storage to `<storage_root>/<profile>/`; run several
-      accounts in parallel by giving each its own. Omit for the legacy single dir.
+      accounts in parallel by giving each its own. Defaults to `:default`.
   """
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name)

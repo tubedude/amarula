@@ -381,7 +381,7 @@ When the WhatsApp protocol definitions in `proto/wa_proto.proto` change,
 recompile them:
 
 ```bash
-protoc --elixir_opt=package_prefix=Amarula.Protocol:lib proto/wa_proto.proto
+protoc -I proto --elixir_out=package_prefix=amarula.protocol:lib/amarula/protocol/proto wa_proto.proto
 ```
 
 This regenerates `lib/amarula/protocol/proto/wa_proto.pb.ex` under the

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`Amarula.render_qr/1`** — render the `qr` string from a `:connection_update`
+  as terminal-printable ASCII art (the renderer `mix amarula.pair` already used,
+  now public). No more hand-rolling QR display for the common case.
+- **Telemetry: failure outcomes are now observable.** `[:amarula, :send, :stop]`
+  carries `result`/`error_stage`/`error_reason` (compute a send error rate off one
+  event); new `[:amarula, :send, :ack]` reports the post-relay server verdict
+  (`:ok | :rejected | :timeout | :sender_crashed` + rejection code); new
+  `[:amarula, :iq, :timeout]` counts the primary sick-connection signal.
+- **README feature guide** — runnable examples for receive & reply (GenServer
+  event sink), media send/download, reactions/quoted replies, groups, and offline
+  bot testing with `Amarula.Testing`.
 - **`Amarula.child_spec/1`** — start a fixed, known-at-boot set of profiles
   declaratively in your own supervision tree: `{Amarula, profile: :sales, parent:
   MyRouter}`. Each child gets a distinct `id` of `{Amarula, profile}`, so several
@@ -18,6 +29,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `connect/2` instead. Backed by the new `Amarula.SupervisedConnection`, a thin
   owner that survives the socket's internal restarts so your supervisor never sees
   spurious child deaths, and tears the connection down on a deliberate shutdown.
+
+### Fixed
+
+- **Group decrypt failures report their real reason** — a bad signature, old
+  counter, or padding error was previously relabeled "Failed to parse sender key
+  message"; the parse label now applies only to genuinely unparseable payloads.
+- **Malformed group IQ replies are errors, not empty successes** — a server
+  `<error>` or missing attr in invite-code / join-request replies returned
+  `{:ok, nil}` / `{:ok, []}`; they now return `{:error, reason}` like every other
+  group op.
+- **A USync status with no timestamp yields `set_at: nil`** instead of
+  1970-01-01.
+- **Closed Signal sessions no longer accumulate unboundedly** — the persisted
+  session record is capped (40 closed sessions, oldest dropped), pruned at the
+  same point libsignal does.
+- **Media uploads honor `req_options`** like downloads (uploads are now
+  `Req.Test`-stubbable).
+
+### Removed
+
+- **`BaileysCredentialLoader`** (a build-phase comparison tool) and a body of
+  dead internal code (~5,800 lines: unused modules, behaviours with no
+  implementers, test-only accessors).
+- **Three redundant telemetry events**: `[:amarula, :send, :not_on_whatsapp]`
+  (tag `send :stop` by `error_reason` instead), `[:amarula, :stream_error,
+  :restart]` (`stream_error :received`'s `code` identifies the 515), and
+  `[:amarula, :prekey, :upload]`. Handlers attached via
+  `Amarula.Telemetry.events/0` need no change.
 
 ## [0.4.2] - 2026-07-02
 

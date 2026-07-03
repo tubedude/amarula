@@ -57,4 +57,43 @@ defmodule Amarula.Protocol.Signal.SessionStoreTest do
     assert SessionStore.load_session(conn, "a.0") == %{sessions: %{x: 1}}
     assert SessionStore.load_session(conn, "b.1") == %{sessions: %{y: 2}}
   end
+
+  test "store_session prunes oldest closed sessions past the cap", %{conn: conn} do
+    addr = "15550001234.0"
+
+    # 42 closed sessions (cap is 40) plus one open — mirrors a record that kept
+    # accumulating ratchets across re-pairings.
+    record =
+      Enum.reduce(1..42, SessionRecord.new(), fn i, acc ->
+        SessionRecord.set_session(acc, entry(<<i::16>>, closed: i))
+      end)
+      |> SessionRecord.set_session(entry(<<0::16>>, closed: -1))
+
+    assert :ok = SessionStore.store_session(conn, addr, record)
+    loaded = SessionStore.load_session(conn, addr)
+
+    assert map_size(loaded.sessions) == 40
+    # The oldest closed sessions were dropped, newest closed + the open one kept.
+    refute Map.has_key?(loaded.sessions, Base.encode64(<<1::16>>))
+    refute Map.has_key?(loaded.sessions, Base.encode64(<<2::16>>))
+    refute Map.has_key?(loaded.sessions, Base.encode64(<<3::16>>))
+    assert Map.has_key?(loaded.sessions, Base.encode64(<<42::16>>))
+    assert Map.has_key?(loaded.sessions, Base.encode64(<<0::16>>))
+  end
+
+  defp entry(base_key, opts) do
+    %{
+      registration_id: 1,
+      current_ratchet: %{},
+      index_info: %{
+        created: 0,
+        used: 0,
+        remote_identity_key: <<9>>,
+        base_key: base_key,
+        base_key_type: SessionRecord.base_key_theirs(),
+        closed: Keyword.fetch!(opts, :closed)
+      },
+      chains: %{}
+    }
+  end
 end

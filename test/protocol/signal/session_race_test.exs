@@ -37,8 +37,10 @@ defmodule Amarula.Protocol.Signal.SessionRaceTest do
   test "concurrent load-modify-store on one session loses updates (the fork)", %{conn: conn} do
     # Pre-create the session (and its on-disk dir/file) before the concurrent
     # phase, so what we measure is purely the lost-update on the *value* — not any
-    # directory-creation contention in the storage adapter.
-    :ok = SessionStore.store_session(conn, @addr, %{counter: 0})
+    # directory-creation contention in the storage adapter. The record carries the
+    # SessionRecord shape (store_session prunes closed sessions on persist) plus a
+    # counter to observe lost updates.
+    :ok = SessionStore.store_session(conn, @addr, %{sessions: %{}, counter: 0})
     assert %{counter: 0} = SessionStore.load_session(conn, @addr)
 
     n = 50
@@ -53,7 +55,7 @@ defmodule Amarula.Protocol.Signal.SessionRaceTest do
         Task.async(fn ->
           %{counter: c} = SessionStore.load_session(conn, @addr)
           Process.sleep(1)
-          SessionStore.store_session(conn, @addr, %{counter: c + 1})
+          SessionStore.store_session(conn, @addr, %{sessions: %{}, counter: c + 1})
         end)
       end
 

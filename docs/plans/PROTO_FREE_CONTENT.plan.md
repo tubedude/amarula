@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Plan: proto-free `%Amarula.Msg{}.content`
 
 Status: PROPOSED. Goal: **no `%Proto.*{}` value ever appears in a `%Amarula.Msg{}`'s

@@ -3,7 +3,7 @@
 #   mix run examples/fetch_history.exs
 #
 # This script is its own event consumer (parent_pid: self()) — it doesn't use
-# examples/connection.ex. It connects (needs an already-paired ./amarula_auth),
+# examples/connection.ex. It connects (needs an already-paired ./amarula_data),
 # captures the first real incoming 1:1 message as the "oldest" anchor, then sends
 # a PEER_DATA_OPERATION on-demand history request for that chat and waits for the
 # phone's ON_DEMAND HistorySync reply (logged as a second :history_sync).

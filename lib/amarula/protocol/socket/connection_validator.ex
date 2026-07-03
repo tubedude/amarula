@@ -148,36 +148,4 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
         end
     end
   end
-
-  @doc """
-  Process handshake completion message.
-
-  Handles the final handshake message from the server.
-  """
-  @spec process_handshake_complete(handshake_state(), binary()) ::
-          {:ok, handshake_state()} | {:error, term()}
-  def process_handshake_complete(state, _message_data) do
-    Logger.debug("Handshake completion message received")
-    {:ok, state}
-  end
-
-  @doc """
-  Check if handshake is completed.
-  """
-  @spec handshake_completed?(handshake_state()) :: boolean()
-  def handshake_completed?(state) do
-    state.handshake_step == :completed
-  end
-
-  @doc """
-  Get the completed noise state for ongoing communication.
-  """
-  @spec get_noise_state(handshake_state()) :: NoiseHandler.noise_state() | nil
-  def get_noise_state(state) do
-    if handshake_completed?(state) do
-      state.noise_state
-    else
-      nil
-    end
-  end
 end

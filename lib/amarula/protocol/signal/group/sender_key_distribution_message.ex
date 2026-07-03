@@ -68,34 +68,4 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyDistributionMessage do
   end
 
   def from_serialized(_), do: {:error, "Serialized SKDM too short"}
-
-  @doc """
-  Gets the ID of the sender key.
-  """
-  @spec get_id(t()) :: integer()
-  def get_id(%__MODULE__{id: id}), do: id
-
-  @doc """
-  Gets the iteration count.
-  """
-  @spec get_iteration(t()) :: integer()
-  def get_iteration(%__MODULE__{iteration: iteration}), do: iteration
-
-  @doc """
-  Gets the chain key.
-  """
-  @spec get_chain_key(t()) :: binary()
-  def get_chain_key(%__MODULE__{chain_key: chain_key}), do: chain_key
-
-  @doc """
-  Gets the signature key.
-  """
-  @spec get_signature_key(t()) :: binary()
-  def get_signature_key(%__MODULE__{signature_key: signature_key}), do: signature_key
-
-  @doc """
-  Gets the serialized message.
-  """
-  @spec get_serialized(t()) :: binary()
-  def get_serialized(%__MODULE__{serialized: serialized}), do: serialized
 end

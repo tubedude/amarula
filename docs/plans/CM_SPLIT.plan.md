@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Deep ConnectionManager split — plan
 
 CM ≈2700 lines / ~190 funs. Safe pass done (Auth.DeviceIdentity extracted, pure).

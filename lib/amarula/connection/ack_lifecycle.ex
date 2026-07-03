@@ -67,6 +67,19 @@ defmodule Amarula.Connection.AckLifecycle do
     end
   end
 
+  @doc """
+  True while `msg_id` still has a parked (unresolved) send. Used to gate the ack
+  telemetry: duplicate acks and acks for untracked ids must not inflate counts.
+  """
+  @spec parked?(state(), String.t()) :: boolean()
+  def parked?(state, msg_id), do: Map.has_key?(state.pending_acks, msg_id)
+
+  @doc "How many parked sends `jid` currently has (what a sender crash takes out)."
+  @spec parked_count(state(), String.t()) :: non_neg_integer()
+  def parked_count(state, jid) do
+    Enum.count(state.pending_acks, fn {_id, {_f, _o, _t, j}} -> j == jid end)
+  end
+
   @doc "Record a recipient's sender monitor `ref` (first parked send only)."
   @spec put_monitor(state(), String.t(), reference()) :: state()
   def put_monitor(state, jid, ref) do

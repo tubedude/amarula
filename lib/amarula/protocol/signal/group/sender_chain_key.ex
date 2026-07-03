@@ -38,12 +38,6 @@ defmodule Amarula.Protocol.Signal.Group.SenderChainKey do
   def get_iteration(%__MODULE__{iteration: iteration}), do: iteration
 
   @doc """
-  Gets the seed used to derive keys.
-  """
-  @spec get_seed(t()) :: binary()
-  def get_seed(%__MODULE__{seed: seed}), do: seed
-
-  @doc """
   Generates the next chain key in the sequence.
   """
   @spec get_next(t()) :: t()

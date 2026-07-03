@@ -7,7 +7,7 @@ and receive messages from Elixir.
 These rules describe how to **use** the `Amarula.*` public API correctly. They are for
 agents writing consumer code against the library, not for working on the library itself.
 
-These rules track Amarula **0.4.2**. They are a curated subset, not the full API — do
+These rules track Amarula **0.4.3**. They are a curated subset, not the full API — do
 not assume an undocumented function exists. When a signature, return shape, or option is
 unclear, **read the `@doc`/`@spec` on the relevant `Amarula.*` module (hexdocs) before
 calling it** rather than guessing.
@@ -46,6 +46,12 @@ starts it. Events go to `:parent_pid` (default: the caller).
 `:storage` and overrides). Only one connection per profile may run at a time —
 connecting an already-live profile returns `{:error, {:already_running, pid}}`; use
 `Amarula.whereis(profile)` to get the existing one.
+
+For a **fixed set of already-paired accounts known at boot**, start them in your own
+supervision tree with `Amarula.child_spec/1` — `{Amarula, profile: :sales, parent:
+MyRouter}` — instead of calling `connect/2` by hand. Pass `:parent` (a registered
+name) as the event sink. For an unbounded/dynamic set, use a `DynamicSupervisor` +
+`connect/2` instead.
 
 WhatsApp periodically bumps the Web protocol version and a stale one silently breaks
 pairing (the code/QR shows but the phone reports "Couldn't link device"). If that

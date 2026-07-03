@@ -57,11 +57,12 @@ end
   Amarula.new(%{profile: :me})
   |> Amarula.connect(parent_pid: self())
 
-# First run: you get a QR code. Scan it on your phone:
+# First run: you get a QR code. Print it and scan it on your phone:
 #   WhatsApp → Settings → Linked Devices → Link a device
 receive do
   {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
-    IO.puts(qr)   # render this as a QR code
+    {:ok, art} = Amarula.render_qr(qr)
+    IO.puts(art)
 end
 
 # Once linked you get an :open update — now you can send.
@@ -73,16 +74,47 @@ Amarula.send_text(conn, "5511999999999@s.whatsapp.net", "hello from Elixir!")
 ```
 
 `:profile` names this account's stored credentials, so the next run reconnects
-without a new QR. See `Amarula` (the public API) for the full set of send/receive
-functions.
+without a new QR. Prefer pairing from the shell? `mix amarula.pair my_profile`
+does the QR dance for you — see [Pairing](#pairing-with-a-phone-code).
+
+> **Credentials land in `./amarula_data/`** (override with `AMARULA_DATA_DIR` or
+> the `:storage` config), scoped per profile. That folder holds your account's
+> live Signal session keys — treat it like a secret: add `/amarula_data/` to your
+> app's `.gitignore` and keep it out of images and logs.
+
+### In your supervision tree
+
+For a **fixed, known-at-boot set of accounts**, start them declaratively with
+`Amarula.child_spec/1` instead of calling `connect/2` by hand — each `{Amarula, …}`
+child comes up (and is restarted) with your app:
+
+```elixir
+children = [
+  MyApp.WhatsAppRouter,                                  # your event sink (a named process)
+  {Amarula, profile: :sales,   parent: MyApp.WhatsAppRouter},
+  {Amarula, profile: :support, parent: MyApp.WhatsAppRouter}
+]
+
+Supervisor.start_link(children, strategy: :one_for_one)
+```
+
+`:parent` is the event sink (pass a **registered name** so it survives restarts);
+the rest is the `new/1` config. Each child gets a distinct id of `{Amarula, profile}`,
+so profiles coexist. This is for **already-paired** accounts (pair first with
+`mix amarula.pair`) — for an unbounded/dynamic set your users add at runtime, start
+connections under your own `DynamicSupervisor` with `connect/2`.
 
 ### The QR code
 
-`qr` is a plain string — you render it to a scannable image however you like
-(terminal art, a PNG, an HTML `<img>`). It's four comma-separated fields,
-`ref,noiseKeyB64,identityKeyB64,advSecretKeyB64`, where `ref` rotates every ~20s
-(each rotation emits a fresh `:connection_update` — re-render on each). Render it
-as-is; don't reformat. Example with [`qr_code`](https://hex.pm/packages/qr_code):
+`qr` is a plain string — four comma-separated fields
+(`ref,noiseKeyB64,identityKeyB64,advSecretKeyB64`), where `ref` rotates every
+~20s: each rotation emits a fresh `:connection_update`, so re-render on each.
+Render it as-is; don't reformat.
+
+For terminals, `Amarula.render_qr/1` (shown in the quick start) returns
+ready-to-print ASCII art. For a web app or anywhere a terminal won't do, render
+the same string to an image — e.g. with [`qr_code`](https://hex.pm/packages/qr_code),
+which Amarula already depends on:
 
 ```elixir
 {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
@@ -133,6 +165,109 @@ Credentials persist under `AMARULA_DATA_DIR` (default `./amarula_data`), scoped 
 the profile, so your app then connects with `Amarula.new(%{profile: :my_profile})`
 without re-pairing. (Inside the Amarula repo itself, `mix run examples/pair.exs
 <profile> [phone]` does the same for local development.)
+
+## Receiving & replying
+
+In a real app the event sink is a GenServer: connect with `parent_pid: self()`
+in `init/1`, and every event arrives in `handle_info/2`. Incoming messages are
+`%Amarula.Msg{}` structs — a `type` and a friendly `content`, never the raw
+protobuf — and `msg.channel` is the address you reply to (works for 1:1 and
+groups alike):
+
+```elixir
+defmodule MyApp.WhatsApp do
+  use GenServer
+
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+
+  @impl true
+  def init(opts) do
+    {:ok, conn} =
+      Amarula.new(%{profile: Keyword.fetch!(opts, :profile)})
+      |> Amarula.connect(parent_pid: self())
+
+    {:ok, %{conn: conn}}
+  end
+
+  @impl true
+  def handle_info({:amarula, :messages_upsert, %{messages: msgs}}, state) do
+    for %Amarula.Msg{from_me: false, type: :text, content: text, channel: chan} <- msgs do
+      Amarula.send_text(state.conn, chan, "echo: " <> text)
+    end
+
+    {:noreply, state}
+  end
+
+  # Everything else (:connection_update, :receipt_update, ...) — take what you need.
+  def handle_info({:amarula, _type, _data}, state), do: {:noreply, state}
+end
+```
+
+A fuller version of this GenServer — QR printing, polls, plugins, auto-read —
+is [`examples/connection.ex`](https://github.com/tubedude/amarula/blob/main/examples/connection.ex),
+ready to copy into your app.
+
+### Media
+
+`send_media/5` takes the raw file bytes (Amarula encrypts and uploads them);
+inbound media messages carry only pointers, so call `download_media/1` to fetch
+and decrypt the bytes:
+
+```elixir
+# Send: type is :image | :video | :audio | :document | :sticker
+Amarula.send_media(conn, jid, :image, File.read!("photo.jpg"), caption: "hi")
+
+# Receive: a %Msg{type: :media} arrives in :messages_upsert
+{:ok, bytes} = Amarula.download_media(msg)
+File.write!(msg.content.file_name || "received.jpg", bytes)
+```
+
+One gotcha: for `:audio`, pass `seconds:` (the clip duration) — Amarula does no
+media processing, and iPhone recipients may fail to play longer clips without it.
+
+### Reactions & replies
+
+The send functions that target an existing message take the received `%Msg{}`
+directly:
+
+```elixir
+Amarula.send_reaction(conn, msg, "👍")                       # "" removes it
+Amarula.send_text(conn, msg.channel, "got it", quoted: msg)  # quoted reply
+```
+
+### Groups
+
+Group operations live on `Amarula.Group`; a group is just another send target:
+
+```elixir
+{:ok, group} = Amarula.Group.create(conn, "Team", ["5511999999999@s.whatsapp.net"])
+Amarula.send_text(conn, group.address, "welcome!")
+
+group_jid = Amarula.Address.to_jid!(group.address)
+{:ok, code} = Amarula.Group.invite_code(conn, group_jid)
+# → share https://chat.whatsapp.com/<code>
+```
+
+`Amarula.Contacts` (is this number on WhatsApp? LID↔PN resolution) and
+`Amarula.Profile` (picture, status) follow the same pattern.
+
+## Test your bot offline
+
+`Amarula.Testing` starts a sandbox connection — no WhatsApp, no network — and
+feeds synthetic messages through the **real** receive pipeline, so the `%Msg{}`
+your bot sees is exactly what production would deliver. Sends short-circuit to
+`{:ok, msg_id}`:
+
+```elixir
+test "replies pong to ping" do
+  {:ok, conn} = Amarula.Testing.start_offline(profile: :test_pong)
+
+  Amarula.Testing.deliver_text(conn, from: "15551234567@s.whatsapp.net", text: "ping")
+
+  assert_receive {:amarula, :messages_upsert, %{messages: [%Amarula.Msg{content: "ping"}]}}
+  # ... drive your handler, assert on its reply
+end
+```
 
 ## Events & connection flow
 
@@ -234,10 +369,6 @@ two `Task`s), you may get the **second** one's result *before* the first's — e
 returns when its own send finishes, not in call order. Within a single sequential
 caller it still looks plain synchronous; the concurrency only shows when you
 actually send in parallel.
-
-It's a bar counter: you place your order and step aside (the counter takes the
-next order); your drink is made in parallel; you're called back when *yours* is
-ready — fast orders come out first.
 
 ```mermaid
 sequenceDiagram
@@ -359,7 +490,7 @@ When the WhatsApp protocol definitions in `proto/wa_proto.proto` change,
 recompile them:
 
 ```bash
-protoc --elixir_opt=package_prefix=Amarula.Protocol:lib proto/wa_proto.proto
+protoc -I proto --elixir_out=package_prefix=amarula.protocol:lib/amarula/protocol/proto wa_proto.proto
 ```
 
 This regenerates `lib/amarula/protocol/proto/wa_proto.pb.ex` under the

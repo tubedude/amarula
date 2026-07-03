@@ -21,12 +21,12 @@ defmodule Amarula.Protocol.Signal.Group.SenderChainKeyTest do
     end
   end
 
-  describe "get_seed/1" do
-    test "returns the seed" do
+  describe "seed" do
+    test "keeps the seed on the struct" do
       seed = :crypto.strong_rand_bytes(32)
       chain_key = SenderChainKey.new(1, seed)
 
-      assert SenderChainKey.get_seed(chain_key) == seed
+      assert chain_key.seed == seed
     end
   end
 

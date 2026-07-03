@@ -33,8 +33,10 @@ defmodule Amarula do
 
   `:profile` names this account's stored credentials, so the next run reconnects
   without a new QR. `Amarula.new/1` fills in all protocol defaults; you usually
-  pass only `:profile`. For a ready-made supervised wrapper, see
-  `Amarula.Examples.Connection`.
+  pass only `:profile`. To run under a supervisor, see `child_spec/1`
+  (`{Amarula, profile: ...}`); for a full GenServer wrapper, see the
+  [examples on GitHub](https://github.com/tubedude/amarula/tree/main/examples)
+  (not part of the hex package).
 
   ## Testing your bot
 
@@ -44,12 +46,13 @@ defmodule Amarula do
 
   ## The QR code
 
-  The `qr` in a `:connection_update` is a plain string — *you* turn it into a
-  scannable image, with whatever you like (a terminal renderer, a `qr_code`
-  PNG, an HTML `<img>`, …). There is no built-in renderer and no login-phase
-  plugin hook: rendering is entirely the consumer's, via this event. (The
-  handshake/pairing crypto is deliberately closed to plugins — the send/receive
-  pipelines run only *after* a message is decrypted.)
+  The `qr` in a `:connection_update` is a plain string — you turn it into a
+  scannable image. For terminals, `render_qr/1` returns ready-to-print ASCII
+  art; for anything else (a PNG, an HTML `<img>`, …) render the string with a
+  QR library of your choice. Rendering happens on the consumer side, via this
+  event — there is no login-phase plugin hook (the handshake/pairing crypto is
+  deliberately closed to plugins; the send/receive pipelines run only *after*
+  a message is decrypted).
 
   The string is four comma-separated fields:
 
@@ -337,6 +340,53 @@ defmodule Amarula do
   end
 
   @doc """
+  A child specification, so a **fixed, known-at-boot set of profiles** can be
+  started declaratively in your own supervision tree instead of calling
+  `connect/2` by hand:
+
+      children = [
+        MyApp.WhatsAppRouter,                                  # your event sink (a named process)
+        {Amarula, profile: :sales,   parent: MyApp.WhatsAppRouter},
+        {Amarula, profile: :support, parent: MyApp.WhatsAppRouter}
+      ]
+
+      Supervisor.start_link(children, strategy: :one_for_one)
+
+  The argument is a keyword list (or map): the `new/1` config, plus `:parent` —
+  the event sink (a **registered name**, so it survives restarts; see `connect/2`).
+  Each child gets a distinct `id` of `{Amarula, profile}`, so several profiles
+  coexist under one supervisor.
+
+  This is for the **static** set of accounts you know at boot; they should already
+  be **paired** (a supervised connection has no one to scan a QR — pair first with
+  `mix amarula.pair`). For an **unbounded/dynamic** set (profiles your users add at
+  runtime), start connections under your own `DynamicSupervisor` with `connect/2`
+  instead.
+
+  Notes:
+    * The connection is supervised in Amarula's own tree; this child is a small
+      owner that survives the socket's internal restarts and re-adopts it, so your
+      supervisor doesn't see spurious restarts. See `Amarula.SupervisedConnection`.
+    * An already-running profile is adopted (not an error), so a restart is safe.
+    * To stop such a connection, remove the child from your supervisor (that tears
+      the connection down); calling `stop/1` directly would just have your
+      supervisor restart it.
+  """
+  @spec child_spec(keyword() | map()) :: Supervisor.child_spec()
+  def child_spec(arg) do
+    config = if is_list(arg), do: Map.new(arg), else: arg
+    profile = Map.fetch!(config, :profile)
+
+    %{
+      id: {__MODULE__, profile},
+      start: {Amarula.SupervisedConnection, :start_link, [config]},
+      type: :worker,
+      restart: :permanent,
+      shutdown: 10_000
+    }
+  end
+
+  @doc """
   Re-attach the consumer event sink of a live connection to `sink` without
   bouncing the websocket — the recovery path when the process that called
   `connect/2` restarts while the connection survives in the registry.
@@ -580,6 +630,21 @@ defmodule Amarula do
     digits = String.replace(phone, ~r/\D/, "")
     GenServer.call(conn, {:request_pairing_code, digits, Keyword.get(opts, :custom_code)})
   end
+
+  @doc """
+  Render the `qr` string from a `:connection_update` as terminal-printable ASCII
+  art (bordered, scannable at normal font sizes). `IO.puts/1` the result.
+
+      {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
+        {:ok, art} = Amarula.render_qr(qr)
+        IO.puts(art)
+
+  For a PNG or web display, render the string yourself (see "The QR code" above).
+  """
+  @spec render_qr(String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  defdelegate render_qr(qr_string),
+    to: Amarula.Protocol.Auth.QRCodeGenerator,
+    as: :render_terminal
 
   @doc """
   Send a read receipt for `message_ids` in chat `jid` (pass `participant` for a

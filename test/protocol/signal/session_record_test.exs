@@ -42,11 +42,9 @@ defmodule Amarula.Protocol.Signal.SessionRecordTest do
     record = SR.new() |> SR.set_session(closed) |> SR.set_session(open)
 
     assert SR.get_open_session(record).index_info.base_key == <<1>>
-    assert SR.have_open_session?(record)
 
     record2 = SR.close_session(record, open)
     assert SR.get_open_session(record2) == nil
-    refute SR.have_open_session?(record2)
   end
 
   test "get_sessions orders most-recently-used first" do

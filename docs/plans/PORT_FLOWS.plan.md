@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Effort C — chat & group discovery (scope)
 
 Goal: let a consumer find out which chats/groups exist and reference them (by

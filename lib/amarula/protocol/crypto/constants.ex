@@ -15,9 +15,6 @@ defmodule Amarula.Protocol.Crypto.Constants do
   # WhatsApp Noise header: "WA" + version + dict_version
   @noise_wa_header <<87, 65, 6, @dict_version>>
 
-  # WhatsApp certificate details
-  @wa_cert_details %{serial: 0, issuer: "WhatsApp"}
-
   # Key bundle type prefix for Curve25519 keys
   @key_bundle_type <<5>>
 
@@ -43,15 +40,11 @@ defmodule Amarula.Protocol.Crypto.Constants do
   # HKDF output length for key derivation
   @hkdf_output_length 64
 
-  # Maximum frame size (3 bytes for length header)
-  @max_frame_size 0xFFFFFF
-
   # Exported constants for external use
 
   def noise_mode, do: @noise_mode
   def dict_version, do: @dict_version
   def noise_wa_header, do: @noise_wa_header
-  def wa_cert_details, do: @wa_cert_details
   def key_bundle_type, do: @key_bundle_type
   def wa_adv_account_sig_prefix, do: @wa_adv_account_sig_prefix
   def wa_adv_device_sig_prefix, do: @wa_adv_device_sig_prefix
@@ -62,5 +55,4 @@ defmodule Amarula.Protocol.Crypto.Constants do
   def default_origin, do: @default_origin
   def gcm_tag_length, do: @gcm_tag_length
   def hkdf_output_length, do: @hkdf_output_length
-  def max_frame_size, do: @max_frame_size
 end

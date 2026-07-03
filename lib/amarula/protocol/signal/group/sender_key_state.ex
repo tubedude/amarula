@@ -102,18 +102,4 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyState do
       [] -> {nil, state}
     end
   end
-
-  @doc """
-  Checks if the state is valid.
-  """
-  @spec valid?(t()) :: boolean()
-  def valid?(%__MODULE__{
-        sender_key_id: id,
-        sender_chain_key: chain_key,
-        sender_signing_key: signing_key
-      }) do
-    id >= 0 and
-      SenderChainKey.valid?(chain_key) and
-      byte_size(signing_key.public) > 0
-  end
 end

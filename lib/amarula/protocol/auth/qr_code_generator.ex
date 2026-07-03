@@ -81,63 +81,12 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
   end
 
   @doc """
-  Formats a QR code for display (e.g., in terminal or UI).
-  """
-  @spec format_qr_for_display(String.t()) :: String.t()
-  def format_qr_for_display(qr_string) do
-    """
-    ╔══════════════════════════════════════════════════════════════╗
-    ║                    WhatsApp QR Code                         ║
-    ╠══════════════════════════════════════════════════════════════╣
-    ║                                                              ║
-    ║  #{String.pad_trailing(qr_string, 60)}  ║
-    ║                                                              ║
-    ║  Scan this QR code with your phone to connect               ║
-    ║                                                              ║
-    ╚══════════════════════════════════════════════════════════════╝
-    """
-  end
-
-  @doc """
-  Extracts the reference from a QR code string.
-  """
-  @spec extract_ref(String.t()) :: {:ok, String.t()} | {:error, String.t()}
-  def extract_ref(qr_string) do
-    case parse_qr_string(qr_string) do
-      {:ok, {ref, _, _, _}} -> {:ok, ref}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @doc """
-  Extracts the noise key from a QR code string.
-  """
-  @spec extract_noise_key(String.t()) :: {:ok, String.t()} | {:error, String.t()}
-  def extract_noise_key(qr_string) do
-    case parse_qr_string(qr_string) do
-      {:ok, {_, noise_key_b64, _, _}} -> {:ok, noise_key_b64}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @doc """
   Extracts the identity key from a QR code string.
   """
   @spec extract_identity_key(String.t()) :: {:ok, String.t()} | {:error, String.t()}
   def extract_identity_key(qr_string) do
     case parse_qr_string(qr_string) do
       {:ok, {_, _, identity_key_b64, _}} -> {:ok, identity_key_b64}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @doc """
-  Extracts the advertisement secret key from a QR code string.
-  """
-  @spec extract_adv_secret_key(String.t()) :: {:ok, String.t()} | {:error, String.t()}
-  def extract_adv_secret_key(qr_string) do
-    case parse_qr_string(qr_string) do
-      {:ok, {_, _, _, adv_secret_key_b64}} -> {:ok, adv_secret_key_b64}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -262,23 +211,5 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
       {:error, reason} ->
         {:error, reason}
     end
-  end
-
-  @doc """
-  Convenience function that generates a QR string and renders it as terminal output.
-
-  Takes authentication components and returns a formatted ASCII QR code.
-  """
-  @spec generate_and_render(String.t(), String.t(), String.t(), String.t()) ::
-          {:ok, String.t()} | {:error, String.t()}
-  def generate_and_render(ref, noise_key_b64, identity_key_b64, adv_b64) do
-    # Handle nil values by converting to empty strings
-    safe_ref = ref || ""
-    safe_noise = noise_key_b64 || ""
-    safe_identity = identity_key_b64 || ""
-    safe_adv = adv_b64 || ""
-
-    qr_string = generate_qr_string(safe_ref, safe_noise, safe_identity, safe_adv)
-    render_terminal(qr_string)
   end
 end

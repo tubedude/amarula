@@ -311,31 +311,32 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     {media?, media_kind, bytes} = media_stats(message)
 
     # Telemetry span around the whole send. :stop carries duration + byte size +
-    # media kind; :exception carries the failing stage. (Privacy: counts/kinds
-    # only — no jid/content.)
+    # media kind + the outcome (result/error_stage/error_reason), so an operator
+    # can compute a send error rate off the one event. (Privacy: counts/kinds/
+    # stage atoms only — no jid/content.)
     Amarula.Telemetry.span(
       [:amarula, :send],
       profile,
       %{kind: kind, media?: media?, media_kind: media_kind},
-      fn -> {run_pipe(ctx, msg_id, jid, profile), %{bytes: bytes}} end
+      fn ->
+        {result, outcome} = run_pipe(ctx, msg_id, jid)
+        {result, %{bytes: bytes}, outcome}
+      end
     )
   end
 
   # Each stage returns {:ok, ctx} or {:error, {stage, reason}}; `with` threads the
   # happy path and stops at the first failure. A recoverable failure (e.g. a
   # timed-out IQ, an unreachable recipient) is logged and returned; unexpected
-  # errors still crash the (disposable) process.
-  defp run_pipe(ctx, msg_id, jid, profile) do
+  # errors still crash the (disposable) process. Returns `{result, outcome}` —
+  # the pipe result plus the JID-free outcome metadata for the send :stop event.
+  defp run_pipe(ctx, msg_id, jid) do
     with {:ok, ctx} <- resolve_devices(ctx),
          {:ok, ctx} <- ensure_sessions(ctx),
          {:ok, ctx} <- encrypt(ctx),
          :ok <- relay(ctx) do
-      :ok
+      {:ok, %{result: :ok, error_stage: nil, error_reason: nil}}
     else
-      {:error, {:resolve_devices, :not_on_whatsapp} = stage_reason} ->
-        Amarula.Telemetry.emit([:amarula, :send, :not_on_whatsapp], profile)
-        log_drop(msg_id, jid, stage_reason)
-
       {:error, {_stage, _reason} = stage_reason} ->
         log_drop(msg_id, jid, stage_reason)
     end
@@ -343,8 +344,14 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   defp log_drop(msg_id, jid, {stage, reason}) do
     Logger.error("Send #{msg_id} to #{jid} dropped at #{stage}: #{inspect(reason)}")
-    {:error, reason}
+    {{:error, reason}, %{result: :error, error_stage: stage, error_reason: reason_tag(reason)}}
   end
+
+  # The telemetry-safe reason: only a bounded atom (e.g. :not_on_whatsapp,
+  # :timeout) may enter the payload — a non-atom reason (an error node, a tuple)
+  # could embed a jid, so it is dropped and the stage atom carries the signal.
+  defp reason_tag(reason) when is_atom(reason), do: reason
+  defp reason_tag(_reason), do: nil
 
   # Byte size + media kind of an outgoing message, for telemetry. Media protos
   # carry fileLength; text/other report 0 bytes and media? = false.

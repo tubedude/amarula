@@ -104,14 +104,6 @@ defmodule Amarula.Protocol.Signal.SessionRecord do
     |> Enum.find(fn s -> not closed?(s) end)
   end
 
-  @spec have_open_session?(t()) :: boolean()
-  def have_open_session?(record) do
-    case get_open_session(record) do
-      %{registration_id: rid} when is_integer(rid) -> true
-      _ -> false
-    end
-  end
-
   @doc "Store/replace a session, keyed by its index_info.base_key."
   @spec set_session(t(), map()) :: t()
   def set_session(record, session) do

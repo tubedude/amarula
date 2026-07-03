@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Backlog: media retry (re-upload on expired/missing blob)
 
 **Status:** not implemented. Backlog item with a feasibility study (below).

@@ -1,8 +1,27 @@
 # TELEMETRY plan — `:telemetry` instrumentation for Amarula
 
-Status: **plan only**. No instrumentation has been written. This document defines
-*what* to emit, *where*, and *in what order of value*. Implementation is a
-follow-up.
+Status: **implemented** — see `Amarula.Telemetry` (`lib/amarula/telemetry.ex`) for
+the events that ship. This document remains the design rationale and lists the
+deferred items (`Amarula.Telemetry`'s moduledoc points here for those).
+
+Outcome instrumentation shipped since the initial implementation (the shipped
+shapes are authoritative in `Amarula.Telemetry`'s moduledoc):
+
+- `[:amarula, :send, :stop]` now carries the outcome in metadata
+  (`result: :ok | :error`, `error_stage`, `error_reason`) instead of a separate
+  `:send, :exception` per pipe failure — one event, tag by `result`.
+- `[:amarula, :send, :ack]` — the post-relay server verdict
+  (`:ok | :rejected | :timeout | :sender_crashed`, + rejection `code`); the send
+  span closes at relay time, so this covers what the span cannot.
+- `[:amarula, :iq, :timeout]` — an interim counter (with the tracked `kind` when
+  known); the full IQ round-trip span below remains **deferred**.
+
+Trimmed since the initial implementation (redundant with events above):
+`[:amarula, :send, :not_on_whatsapp]` (tag `send :stop` by
+`error_reason: :not_on_whatsapp` instead — the note below is superseded),
+`[:amarula, :stream_error, :restart]` (`stream_error :received` fires for every
+stream error; its `code` identifies the 515 restart), and
+`[:amarula, :prekey, :upload]` (diagnostic-log material, not a metric).
 
 ## Goal
 

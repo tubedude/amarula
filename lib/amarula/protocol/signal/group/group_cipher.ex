@@ -106,7 +106,7 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipher do
   @spec decrypt_with_record(SenderKeyRecord.t(), map(), SenderKeyName.t(), binary()) ::
           {:ok, binary()} | {:error, String.t()}
   defp decrypt_with_record(record, sender_key_store, sender_key_name, encrypted_message) do
-    with {:ok, sender_key_message} <- SenderKeyMessage.from_serialized(encrypted_message),
+    with {:ok, sender_key_message} <- parse_sender_key_message(encrypted_message),
          {:ok, sender_key_state} <-
            SenderKeyRecord.get_sender_key_state(
              record,
@@ -127,12 +127,16 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipher do
              SenderKeyRecord.update_sender_key_state(record, updated_state)
            ) do
       {:ok, plaintext}
-    else
-      {:error, reason} when is_binary(reason) ->
-        {:error, "Failed to parse sender key message: #{reason}"}
+    end
+  end
 
-      {:error, reason} ->
-        {:error, reason}
+  # Only deserialization failures get the parse-error label; later steps
+  # (signature check, counter, padding) keep their own reasons.
+  @spec parse_sender_key_message(binary()) :: {:ok, SenderKeyMessage.t()} | {:error, String.t()}
+  defp parse_sender_key_message(encrypted_message) do
+    case SenderKeyMessage.from_serialized(encrypted_message) do
+      {:ok, sender_key_message} -> {:ok, sender_key_message}
+      {:error, reason} -> {:error, "Failed to parse sender key message: #{reason}"}
     end
   end
 

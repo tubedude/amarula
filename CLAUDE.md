@@ -23,7 +23,7 @@ mix format
 mix test
 
 # Run specific test file
-mix test test/protocol/auth/session_manager_test.exs
+mix test test/protocol/auth/qr_code_generator_test.exs
 
 # Run tests with coverage
 mix test --cover
@@ -42,14 +42,14 @@ iex -S mix
 iex> {:ok, _} = Amarula.Examples.Connection.start_link(name: :wa)   # scan the QR
 iex> Amarula.Examples.Connection.send_text(:wa, "<number>@s.whatsapp.net", "hi")
 
-# Send one message, then exit (needs an already-paired ./amarula_auth)
+# Send one message, then exit (needs an already-paired ./amarula_data)
 mix run examples/send_message.exs "<number>" "hello"
 ```
 
 ### Protocol Buffer Compilation
 ```bash
-# Compile proto files (when updated)
-protoc --elixir_out=lib/amarula/protocol/proto proto/*.proto
+# Regenerate lib/amarula/protocol/proto/wa_proto.pb.ex when proto/wa_proto.proto changes
+protoc -I proto --elixir_out=package_prefix=amarula.protocol:lib/amarula/protocol/proto wa_proto.proto
 ```
 
 ## Architecture
@@ -202,12 +202,11 @@ After handshake completion, all messages are encrypted/decrypted using derived k
 
 The `Encoder`/`Decoder` handle this serialization, using dictionary-based token compression for common strings.
 
-**Event-Driven Architecture**: Instead of polling, the system emits events that applications subscribe to:
-- `:qr` - New QR code generated
-- `:connection_update` - Connection state changed
-- `:messages_upsert` - New messages received
-- `:message_reaction` - Reaction added/removed
-- `:error` - Error occurred
+**Event-Driven Architecture**: Instead of polling, the system delivers events to the
+consumer's `parent_pid` as `{:amarula, type, data}` messages — e.g. `:connection_update`
+(carries the `qr` string during pairing), `:messages_upsert`, `:receipt_update`,
+`:group_update`. The authoritative list is `t:Amarula.event/0` in `lib/amarula.ex` —
+don't maintain a copy here.
 
 **Credential Management**: Credentials include:
 - `noise_key`: Curve25519 keypair for Noise Protocol
@@ -216,7 +215,8 @@ The `Encoder`/`Decoder` handle this serialization, using dictionary-based token 
 - `registration_id`: Unique device registration ID
 - `adv_secret_key`: Advanced encryption secret
 
-These are managed by `SessionManager` and persisted via `KeyStoreBehaviour` implementations.
+They are persisted by `Amarula.Connection` through the `Amarula.Storage` seam
+(`:creds`/`:self` namespaces), scoped to the connection's `:profile`.
 
 ## Testing
 
@@ -244,35 +244,13 @@ mix test test/protocol/crypto/
 mix test test/protocol/messages/
 
 # Single test with line number
-mix test test/protocol/auth/session_manager_test.exs:42
+mix test test/protocol/auth/qr_code_generator_test.exs:42
 ```
 
-## Elixir-Specific Guidelines
+## Elixir Guidelines
 
-**List Access**: Elixir lists do NOT support index-based access via `list[i]`. Use `Enum.at(list, i)` or pattern matching.
-
-**Variable Rebinding in Blocks**: Variables are immutable but can be rebound. For `if`/`case`/`cond`, bind the result:
-```elixir
-# WRONG
-if condition do
-  socket = update_socket(socket)
-end
-
-# CORRECT
-socket = if condition do
-  update_socket(socket)
-else
-  socket
-end
-```
-
-**Avoid Nested `if`**: Use `cond` or `case` with pattern matching for multiple conditions.
-
-**Struct Access**: Never use bracket syntax `struct[:field]` on structs. Use dot notation `struct.field` or module functions.
-
-**Pattern Matching Order**: Order patterns from most specific to least specific to avoid unreachable code warnings.
-
-**Error Handling**: Prefer `{:ok, result}` / `{:error, reason}` tuples with pattern matching over exceptions. Use `!` versions (`File.read!/1`) only when failure should crash.
+See `AGENTS.md` — the comprehensive Elixir coding guidelines for this project
+(list access, rebinding, pattern-matching order, error-tuple conventions, etc.).
 
 ## Key Files to Reference
 
@@ -285,11 +263,10 @@ end
 
 ## Protocol Buffer Usage
 
-Protocol Buffers are compiled from `.proto` files in the `proto/` directory:
-- `wa_proto.proto` - Full WhatsApp protocol definitions
-- `wa_minimal.proto` - Minimal subset for basic operations
-
-Generated modules are in `lib/amarula/protocol/proto/proto/`. These provide `encode/1` and `decode/1` functions for message serialization.
+Protocol Buffers are compiled from `proto/wa_proto.proto` (the full WhatsApp protocol
+definitions). The generated module is `lib/amarula/protocol/proto/wa_proto.pb.ex`
+(`Amarula.Protocol.Proto.*`), providing `encode/1` and `decode/1` for message
+serialization. Regeneration command: see "Protocol Buffer Compilation" above.
 
 ## WhatsApp Version
 

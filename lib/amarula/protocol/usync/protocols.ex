@@ -113,7 +113,7 @@ defmodule Amarula.Protocol.USync.Protocols do
 
   defp parse_key_index(_), do: nil
 
-  # status → %{status: string | nil, set_at: DateTime}
+  # status → %{status: string | nil, set_at: DateTime | nil}
   defp parse_status(node) do
     raw = status_content(node)
     code = node |> NodeUtils.get_attr("code") |> to_int_or_nil()
@@ -125,11 +125,12 @@ defmodule Amarula.Protocol.USync.Protocols do
         true -> nil
       end
 
+    # A missing `t` means "unknown", not the Unix epoch.
     set_at =
-      node
-      |> NodeUtils.get_attr("t")
-      |> to_int()
-      |> DateTime.from_unix!()
+      case node |> NodeUtils.get_attr("t") |> to_int_or_nil() do
+        nil -> nil
+        unix -> DateTime.from_unix!(unix)
+      end
 
     %{status: status, set_at: set_at}
   end

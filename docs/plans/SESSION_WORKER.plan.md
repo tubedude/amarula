@@ -1,3 +1,5 @@
+> **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+
 # Plan: per-peer SessionWorker — close the ratchet fork (all-async)
 
 Status: PROPOSED (planning only, no code yet). Target: 0.2.5.

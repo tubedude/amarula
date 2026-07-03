@@ -46,7 +46,7 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipherTest do
     # axolotlSenderKeyDistributionMessage.
     item = %{
       groupId: name.group_id,
-      axolotlSenderKeyDistributionMessage: SenderKeyDistributionMessage.get_serialized(skdm)
+      axolotlSenderKeyDistributionMessage: skdm.serialized
     }
 
     recv_builder = GroupSessionBuilder.new(receiver_store)
@@ -160,7 +160,18 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipherTest do
       <<head::binary-size(^head_len), last>> = ct
       tampered = <<head::binary, bxor(last, 1)>>
 
-      assert {:error, _} = GroupCipher.decrypt(receiver_store, name, tampered)
+      # The failure is a signature failure — it must NOT be relabeled as a
+      # parse error (only from_serialized failures get that label).
+      assert {:error, reason} = GroupCipher.decrypt(receiver_store, name, tampered)
+      assert reason == "Invalid signature"
+    end
+
+    test "an unparseable blob reports a parse error", %{dir: dir, name: name} do
+      {_sender_store, receiver_store} = paired_stores(dir, name)
+
+      # Too short to be [version][protobuf][64-byte signature]
+      assert {:error, reason} = GroupCipher.decrypt(receiver_store, name, <<1, 2, 3>>)
+      assert reason =~ "Failed to parse sender key message"
     end
   end
 
@@ -191,7 +202,7 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipherTest do
           "#{name.sender.id}@s.whatsapp.net"
         )
 
-      serialized = SenderKeyDistributionMessage.get_serialized(skdm)
+      serialized = skdm.serialized
       assert <<0x33, body::binary>> = serialized
 
       decoded = Amarula.Protocol.Proto.SenderKeyDistributionMessage.decode(body)

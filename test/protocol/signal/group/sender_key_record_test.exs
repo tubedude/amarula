@@ -7,28 +7,7 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyRecordTest do
       record = SenderKeyRecord.new()
 
       assert SenderKeyRecord.empty?(record)
-      assert SenderKeyRecord.state_count(record) == 0
-    end
-  end
-
-  describe "from_serialized/1" do
-    test "creates record from serialized data" do
-      serialized_data = [
-        %{
-          sender_key_id: 1,
-          sender_chain_key: %{iteration: 5, seed: :crypto.strong_rand_bytes(32)},
-          sender_signing_key: %{
-            public: :crypto.strong_rand_bytes(32),
-            private: :crypto.strong_rand_bytes(32)
-          },
-          sender_message_keys: []
-        }
-      ]
-
-      record = SenderKeyRecord.from_serialized(serialized_data)
-
-      refute SenderKeyRecord.empty?(record)
-      assert SenderKeyRecord.state_count(record) == 1
+      assert record.sender_key_states == []
     end
   end
 
@@ -39,7 +18,7 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyRecordTest do
 
       updated_record = SenderKeyRecord.add_sender_key_state(record, state)
 
-      assert SenderKeyRecord.state_count(updated_record) == 1
+      assert length(updated_record.sender_key_states) == 1
       refute SenderKeyRecord.empty?(updated_record)
     end
 
@@ -53,7 +32,7 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyRecordTest do
           SenderKeyRecord.add_sender_key_state(acc, state)
         end)
 
-      assert SenderKeyRecord.state_count(updated_record) == 5
+      assert length(updated_record.sender_key_states) == 5
     end
   end
 
@@ -120,60 +99,6 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyRecordTest do
       record = SenderKeyRecord.add_sender_key_state(record, state)
 
       refute SenderKeyRecord.empty?(record)
-    end
-  end
-
-  describe "state_count/1" do
-    test "returns correct count" do
-      record = SenderKeyRecord.new()
-      assert SenderKeyRecord.state_count(record) == 0
-
-      state1 = create_test_state(1)
-      record = SenderKeyRecord.add_sender_key_state(record, state1)
-      assert SenderKeyRecord.state_count(record) == 1
-
-      state2 = create_test_state(2)
-      record = SenderKeyRecord.add_sender_key_state(record, state2)
-      assert SenderKeyRecord.state_count(record) == 2
-    end
-  end
-
-  describe "serialize/1" do
-    test "serializes record to list of maps" do
-      record = SenderKeyRecord.new()
-      state = create_test_state(1)
-      record = SenderKeyRecord.add_sender_key_state(record, state)
-
-      serialized = SenderKeyRecord.serialize(record)
-
-      assert is_list(serialized)
-      assert length(serialized) == 1
-
-      [serialized_state] = serialized
-      assert serialized_state.sender_key_id == 1
-      assert is_map(serialized_state.sender_chain_key)
-      assert is_map(serialized_state.sender_signing_key)
-      assert is_list(serialized_state.sender_message_keys)
-    end
-  end
-
-  describe "round-trip serialization" do
-    test "serialize and from_serialized are inverse operations" do
-      record = SenderKeyRecord.new()
-      state1 = create_test_state(1)
-      state2 = create_test_state(2)
-
-      original_record =
-        record
-        |> SenderKeyRecord.add_sender_key_state(state1)
-        |> SenderKeyRecord.add_sender_key_state(state2)
-
-      serialized = SenderKeyRecord.serialize(original_record)
-      reconstructed_record = SenderKeyRecord.from_serialized(serialized)
-
-      assert SenderKeyRecord.state_count(reconstructed_record) == 2
-      assert {:ok, _} = SenderKeyRecord.get_sender_key_state(reconstructed_record, 1)
-      assert {:ok, _} = SenderKeyRecord.get_sender_key_state(reconstructed_record, 2)
     end
   end
 

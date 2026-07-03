@@ -157,6 +157,11 @@ defmodule Amarula.SupervisedConnectionTest do
       # Tear the WHOLE tree down (not just the Connection): nothing re-registers.
       :ok = Amarula.stop(profile)
 
+      # The registry unregisters asynchronously — under load whereis/1 can still
+      # return the dead pid for a moment. Wait for the stale entry to clear so the
+      # refute below can only trip on a genuinely NEW registration.
+      assert eventually(fn -> is_nil(Amarula.whereis(profile)) end)
+
       # During the poll window the owner waits rather than immediately starting a
       # competing fresh tree.
       refute eventually(fn -> is_pid(Amarula.whereis(profile)) end, 5)

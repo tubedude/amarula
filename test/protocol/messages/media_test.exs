@@ -86,7 +86,7 @@ defmodule Amarula.Protocol.Messages.MediaTest do
     test "a corrupt blob fails the MAC check" do
       data = :crypto.strong_rand_bytes(200)
       {:ok, e} = Media.encrypt(data, :image)
-      corrupt = :binary.part(e.enc, 0, byte_size(e.enc) - 1) <> <<0>>
+      corrupt = :binary.part(e.enc, 0, byte_size(e.enc) - 1) <> <<:binary.last(e.enc) + 1>>
 
       Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, corrupt) end)
 

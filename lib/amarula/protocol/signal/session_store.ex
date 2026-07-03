@@ -17,6 +17,7 @@ defmodule Amarula.Protocol.Signal.SessionStore do
   """
 
   alias Amarula.Conn
+  alias Amarula.Protocol.Signal.SessionRecord
   alias Amarula.Storage
 
   @doc """
@@ -65,9 +66,15 @@ defmodule Amarula.Protocol.Signal.SessionStore do
     Storage.fetch(scope, profile, :session, addr)
   end
 
-  @doc "Persist a SessionRecord for `addr` on `conn`."
+  @doc """
+  Persist a SessionRecord for `addr` on `conn`.
+
+  Prunes oldest closed sessions past the cap first (libsignal's storeRecord:
+  `removeOldSessions()` right before `storage.storeSession`), so a persisted
+  record never grows unboundedly.
+  """
   @spec store_session(Conn.t(), String.t(), map()) :: :ok | {:error, term()}
   def store_session(%Conn{storage: scope, profile: profile}, addr, record) do
-    Storage.put(scope, profile, :session, addr, record)
+    Storage.put(scope, profile, :session, addr, SessionRecord.remove_old_sessions(record))
   end
 end

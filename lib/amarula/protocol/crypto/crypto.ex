@@ -6,7 +6,6 @@ defmodule Amarula.Protocol.Crypto.Crypto do
   SHA256 hashing, HKDF key derivation, and HMAC signing required by the Noise protocol.
   """
 
-  require Logger
   alias Amarula.Protocol.Crypto.{Constants, XEdDSA}
 
   @type key_pair :: %{
@@ -240,7 +239,9 @@ defmodule Amarula.Protocol.Crypto.Crypto do
   Generates a Signal Protocol public key by prefixing with key bundle type if needed.
 
   Signal Protocol expects public keys to be 33 bytes (1 byte type + 32 bytes key).
-  If the key is already 33 bytes, return as-is. Otherwise, prefix with KEY_BUNDLE_TYPE.
+  If the key is already 33 bytes, return as-is; a raw 32-byte key is prefixed with
+  KEY_BUNDLE_TYPE. Any other size is a caller bug — no clause matches and it
+  raises, instead of emitting a silently-wrong key.
 
   This matches Baileys: `pubKey.length === 33 ? pubKey : Buffer.concat([KEY_BUNDLE_TYPE, pubKey])`
   """
@@ -251,17 +252,6 @@ defmodule Amarula.Protocol.Crypto.Crypto do
 
   def generate_signal_pub_key(pub_key) when byte_size(pub_key) == 32 do
     Constants.key_bundle_type() <> pub_key
-  end
-
-  def generate_signal_pub_key(pub_key) do
-    # Handle unexpected sizes - log warning but try to proceed
-    Logger.warning("Unexpected public key size: #{byte_size(pub_key)} bytes")
-
-    if byte_size(pub_key) > 33 do
-      pub_key
-    else
-      Constants.key_bundle_type() <> pub_key
-    end
   end
 
   # Private helper functions

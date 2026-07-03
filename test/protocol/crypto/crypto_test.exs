@@ -1,9 +1,6 @@
 defmodule Amarula.Protocol.Crypto.CryptoTest do
   use ExUnit.Case, async: true
 
-  # The unexpected-key-size test logs an intentional warning.
-  @moduletag :capture_log
-
   alias Amarula.Protocol.Crypto.Crypto
 
   describe "generate_signal_pub_key/1" do
@@ -23,14 +20,10 @@ defmodule Amarula.Protocol.Crypto.CryptoTest do
       assert binary_part(result, 1, 32) == key_32
     end
 
-    test "handles unexpected key sizes with warning" do
-      # Test with 31-byte key (unexpected size)
-      key_31 = :crypto.strong_rand_bytes(31)
-      result = Crypto.generate_signal_pub_key(key_31)
-
-      # Should still prefix it
-      assert byte_size(result) == 32
-      assert <<5, _rest::binary>> = result
+    test "raises on any size other than 32/33 bytes (caller bug, no guessing)" do
+      assert_raise FunctionClauseError, fn ->
+        Crypto.generate_signal_pub_key(:crypto.strong_rand_bytes(16))
+      end
     end
   end
 

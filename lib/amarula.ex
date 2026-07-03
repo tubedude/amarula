@@ -46,12 +46,13 @@ defmodule Amarula do
 
   ## The QR code
 
-  The `qr` in a `:connection_update` is a plain string — *you* turn it into a
-  scannable image, with whatever you like (a terminal renderer, a `qr_code`
-  PNG, an HTML `<img>`, …). There is no built-in renderer and no login-phase
-  plugin hook: rendering is entirely the consumer's, via this event. (The
-  handshake/pairing crypto is deliberately closed to plugins — the send/receive
-  pipelines run only *after* a message is decrypted.)
+  The `qr` in a `:connection_update` is a plain string — you turn it into a
+  scannable image. For terminals, `render_qr/1` returns ready-to-print ASCII
+  art; for anything else (a PNG, an HTML `<img>`, …) render the string with a
+  QR library of your choice. Rendering happens on the consumer side, via this
+  event — there is no login-phase plugin hook (the handshake/pairing crypto is
+  deliberately closed to plugins; the send/receive pipelines run only *after*
+  a message is decrypted).
 
   The string is four comma-separated fields:
 
@@ -629,6 +630,21 @@ defmodule Amarula do
     digits = String.replace(phone, ~r/\D/, "")
     GenServer.call(conn, {:request_pairing_code, digits, Keyword.get(opts, :custom_code)})
   end
+
+  @doc """
+  Render the `qr` string from a `:connection_update` as terminal-printable ASCII
+  art (bordered, scannable at normal font sizes). `IO.puts/1` the result.
+
+      {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
+        {:ok, art} = Amarula.render_qr(qr)
+        IO.puts(art)
+
+  For a PNG or web display, render the string yourself (see "The QR code" above).
+  """
+  @spec render_qr(String.t()) :: {:ok, String.t()} | {:error, String.t()}
+  defdelegate render_qr(qr_string),
+    to: Amarula.Protocol.Auth.QRCodeGenerator,
+    as: :render_terminal
 
   @doc """
   Send a read receipt for `message_ids` in chat `jid` (pass `participant` for a

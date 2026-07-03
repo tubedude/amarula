@@ -1670,8 +1670,6 @@ defmodule Amarula.Connection do
 
   defp decode_and_emit_frame(noise_state, data, state) do
     with {:ok, frames, updated_noise_state} <- NoiseHandler.decode_frame(noise_state, data) do
-      Logger.debug("decode_and_emit_frame: Got #{length(frames)} frames to process")
-
       # Seed processing with the read-advanced noise state so any nodes we send while
       # handling these frames (acks, pings, replies) build on the SAME noise state and
       # advance write_counter from here. Returning a separate updated_noise_state and
@@ -1683,10 +1681,6 @@ defmodule Amarula.Connection do
       updated_state =
         Enum.with_index(frames)
         |> Enum.reduce(state, fn {frame, idx}, acc_state ->
-          Logger.debug(
-            "Processing frame #{idx}: size=#{byte_size(frame)} bytes, hex=#{Base.encode16(frame) |> String.slice(0, 64)}..."
-          )
-
           # Only decode is wrapped: WhatsApp interleaves non-binary WS control
           # frames (close/pong) into this stream that the Decoder can't parse, so
           # a decode failure means "route as a control frame", not "crash". Node
@@ -1713,7 +1707,6 @@ defmodule Amarula.Connection do
     decompressed_frame = decompress_frame(frame)
     maybe_capture_frame(decompressed_frame)
     binary_node = Decoder.decode(decompressed_frame)
-    Logger.debug("Frame #{idx}: decoded as binary node: tag=#{binary_node.tag}")
     {:ok, binary_node}
   rescue
     error ->
@@ -1750,10 +1743,9 @@ defmodule Amarula.Connection do
   defp process_server_node(state, node) do
     frame_tap("IN", node)
 
-    Logger.debug(
-      "Received node: tag=#{node.tag}, type=#{NodeUtils.get_attr(node, "type")}, " <>
-        "first_child=#{NodeUtils.get_first_child_tag(node)}, attrs=#{inspect(node.attrs)}"
-    )
+    # No generic "received node" log here — downstream handlers log their own
+    # domain event (a decrypted message, a receipt, a presence update, …). Set
+    # AMARULA_FRAME_TAP to trace every node regardless of whether a handler logs.
 
     # The routing DECISION (node shape -> handler tag) is pure and lives in
     # Socket.Router; here we just run the chosen handler. Behaviour is unchanged

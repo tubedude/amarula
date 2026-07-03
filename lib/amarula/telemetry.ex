@@ -24,7 +24,7 @@ defmodule Amarula.Telemetry do
   | `[:amarula, :connection, :update]` | `%{count: 1}` | `%{profile, state}` |
   | `[:amarula, :sink, :down]` | `%{count: 1}` | `%{profile, sink, reason}` — the consumer event sink died; `sink` is the pid/name, `reason` the exit. Events drop until a new sink is attached (`set_parent/2`) or a name-based sink re-resolves. |
   | `[:amarula, :send, :start]` | `%{monotonic_time, system_time}` | `%{profile, kind, media?, media_kind}` |
-  | `[:amarula, :send, :stop]` | `%{duration, bytes}` | `%{profile, kind, media?, media_kind}` |
+  | `[:amarula, :send, :stop]` | `%{duration, bytes}` | `%{profile, kind, media?, media_kind, result, error_stage, error_reason}` — `result` is `:ok`/`:error`; on `:error`, `error_stage` is the failing pipe stage (`:resolve_devices`/`:ensure_sessions`/`:encrypt`/`:relay`) and `error_reason` a normalized, JID-free reason atom (e.g. `:not_on_whatsapp`, `:timeout`) or nil; all three are nil-safe tags on success (`:ok`/nil/nil) |
   | `[:amarula, :send, :exception]` | `%{duration}` | `%{profile, kind, kind: :error/:exit/:throw, reason}` |
   | `[:amarula, :send, :not_on_whatsapp]` | `%{count: 1}` | `%{profile}` |
   | `[:amarula, :message, :received]` | `%{count: 1, media_bytes}` | `%{profile, from_me?, group?, offline?, media?, media_kind}` |
@@ -97,22 +97,33 @@ defmodule Amarula.Telemetry do
   Run `fun` as a span, emitting `name ++ [:start]` then `name ++ [:stop]` (or
   `[:exception]` if `fun` raises), with `:profile` injected into metadata.
 
-  Unlike `:telemetry.span/3`, the `fun` returns `{result, extra_measurements}` so
-  the `:stop` event can carry extra **measurements** (e.g. `bytes`) — those
-  aggregate (sum/summary) in `telemetry_metrics`, where span metadata only tags.
-  `:duration` (native time units) is always added. Returns `fun`'s `result`.
+  Unlike `:telemetry.span/3`, the `fun` returns `{result, extra_measurements}` —
+  or `{result, extra_measurements, extra_metadata}` — so the `:stop` event can
+  carry extra **measurements** (e.g. `bytes`) — those aggregate (sum/summary) in
+  `telemetry_metrics`, where span metadata only tags — and extra **metadata**
+  known only once the work ran (e.g. the send outcome), merged over the span's
+  metadata. `:duration` (native time units) is always added. Returns `fun`'s
+  `result`.
   """
-  @spec span([atom()], profile(), map(), (-> {term(), map()})) :: term()
+  @spec span([atom()], profile(), map(), (-> {term(), map()} | {term(), map(), map()})) :: term()
   def span(name, profile, metadata, fun) do
     meta = Map.put(metadata, :profile, profile)
     start = System.monotonic_time()
     :telemetry.execute(name ++ [:start], %{system_time: System.system_time()}, meta)
 
     try do
-      {result, extra_measurements} = fun.()
+      {result, extra_measurements, extra_metadata} =
+        case fun.() do
+          {result, extra_measurements, extra_metadata} ->
+            {result, extra_measurements, extra_metadata}
+
+          {result, extra_measurements} ->
+            {result, extra_measurements, %{}}
+        end
+
       duration = System.monotonic_time() - start
       measurements = Map.put(extra_measurements, :duration, duration)
-      :telemetry.execute(name ++ [:stop], measurements, meta)
+      :telemetry.execute(name ++ [:stop], measurements, Map.merge(meta, extra_metadata))
       result
     rescue
       e ->

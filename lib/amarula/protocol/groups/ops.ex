@@ -175,8 +175,10 @@ defmodule Amarula.Protocol.Groups.Ops do
   @doc "Parse the invite code from an invite/revoke reply."
   @spec parse_invite_code(Node.t()) :: {:ok, String.t()} | {:error, term()}
   def parse_invite_code(reply) do
-    case NodeUtils.get_binary_node_child(reply, "invite") do
-      %Node{} = invite -> {:ok, NodeUtils.get_attr(invite, "code")}
+    with %Node{} = invite <- NodeUtils.get_binary_node_child(reply, "invite"),
+         code when is_binary(code) <- NodeUtils.get_attr(invite, "code") do
+      {:ok, code}
+    else
       _ -> {:error, parse_error(reply)}
     end
   end
@@ -184,8 +186,10 @@ defmodule Amarula.Protocol.Groups.Ops do
   @doc "Parse the joined group's jid from an accept-invite reply."
   @spec parse_accepted_jid(Node.t()) :: {:ok, String.t()} | {:error, term()}
   def parse_accepted_jid(reply) do
-    case NodeUtils.get_binary_node_child(reply, "group") do
-      %Node{} = group -> {:ok, NodeUtils.get_attr(group, "jid")}
+    with %Node{} = group <- NodeUtils.get_binary_node_child(reply, "group"),
+         jid when is_binary(jid) <- NodeUtils.get_attr(group, "jid") do
+      {:ok, jid}
+    else
       _ -> {:error, parse_error(reply)}
     end
   end
@@ -222,13 +226,14 @@ defmodule Amarula.Protocol.Groups.Ops do
   end
 
   @doc "Parse the affected participants from an approve/reject reply."
-  @spec parse_request_update(Node.t(), :approve | :reject) :: {:ok, [affected()]}
+  @spec parse_request_update(Node.t(), :approve | :reject) ::
+          {:ok, [affected()]} | {:error, term()}
   def parse_request_update(reply, action) do
     with %Node{} = outer <- NodeUtils.get_binary_node_child(reply, "membership_requests_action"),
          %Node{} = inner <- NodeUtils.get_binary_node_child(outer, Atom.to_string(action)) do
       {:ok, affected(inner)}
     else
-      _ -> {:ok, []}
+      _ -> {:error, parse_error(reply)}
     end
   end
 

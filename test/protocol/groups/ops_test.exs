@@ -160,5 +160,51 @@ defmodule Amarula.Protocol.Groups.OpsTest do
 
       assert {:ok, @group} = Ops.parse_accepted_jid(r)
     end
+
+    test "parse_invite_code errors when the code attr is missing" do
+      r = %Node{
+        tag: "iq",
+        attrs: %{},
+        content: [%Node{tag: "invite", attrs: %{}, content: nil}]
+      }
+
+      assert {:error, :unexpected_reply} = Ops.parse_invite_code(r)
+    end
+
+    test "parse_accepted_jid errors when the jid attr is missing" do
+      r = %Node{
+        tag: "iq",
+        attrs: %{},
+        content: [%Node{tag: "group", attrs: %{}, content: nil}]
+      }
+
+      assert {:error, :unexpected_reply} = Ops.parse_accepted_jid(r)
+    end
+
+    test "parse_request_update reads the affected participants" do
+      inner = reply("approve", [{"1@s.whatsapp.net", nil}])
+
+      r = %Node{
+        tag: "iq",
+        attrs: %{"type" => "result"},
+        content: [%Node{tag: "membership_requests_action", attrs: %{}, content: inner.content}]
+      }
+
+      assert {:ok, [%{jid: "1@s.whatsapp.net", status: "200"}]} =
+               Ops.parse_request_update(r, :approve)
+    end
+
+    test "parse_request_update surfaces an error node instead of {:ok, []}" do
+      r = %Node{
+        tag: "iq",
+        attrs: %{"type" => "error"},
+        content: [
+          %Node{tag: "error", attrs: %{"code" => "403", "text" => "forbidden"}, content: nil}
+        ]
+      }
+
+      assert {:error, {:group_op_failed, "403", "forbidden"}} =
+               Ops.parse_request_update(r, :approve)
+    end
   end
 end

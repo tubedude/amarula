@@ -94,4 +94,48 @@ defmodule Amarula.Protocol.Messages.MediaTest do
       assert {:error, :bad_mac} = Media.download(ref, :image)
     end
   end
+
+  describe "upload/4 (HTTP stubbed via Req.Test)" do
+    alias Amarula.Protocol.Binary.Node
+
+    setup do
+      Application.put_env(:amarula, :req_options, plug: {Req.Test, Media})
+      on_exit(fn -> Application.delete_env(:amarula, :req_options) end)
+      :ok
+    end
+
+    # A minimal stand-in for Connection: answers the one query_iq call
+    # (media_conn) that upload/4 makes before PUTting to the hosts.
+    defp stub_conn(media_conn_reply) do
+      spawn_link(fn ->
+        receive do
+          {:"$gen_call", from, {:query_iq, _node}} ->
+            GenServer.reply(from, {:ok, media_conn_reply})
+        end
+      end)
+    end
+
+    test "the upload PUT routes through req_options like download does" do
+      reply = %Node{
+        tag: "iq",
+        attrs: %{"type" => "result"},
+        content: [
+          %Node{
+            tag: "media_conn",
+            attrs: %{"auth" => "AUTHTOKEN"},
+            content: [%Node{tag: "host", attrs: %{"hostname" => "mmg.example.net"}, content: nil}]
+          }
+        ]
+      }
+
+      # Without the req_options merge on the upload path this would hit the real
+      # network (and fail with :all_hosts_failed) instead of the stub.
+      Req.Test.stub(Media, fn conn ->
+        Req.Test.json(conn, %{"direct_path" => "/mms/image/abc", "url" => "https://cdn/abc"})
+      end)
+
+      assert {:ok, %{direct_path: "/mms/image/abc", url: "https://cdn/abc"}} =
+               Media.upload(stub_conn(reply), <<1, 2, 3>>, :crypto.strong_rand_bytes(32), :image)
+    end
+  end
 end

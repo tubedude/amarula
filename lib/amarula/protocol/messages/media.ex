@@ -202,7 +202,9 @@ defmodule Amarula.Protocol.Messages.Media do
   defp put_to_hosts([host | rest], type, token, auth, enc) do
     url = "https://#{host}#{Map.fetch!(@path, type)}/#{token}?auth=#{auth}&token=#{token}"
 
-    case Req.post(url, body: enc, headers: [{"content-type", "application/octet-stream"}]) do
+    post_opts = [body: enc, headers: [{"content-type", "application/octet-stream"}]]
+
+    case Req.post(url, post_opts ++ req_options()) do
       {:ok, %{status: 200, body: body}} when is_map(body) ->
         {:ok, %{direct_path: body["direct_path"], url: body["url"] || ""}}
 

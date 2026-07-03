@@ -3,6 +3,7 @@ defmodule Amarula.Protocol.USyncTest do
 
   alias Amarula.Protocol.Binary.{Decoder, Encoder, Node, NodeUtils}
   alias Amarula.Protocol.USync
+  alias Amarula.Protocol.USync.Protocols
 
   describe "build_iq/2" do
     test "errors with no protocols" do
@@ -209,6 +210,19 @@ defmodule Amarula.Protocol.USyncTest do
 
       assert %{list: [entry]} = USync.parse_result(query, reply)
       assert entry == %{id: "5@s.whatsapp.net"}
+    end
+  end
+
+  describe "status protocol parsing" do
+    test "a status node with t parses set_at as a DateTime" do
+      node = %Node{tag: "status", attrs: %{"t" => "1700000000"}, content: "busy"}
+      assert %{status: "busy", set_at: set_at} = Protocols.parse("status", node)
+      assert set_at == DateTime.from_unix!(1_700_000_000)
+    end
+
+    test "a status node without t has set_at nil, not the epoch" do
+      node = %Node{tag: "status", attrs: %{}, content: "busy"}
+      assert %{status: "busy", set_at: nil} = Protocols.parse("status", node)
     end
   end
 end

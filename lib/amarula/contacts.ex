@@ -191,8 +191,8 @@ defmodule Amarula.Contacts do
     %{address: Address.parse(entry[:id]), exists: entry["contact"] == true}
   end
 
-  # The :status protocol parses to %{status: text, set_at: DateTime} under the
-  # "status" wire tag; absent when the user has no status visible to us.
+  # The :status protocol parses to %{status: text, set_at: DateTime | nil} under
+  # the "status" wire tag; absent when the user has no status visible to us.
   defp to_status(%{"status" => %{status: text, set_at: set_at}} = entry) do
     %{address: Address.parse(entry[:id]), status: text, set_at: set_at}
   end

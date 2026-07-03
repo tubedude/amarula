@@ -274,6 +274,14 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   # Inject a synthetic server reply into the (test) Connection.
   defp inject(ctx, node), do: send(ctx.pid, {:inject_node, node})
 
+  # Forward telemetry events to the test process (detached on exit); messages
+  # arrive as {event, ref, measurements, metadata}.
+  defp attach_telemetry(events) do
+    ref = :telemetry_test.attach_event_handlers(self(), events)
+    on_exit(fn -> :telemetry.detach(ref) end)
+    ref
+  end
+
   # The sender emits encrypt/get IQs (bundle fetch + any LID force-refresh) then
   # the message. Drain frames, answer each encrypt IQ with a bundle for the jids
   # it asked for, and return the message frame.
@@ -384,8 +392,33 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     assert metadata.kind == :dm
     assert metadata.media? == false
     assert metadata.profile == ctx.conn.profile
+    # Outcome tags: a successful pipe reports result :ok, no failing stage.
+    assert metadata.result == :ok
+    assert metadata.error_stage == nil
+    assert metadata.error_reason == nil
 
     :telemetry.detach({ref, :send_stop})
+  end
+
+  test "a pipe failure tags the send :stop with result/error_stage/error_reason", ctx do
+    import ExUnit.CaptureLog
+
+    ref = attach_telemetry([[:amarula, :send, :stop]])
+
+    capture_log(fn ->
+      task = send_text_async(ctx, @jid, "to an unknown number")
+      usync_iq = recv_frame()
+      inject(ctx, usync_empty_reply(attr(usync_iq, "id"), @jid))
+      assert {:error, :not_on_whatsapp} = await_send_result(task)
+    end)
+
+    # One :stop for the failed send — same event as success, tagged :error, so
+    # an operator can compute a send error rate off the one series.
+    assert_receive {[:amarula, :send, :stop], ^ref, %{duration: _}, metadata}
+    assert metadata.result == :error
+    assert metadata.error_stage == :resolve_devices
+    assert metadata.error_reason == :not_on_whatsapp
+    assert metadata.profile == ctx.conn.profile
   end
 
   test "drops the send (no relay) when the recipient resolves to no devices", ctx do
@@ -835,6 +868,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   # --- Ack-on-send (Design 2) ---
 
   test "a plain server ack completes the send with {:ok, msg_id}", ctx do
+    ref = attach_telemetry([[:amarula, :send, :ack]])
     task = send_text_async(ctx, @jid, "ack me")
     message = relay_text(ctx)
     msg_id = message.attrs["id"]
@@ -844,9 +878,16 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
     ack(ctx, msg_id)
     assert {:ok, ^msg_id} = await_send_result(task)
+
+    # The server's verdict is observable: one :ok ack outcome for the send.
+    assert_receive {[:amarula, :send, :ack], ^ref, %{count: 1}, meta}
+    assert meta.outcome == :ok
+    assert meta.code == nil
+    assert meta.profile == ctx.conn.profile
   end
 
   test "an ack carrying an error attr fails the send with {:send_rejected, code}", ctx do
+    ref = attach_telemetry([[:amarula, :send, :ack]])
     task = send_text_async(ctx, @jid, "will be rejected")
     message = relay_text(ctx)
     msg_id = message.attrs["id"]
@@ -855,6 +896,11 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # success, and never a resend (Baileys handleBadAck loops on resend).
     ack(ctx, msg_id, error: "479")
     assert {:error, {:send_rejected, "479"}} = await_send_result(task)
+
+    # The rejection is observable, with the server's code (JID-free).
+    assert_receive {[:amarula, :send, :ack], ^ref, %{count: 1}, meta}
+    assert meta.outcome == :rejected
+    assert meta.code == "479"
   end
 
   test "a phash ack (no error attr) is success, never a resend", ctx do
@@ -878,10 +924,16 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   test "a relayed send with no ack times out with {:error, :ack_timeout}", ctx do
     # The ack-timeout is shrunk to 80ms via config (see setup). The frame is
     # written but no <ack> is injected, so Connection reports it unconfirmed.
+    ref = attach_telemetry([[:amarula, :send, :ack]])
     task = send_text_async(ctx, @jid, "never acked")
     _message = relay_text(ctx)
 
     assert {:error, :ack_timeout} = await_send_result(task)
+
+    # The unconfirmed send is observable as a :timeout ack outcome.
+    assert_receive {[:amarula, :send, :ack], ^ref, %{count: 1}, meta}
+    assert meta.outcome == :timeout
+    assert meta.code == nil
   end
 
   test "an ack for an unknown msg_id is ignored (no crash, no stray reply)", ctx do
@@ -903,15 +955,17 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   # the first no-error ack; later acks for the same id are no-ops.
 
   test "a second ack for the same id (phash then clean) is a harmless no-op", ctx do
+    ref = attach_telemetry([[:amarula, :send, :ack]])
     task = send_text_async(ctx, @jid, "double-acked")
     message = relay_text(ctx)
     msg_id = message.attrs["id"]
 
     ack(ctx, msg_id, phash: "1:abc")
     assert {:ok, ^msg_id} = await_send_result(task)
+    assert_receive {[:amarula, :send, :ack], ^ref, %{count: 1}, %{outcome: :ok}}
 
     # The clean follow-up ack for the same (already-resolved) id must not crash the
-    # connection or produce a stray reply.
+    # connection, produce a stray reply, or inflate the ack-outcome count.
     ack(ctx, msg_id)
     refute_receive _, 50
     assert Process.alive?(ctx.pid)
@@ -957,6 +1011,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
   end
 
   test "a sender crash fails the parked caller fast with :sender_crashed", ctx do
+    ref = attach_telemetry([[:amarula, :send, :ack]])
     task = send_text_async(ctx, @jid, "in flight")
     # Drive the pipe to the point the sender is alive + the send is parked, then
     # kill it as if it had crashed mid-pipe (before reporting any result).
@@ -967,9 +1022,16 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # The caller is unblocked promptly — NOT after the 30s ack-timeout — and with
     # the right reason.
     assert {:error, {:sender_crashed, :killed}} = await_send_result(task)
+
+    # The crash is observable as a :sender_crashed ack outcome (no crash reason
+    # in the payload — an arbitrary term could leak).
+    assert_receive {[:amarula, :send, :ack], ^ref, %{count: 1}, meta}
+    assert meta.outcome == :sender_crashed
+    assert meta.code == nil
   end
 
   test "a sender crash fails ALL of that recipient's in-flight sends", ctx do
+    ref = attach_telemetry([[:amarula, :send, :ack]])
     # Two sends to the same recipient share one sender. Park the first (full
     # flow), then queue a second to the same jid (device cache hit → message only).
     task1 = send_text_async(ctx, @jid, "first")
@@ -983,6 +1045,9 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
     assert {:error, {:sender_crashed, :killed}} = await_send_result(task1)
     assert {:error, {:sender_crashed, :killed}} = await_send_result(task2)
+
+    # One telemetry event covers the whole crash: count = parked sends taken out.
+    assert_receive {[:amarula, :send, :ack], ^ref, %{count: 2}, %{outcome: :sender_crashed}}
   end
 
   test "a sender crash does not affect another recipient's parked send", ctx do

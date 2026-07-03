@@ -3903,11 +3903,22 @@ defmodule Amarula.Connection do
   defp handle_iq_timeout(state, id) do
     {pending, effect} = IQ.timeout(state.pending_iqs, id)
 
+    # An IQ timeout is the primary sick-connection signal — count it. Tracked
+    # IQs carry their bootstrap kind (:prekey_count/:digest/:app_state_sync/…);
+    # a blocking waiter has none, so `kind` is omitted rather than invented.
+    # :none = the reply raced the timer — nothing actually timed out.
     case effect do
       {:tracked, kind, _result, _timer} ->
         Logger.warning("IQ #{id} (#{kind}) timed out after #{@iq_timeout_ms}ms")
 
-      _ ->
+        Amarula.Telemetry.emit([:amarula, :iq, :timeout], profile(state), %{count: 1}, %{
+          kind: kind
+        })
+
+      {:reply, _from, _result, _timer} ->
+        Amarula.Telemetry.emit([:amarula, :iq, :timeout], profile(state), %{count: 1})
+
+      :none ->
         :ok
     end
 

@@ -35,14 +35,16 @@ defmodule Amarula.Telemetry do
   | `[:amarula, :prekey, :upload]` | `%{count}` | `%{profile}` |
   | `[:amarula, :retry, :received]` | `%{count: 1}` | `%{profile}` |
   | `[:amarula, :retry, :sent]` | `%{count: 1, attempt}` | `%{profile}` — `attempt` = escalating per-peer retry count; a high/rising value flags an unrecoverable peer |
+  | `[:amarula, :iq, :timeout]` | `%{count: 1}` | `%{profile, kind}` — an outbound IQ got no reply within the timeout (the primary sick-connection signal). `kind` is the tracked bootstrap kind (`:prekey_count`/`:digest`/`:app_state_sync`/…); a blocking waiter (send-path USync/bundle/metadata) carries no kind, so the key is absent. |
 
   `media_bytes` on `:message, :received` is the **declared** `fileLength` from the
   message (what the sender claims), not a downloaded size — Amarula doesn't
   download media eagerly. `bytes` on `:send, :stop` is the declared media size of
   the outgoing message (0 for text).
 
-  > Deferred (planned, not yet emitted): an `[:amarula, :iq, ...]` round-trip
-  > latency span, and `[:amarula, :handshake|:app_state, ...]` spans. See
+  > Deferred (planned, not yet emitted): the full `[:amarula, :iq, ...]`
+  > round-trip latency span (the `[:amarula, :iq, :timeout]` counter above ships
+  > in the interim), and `[:amarula, :handshake|:app_state, ...]` spans. See
   > `docs/plans/TELEMETRY.plan.md`.
 
   ## Attaching handlers
@@ -82,7 +84,8 @@ defmodule Amarula.Telemetry do
       [:amarula, :stream_error, :received],
       [:amarula, :prekey, :upload],
       [:amarula, :retry, :received],
-      [:amarula, :retry, :sent]
+      [:amarula, :retry, :sent],
+      [:amarula, :iq, :timeout]
     ]
   end
 

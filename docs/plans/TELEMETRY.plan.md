@@ -4,6 +4,18 @@ Status: **implemented** — see `Amarula.Telemetry` (`lib/amarula/telemetry.ex`)
 the events that ship. This document remains the design rationale and lists the
 deferred items (`Amarula.Telemetry`'s moduledoc points here for those).
 
+Outcome instrumentation shipped since the initial implementation (the shipped
+shapes are authoritative in `Amarula.Telemetry`'s moduledoc):
+
+- `[:amarula, :send, :stop]` now carries the outcome in metadata
+  (`result: :ok | :error`, `error_stage`, `error_reason`) instead of a separate
+  `:send, :exception` per pipe failure — one event, tag by `result`.
+- `[:amarula, :send, :ack]` — the post-relay server verdict
+  (`:ok | :rejected | :timeout | :sender_crashed`, + rejection `code`); the send
+  span closes at relay time, so this covers what the span cannot.
+- `[:amarula, :iq, :timeout]` — an interim counter (with the tracked `kind` when
+  known); the full IQ round-trip span below remains **deferred**.
+
 ## Goal
 
 Let an operator observe the health of a live WhatsApp connection without reading

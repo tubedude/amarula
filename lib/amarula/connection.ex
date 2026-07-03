@@ -1136,6 +1136,7 @@ defmodule Amarula.Connection do
   # Report it honestly as unconfirmed.
   @impl GenServer
   def handle_info({:ack_timeout, msg_id}, state) do
+    emit_ack_outcome(state, msg_id, :timeout)
     {:noreply, resolve_ack(state, msg_id, fn _shape -> {:error, :ack_timeout} end)}
   end
 
@@ -1187,9 +1188,15 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     case AckLifecycle.pop_monitor_by_ref(state, ref) do
-      {nil, state} -> {:noreply, state}
-      {_jid, state} when reason == :normal -> {:noreply, state}
-      {jid, state} -> {:noreply, AckLifecycle.fail_recipient_sends(state, jid, reason)}
+      {nil, state} ->
+        {:noreply, state}
+
+      {_jid, state} when reason == :normal ->
+        {:noreply, state}
+
+      {jid, state} ->
+        emit_sender_crashed(state, jid)
+        {:noreply, AckLifecycle.fail_recipient_sends(state, jid, reason)}
     end
   end
 
@@ -1831,8 +1838,45 @@ defmodule Amarula.Connection do
     msg_id = NodeUtils.get_attr(node, "id")
 
     case Receive.ack_outcome(node) do
-      :ok -> resolve_ack(state, msg_id, fn on_ack -> on_ack.(:ok) end)
-      {:error, _} = err -> resolve_ack(state, msg_id, fn _on_ack -> err end)
+      :ok ->
+        emit_ack_outcome(state, msg_id, :ok)
+        resolve_ack(state, msg_id, fn on_ack -> on_ack.(:ok) end)
+
+      {:error, {:send_rejected, code}} = err ->
+        emit_ack_outcome(state, msg_id, :rejected, code)
+        resolve_ack(state, msg_id, fn _on_ack -> err end)
+    end
+  end
+
+  # Telemetry for the outcome of a tracked send AFTER relay — the send span
+  # closes at relay time, so the server's verdict needs its own event. Gated on
+  # the parked entry so duplicate acks (phash + clean follow-up), acks for
+  # untracked ids, and fire-and-forget sends don't inflate the count. `code` is
+  # the server's rejection code (a protocol int/string), JID-free.
+  defp emit_ack_outcome(state, msg_id, outcome, code \\ nil) do
+    if AckLifecycle.parked?(state, msg_id) do
+      Amarula.Telemetry.emit([:amarula, :send, :ack], profile(state), %{count: 1}, %{
+        outcome: outcome,
+        code: code
+      })
+    end
+
+    :ok
+  end
+
+  # One [:amarula, :send, :ack] covering every parked send a sender crash takes
+  # out (count = how many). The crash `reason` never enters the payload — it is
+  # an arbitrary term.
+  defp emit_sender_crashed(state, jid) do
+    case AckLifecycle.parked_count(state, jid) do
+      0 ->
+        :ok
+
+      n ->
+        Amarula.Telemetry.emit([:amarula, :send, :ack], profile(state), %{count: n}, %{
+          outcome: :sender_crashed,
+          code: nil
+        })
     end
   end
 

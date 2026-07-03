@@ -2835,20 +2835,6 @@ defmodule Amarula.Connection do
     }
   end
 
-  @doc false
-  def create_ping_node(state) do
-    %Amarula.Protocol.Binary.Node{
-      tag: "iq",
-      attrs: %{
-        "to" => "s.whatsapp.net",
-        "type" => "get",
-        "xmlns" => "w:p",
-        "id" => generate_message_tag(state)
-      },
-      content: [%Amarula.Protocol.Binary.Node{tag: "ping", attrs: %{}, content: nil}]
-    }
-  end
-
   defp send_passive_iq(state, tag) do
     # Send passive IQ with proper child node format
     # This matches the TypeScript Baileys implementation

@@ -168,65 +168,18 @@ defmodule Amarula.Protocol.Auth.QRCodeGeneratorTest do
     end
   end
 
-  describe "QR code display formatting" do
-    test "formats QR code for display" do
-      qr_string = "ref123,noise_key,identity_key,adv_secret"
-      formatted = QRCodeGenerator.format_qr_for_display(qr_string)
-
-      assert is_binary(formatted)
-      assert String.contains?(formatted, "WhatsApp QR Code")
-      assert String.contains?(formatted, qr_string)
-      assert String.contains?(formatted, "Scan this QR code")
-    end
-
-    test "handles long QR codes in display format" do
-      long_qr =
-        String.duplicate("a", 100) <>
-          "," <>
-          String.duplicate("b", 100) <>
-          "," <>
-          String.duplicate("c", 100) <> "," <> String.duplicate("d", 100)
-
-      formatted = QRCodeGenerator.format_qr_for_display(long_qr)
-
-      assert is_binary(formatted)
-      assert String.contains?(formatted, "WhatsApp QR Code")
-    end
-  end
-
   describe "component extraction" do
-    test "extracts reference from QR code" do
-      qr_string = "ref123,noise_key,identity_key,adv_secret"
-
-      assert {:ok, "ref123"} = QRCodeGenerator.extract_ref(qr_string)
-    end
-
-    test "extracts noise key from QR code" do
-      qr_string = "ref123,noise_key,identity_key,adv_secret"
-
-      assert {:ok, "noise_key"} = QRCodeGenerator.extract_noise_key(qr_string)
-    end
-
     test "extracts identity key from QR code" do
       qr_string = "ref123,noise_key,identity_key,adv_secret"
 
       assert {:ok, "identity_key"} = QRCodeGenerator.extract_identity_key(qr_string)
     end
 
-    test "extracts advertisement secret key from QR code" do
-      qr_string = "ref123,noise_key,identity_key,adv_secret"
-
-      assert {:ok, "adv_secret"} = QRCodeGenerator.extract_adv_secret_key(qr_string)
-    end
-
     test "returns error for invalid QR code in extraction" do
       # Too few components
       invalid_qr = "ref123,noise_key"
 
-      assert {:error, _} = QRCodeGenerator.extract_ref(invalid_qr)
-      assert {:error, _} = QRCodeGenerator.extract_noise_key(invalid_qr)
       assert {:error, _} = QRCodeGenerator.extract_identity_key(invalid_qr)
-      assert {:error, _} = QRCodeGenerator.extract_adv_secret_key(invalid_qr)
     end
   end
 
@@ -255,14 +208,10 @@ defmodule Amarula.Protocol.Auth.QRCodeGeneratorTest do
       qr_string = "ref123,noise_key,identity_key,adv_secret"
 
       # Parse all components
-      assert {:ok, {ref, noise_key, identity_key, adv_secret}} =
+      assert {:ok, {_ref, _noise_key, identity_key, _adv_secret}} =
                QRCodeGenerator.parse_qr_string(qr_string)
 
-      # Extract individual components
-      assert {:ok, ^ref} = QRCodeGenerator.extract_ref(qr_string)
-      assert {:ok, ^noise_key} = QRCodeGenerator.extract_noise_key(qr_string)
       assert {:ok, ^identity_key} = QRCodeGenerator.extract_identity_key(qr_string)
-      assert {:ok, ^adv_secret} = QRCodeGenerator.extract_adv_secret_key(qr_string)
     end
   end
 end

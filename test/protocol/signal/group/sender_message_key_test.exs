@@ -65,12 +65,12 @@ defmodule Amarula.Protocol.Signal.Group.SenderMessageKeyTest do
     end
   end
 
-  describe "get_seed/1" do
-    test "returns the original seed" do
+  describe "seed" do
+    test "keeps the original seed on the struct" do
       seed = :crypto.strong_rand_bytes(32)
       message_key = SenderMessageKey.new(1, seed)
 
-      assert SenderMessageKey.get_seed(message_key) == seed
+      assert message_key.seed == seed
     end
   end
 end

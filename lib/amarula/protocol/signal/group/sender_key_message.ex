@@ -15,7 +15,6 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyMessage do
 
   @signature_length 64
   @current_version 3
-  @senderkey_type 4
 
   @type t :: %__MODULE__{
           message_version: non_neg_integer(),
@@ -128,12 +127,6 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyMessage do
   """
   @spec serialize(t()) :: binary()
   def serialize(%__MODULE__{serialized: serialized}), do: serialized
-
-  @doc """
-  Gets the message type.
-  """
-  @spec get_type(t()) :: non_neg_integer()
-  def get_type(_), do: @senderkey_type
 
   # Accept wire-form (33-byte 0x05-prefixed) or raw 32-byte Curve25519 keys.
   defp strip5(<<5, key::binary-size(32)>>), do: key

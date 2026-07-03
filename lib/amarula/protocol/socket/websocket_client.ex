@@ -16,19 +16,13 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   defstruct [
     :url,
     :connection_state,
-    :parent_pid,
-    :keep_alive_interval_ms,
-    :keep_alive_timer,
-    :connect_timeout_timer
+    :parent_pid
   ]
 
   @type t :: %__MODULE__{
           url: String.t(),
           connection_state: Types.connection_state(),
-          parent_pid: pid(),
-          keep_alive_interval_ms: non_neg_integer(),
-          keep_alive_timer: reference() | nil,
-          connect_timeout_timer: reference() | nil
+          parent_pid: pid()
         }
 
   @doc """
@@ -56,10 +50,6 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
     connect_timeout_ms =
       opts[:connect_timeout_ms] || Application.get_env(:amarula, :connect_timeout_ms, 30_000)
 
-    keep_alive_interval_ms =
-      opts[:keep_alive_interval_ms] ||
-        Application.get_env(:amarula, :keep_alive_interval_ms, 30_000)
-
     headers = opts[:headers] || []
     origin = opts[:origin] || Application.get_env(:amarula, :origin, "https://web.whatsapp.com")
     agent = opts[:agent] || "Mozilla/5.0"
@@ -76,10 +66,7 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
     state = %__MODULE__{
       url: url,
       connection_state: :disconnected,
-      parent_pid: parent_pid,
-      keep_alive_interval_ms: keep_alive_interval_ms,
-      keep_alive_timer: nil,
-      connect_timeout_timer: nil
+      parent_pid: parent_pid
     }
 
     # WebSockex options
@@ -90,7 +77,6 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
 
     Logger.debug("Attempting to connect to WhatsApp WebSocket at: #{url}")
     Logger.debug("Connection timeout: #{connect_timeout_ms}ms")
-    Logger.debug("Keep alive interval: #{keep_alive_interval_ms}ms")
     Logger.debug("Origin: #{origin}")
     Logger.debug("User agent: #{agent}")
 
@@ -145,12 +131,6 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
 
     new_state = %{state | connection_state: :disconnected}
 
-    # Cancel keep-alive timer
-    if state.keep_alive_timer do
-      Process.cancel_timer(state.keep_alive_timer)
-      Logger.debug("Keep-alive timer cancelled")
-    end
-
     # Send disconnection event directly to parent
     send(state.parent_pid, {:ws_event, self(), {:close, %{reason: conn.reason}}})
 
@@ -194,12 +174,6 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   end
 
   @impl WebSockex
-  def handle_info(:keep_alive, state) do
-    # WebSocket-level ping disabled - keep-alive handled by Connection via WA XML ping
-    {:ok, state}
-  end
-
-  @impl WebSockex
   def handle_info({:"$gen_call", from, :close}, state) do
     # Request graceful WebSocket closure using WebSockex's close mechanism
     # Close code 1000 = normal closure
@@ -223,26 +197,7 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   def terminate(reason, state) do
     Logger.info("WebSocket client terminating: #{inspect(reason)}")
 
-    # Cancel timers
-    if state.keep_alive_timer do
-      Process.cancel_timer(state.keep_alive_timer)
-    end
-
-    if state.connect_timeout_timer do
-      Process.cancel_timer(state.connect_timeout_timer)
-    end
-
     # Send termination event directly to parent
     send(state.parent_pid, {:ws_event, self(), {:close, %{reason: reason}}})
   end
-
-  # Private functions
-
-  @doc false
-  def start_keep_alive_timer(interval_ms) when interval_ms > 0 do
-    Process.send_after(self(), :keep_alive, interval_ms)
-  end
-
-  @doc false
-  def start_keep_alive_timer(_), do: nil
 end

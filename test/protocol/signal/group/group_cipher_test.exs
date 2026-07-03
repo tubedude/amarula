@@ -46,7 +46,7 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipherTest do
     # axolotlSenderKeyDistributionMessage.
     item = %{
       groupId: name.group_id,
-      axolotlSenderKeyDistributionMessage: SenderKeyDistributionMessage.get_serialized(skdm)
+      axolotlSenderKeyDistributionMessage: skdm.serialized
     }
 
     recv_builder = GroupSessionBuilder.new(receiver_store)
@@ -191,7 +191,7 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipherTest do
           "#{name.sender.id}@s.whatsapp.net"
         )
 
-      serialized = SenderKeyDistributionMessage.get_serialized(skdm)
+      serialized = skdm.serialized
       assert <<0x33, body::binary>> = serialized
 
       decoded = Amarula.Protocol.Proto.SenderKeyDistributionMessage.decode(body)

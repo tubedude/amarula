@@ -128,14 +128,6 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyMessageTest do
     end
   end
 
-  describe "get_type/1" do
-    test "returns sender key type" do
-      {_public_key, private_key} = KeyHelper.generate_sender_signing_key()
-      message = SenderKeyMessage.new(123, 5, :crypto.strong_rand_bytes(32), private_key)
-      assert SenderKeyMessage.get_type(message) == 4
-    end
-  end
-
   describe "round-trip serialization" do
     test "serialize and from_serialized are inverse operations" do
       key_id = 999

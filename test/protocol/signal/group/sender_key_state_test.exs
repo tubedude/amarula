@@ -139,30 +139,6 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyStateTest do
     end
   end
 
-  describe "valid?/1" do
-    test "returns true for valid state" do
-      state = create_test_state()
-      assert SenderKeyState.valid?(state)
-    end
-
-    test "returns false for negative key ID" do
-      state =
-        SenderKeyState.new(-1, 5, :crypto.strong_rand_bytes(32), %{
-          public: :crypto.strong_rand_bytes(32),
-          private: nil
-        })
-
-      refute SenderKeyState.valid?(state)
-    end
-
-    test "returns false for empty public key" do
-      state =
-        SenderKeyState.new(123, 5, :crypto.strong_rand_bytes(32), %{public: <<>>, private: nil})
-
-      refute SenderKeyState.valid?(state)
-    end
-  end
-
   # Helper function to create a test state
   defp create_test_state do
     signing_key = %{public: :crypto.strong_rand_bytes(32), private: :crypto.strong_rand_bytes(32)}

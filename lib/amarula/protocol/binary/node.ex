@@ -40,36 +40,6 @@ defmodule Amarula.Protocol.Binary.Node do
   end
 
   @doc """
-  Checks if a node has children (nested nodes).
-  """
-  @spec has_children?(t()) :: boolean()
-  def has_children?(%__MODULE__{content: content}) when is_list(content) do
-    length(content) > 0
-  end
-
-  def has_children?(_), do: false
-
-  @doc """
-  Gets the number of child nodes.
-  """
-  @spec child_count(t()) :: non_neg_integer()
-  def child_count(%__MODULE__{content: content}) when is_list(content) do
-    length(content)
-  end
-
-  def child_count(_), do: 0
-
-  @doc """
-  Gets a child node by index.
-  """
-  @spec get_child(t(), non_neg_integer()) :: t() | nil
-  def get_child(%__MODULE__{content: content}, index) when is_list(content) do
-    Enum.at(content, index)
-  end
-
-  def get_child(_, _), do: nil
-
-  @doc """
   Checks if the node has binary content.
   """
   @spec has_binary_content?(t()) :: boolean()
@@ -78,23 +48,4 @@ defmodule Amarula.Protocol.Binary.Node do
   end
 
   def has_binary_content?(_), do: false
-
-  @doc """
-  Checks if the node has string content.
-  """
-  @spec has_string_content?(t()) :: boolean()
-  def has_string_content?(%__MODULE__{content: content}) when is_binary(content) do
-    true
-  end
-
-  def has_string_content?(_), do: false
-
-  @doc """
-  Checks if the node has no content.
-  """
-  @spec empty?(t()) :: boolean()
-  def empty?(%__MODULE__{content: nil}), do: true
-  def empty?(%__MODULE__{content: ""}), do: true
-  def empty?(%__MODULE__{content: []}), do: true
-  def empty?(_), do: false
 end

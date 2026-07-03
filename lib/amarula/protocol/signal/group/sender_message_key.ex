@@ -52,10 +52,4 @@ defmodule Amarula.Protocol.Signal.Group.SenderMessageKey do
   """
   @spec get_cipher_key(t()) :: binary()
   def get_cipher_key(%__MODULE__{cipher_key: cipher_key}), do: cipher_key
-
-  @doc """
-  Gets the seed used to derive this key.
-  """
-  @spec get_seed(t()) :: binary()
-  def get_seed(%__MODULE__{seed: seed}), do: seed
 end

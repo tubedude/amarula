@@ -107,10 +107,8 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
   end
 
   @impl WebSockex
-  def handle_connect(conn, state) do
+  def handle_connect(_conn, state) do
     Logger.info("WebSocket connected to WhatsApp server")
-    Logger.debug("Connection URL: #{state.url}")
-    Logger.debug("Connection details: #{inspect(conn)}")
 
     new_state = %{state | connection_state: :connected}
 
@@ -137,38 +135,27 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
     {:ok, new_state}
   end
 
+  # Raw frame receipt is wire-level detail — not logged here. Set AMARULA_FRAME_TAP
+  # to trace every decoded node (Amarula.Connection.frame_tap/2); the domain-level
+  # "we received something" signal is logged once the frame is decoded and
+  # dispatched (e.g. a decrypted message, a receipt, a presence update).
   @impl WebSockex
   def handle_frame({:text, data}, state) do
-    Logger.debug("Received text frame from WhatsApp server")
-    Logger.debug("Text frame data length: #{byte_size(data)} bytes")
-    Logger.debug("Text frame preview: #{String.slice(data, 0, 100)}...")
-
-    # Send frame event directly to parent
     send(state.parent_pid, {:ws_event, self(), {:frame, data}})
     {:ok, state}
   end
 
   def handle_frame({:binary, data}, state) do
-    Logger.debug("Received binary frame from WhatsApp server")
-    Logger.debug("Binary frame data length: #{byte_size(data)} bytes")
-
-    Logger.debug(
-      "Binary frame hex preview: #{data |> :binary.part(0, min(20, byte_size(data))) |> Base.encode16()}"
-    )
-
-    # Send frame event directly to parent
     send(state.parent_pid, {:ws_event, self(), {:frame, data}})
     {:ok, state}
   end
 
   def handle_frame({:ping, data}, state) do
-    Logger.debug("Received ping from WhatsApp server: #{inspect(data)}")
     send(state.parent_pid, {:ws_event, self(), {:ping, data}})
     {:ok, state}
   end
 
   def handle_frame({:pong, data}, state) do
-    Logger.debug("Received pong from WhatsApp server: #{inspect(data)}")
     send(state.parent_pid, {:ws_event, self(), {:pong, data}})
     {:ok, state}
   end

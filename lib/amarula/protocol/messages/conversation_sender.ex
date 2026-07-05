@@ -252,7 +252,6 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   defp run_send(%{msg_id: msg_id} = msg, state) do
     jid = state.recipient_jid
     kind = if JID.jid_group?(jid), do: :group, else: :dm
-    Logger.debug("Sending #{msg_id} to #{jid} (#{kind})")
 
     # Run the send plugin pipeline (before encrypt): steps may transform the
     # message or halt the send. The built-in retry-cache step records it here.
@@ -642,11 +641,17 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         extra_attrs: ctx.stanza_attrs
       )
 
-    Logger.debug("Relaying group #{ctx.msg_id} (#{length(ctx.participants)} devices)")
-
     # relay_stanza enqueues the frame on the socket and replies :ok (it can't know
     # delivery — that's what later receipts report). Its :ok is this stage's result.
-    Connection.relay_stanza(ctx.cm, stanza)
+    result = Connection.relay_stanza(ctx.cm, stanza)
+
+    if result == :ok do
+      Logger.debug(
+        "Sent #{ctx.msg_id} to group #{ctx.target_jid} (#{length(ctx.participants)} device(s))"
+      )
+    end
+
+    result
   end
 
   defp relay(ctx) do
@@ -660,9 +665,15 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         extra_attrs: ctx.stanza_attrs
       )
 
-    Logger.debug("Relaying #{ctx.msg_id} (#{length(ctx.participants)} device(s))")
+    result = Connection.relay_stanza(ctx.cm, stanza)
 
-    Connection.relay_stanza(ctx.cm, stanza)
+    if result == :ok do
+      Logger.debug(
+        "Sent #{ctx.msg_id} to #{ctx.target_jid} (#{length(ctx.participants)} device(s))"
+      )
+    end
+
+    result
   end
 
   # --- helpers (ported from the former Connection send path) ---

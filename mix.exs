@@ -48,6 +48,23 @@ defmodule Amarula.MixProject do
   defp docs do
     [
       main: "readme",
+      # Keep internals out of the published docs. The Amarula.Protocol.* layer
+      # (socket, crypto, signal, binary, messages, …) and the Amarula.Connection.*
+      # helper submodules (Pairing, Notifications, PreKeyOps, Receive, …) are pure
+      # implementation — consumers use only the top-level Amarula.* facade, structs,
+      # and behaviours. The top-level Amarula.Connection coordinator is kept (the
+      # architecture guide links it). Hidden modules stay compiled and readable in
+      # IEx (`h Module`); only the hexdocs surface shrinks.
+      filter_modules: fn mod, _meta ->
+        name = inspect(mod)
+
+        not (String.starts_with?(name, "Amarula.Protocol.") or
+               String.starts_with?(name, "Amarula.Connection."))
+      end,
+      # Collapse module families into "folders" in the sidebar instead of many
+      # flat top-level entries: the ~20 Amarula.Content.* message-content structs,
+      # and the Storage / RetryCache behaviours with their adapters.
+      nest_modules_by_prefix: [Amarula.Content, Amarula.Storage, Amarula.RetryCache],
       extras: [
         "README.md",
         "docs/INFRASTRUCTURE.md",

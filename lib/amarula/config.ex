@@ -58,10 +58,23 @@ defmodule Amarula.Config do
 
   ## 2. App-global config — `config :amarula, ...`
 
-  Only the pluggable seams (apply to every connection that doesn't override them):
+  Two knobs are read from application env instead of per-connection: **which
+  backend *module* is the default** for storage and for the retry-cache. They're
+  process-wide policy — set once for the whole app — and any connection can still
+  override them by naming its own `{module, opts}` in `:storage` / `:retry_cache`
+  above. Everything else is per-account and lives on the `Conn`, not here.
 
       config :amarula, :default_storage_adapter, Amarula.Storage.File
       config :amarula, :retry_cache_adapter, Amarula.RetryCache.ETS
+
+  These point at **behaviours** you can implement yourself to decide *where* this
+  state lives (disk, DETS, Postgres, S3, Redis, …):
+
+    * `Amarula.Storage` — durable auth/session/mapping state. **Losing it means
+      re-pairing from a QR**, so back it up; see the callbacks + namespaces there,
+      and `docs/GOING_PROD.md` for choosing/writing an adapter.
+    * `Amarula.RetryCache` — short-lived sent-message cache for retry/decrypt
+      recovery; safe to lose (it self-heals), so an in-memory ETS default is fine.
 
   ## Logging
 

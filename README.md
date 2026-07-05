@@ -9,11 +9,15 @@ A **WhatsApp Web client for Elixir** — connect to WhatsApp the way the
 web/desktop app does: pair once by scanning a QR code with your phone, then send
 and receive messages from your own Elixir code.
 
-Amarula is a faithful port of [Baileys](https://github.com/WhiskeySockets/Baileys)
-(the TypeScript WhatsApp Web library) to idiomatic Elixir/OTP. It speaks the real
-protocol end to end: the Noise handshake, the Signal Protocol for end-to-end
-encryption, WhatsApp's binary message format, multi-device (LID), groups, and
-history sync.
+Amarula is an **independent, OTP-native** implementation of the WhatsApp Web
+protocol — not a thin wrapper over another runtime. It speaks the real thing end
+to end: the Noise handshake, the Signal Protocol for end-to-end encryption,
+WhatsApp's binary message format, multi-device (LID), groups, and history sync —
+all wrapped in idiomatic Elixir: a supervision tree per connection, a pluggable
+storage seam, and plain `{:amarula, …}` events delivered to your process. Its
+protocol logic is derived from and stays faithful to
+[Baileys](https://github.com/WhiskeySockets/Baileys), the community's reference
+WhatsApp Web implementation — see [Lineage](#lineage-and-license).
 
 > **⚠️ Unofficial — use at your own risk.** Amarula is not affiliated with,
 > endorsed by, or sponsored by WhatsApp or Meta. WhatsApp does not support
@@ -496,15 +500,22 @@ protoc -I proto --elixir_out=package_prefix=amarula.protocol:lib/amarula/protoco
 This regenerates `lib/amarula/protocol/proto/wa_proto.pb.ex` under the
 `Amarula.Protocol.Proto.*` namespace.
 
-## License & credits
+## Lineage and license
 
-Amarula is released under the [MIT License](LICENSE), © 2026 Roberto Trevisan.
+Amarula began as a port of [Baileys](https://github.com/WhiskeySockets/Baileys)
+(the TypeScript WhatsApp Web library) and still **tracks a specific upstream
+revision** — that's how it keeps pace with WhatsApp's undocumented,
+frequently-changing protocol. `Amarula.Baileys` and
+[`docs/PARITY.md`](https://github.com/tubedude/amarula/blob/main/docs/PARITY.md)
+record exactly which revision and how parity is maintained. The architecture,
+public API, and OTP design, however, are Amarula's own — the Elixir side is not a
+transliteration.
 
-It is a port of [Baileys](https://github.com/WhiskeySockets/Baileys) (© 2025
-Rajeh Taher/WhiskeySockets), also MIT-licensed — that license permits this use,
-and Baileys' copyright + permission notice are retained in [LICENSE](LICENSE) and
-[NOTICE](NOTICE) as it requires. Huge thanks to the Baileys authors for the
-reference implementation.
+Released under the [MIT License](LICENSE), © 2026 Roberto Trevisan. Baileys
+(© 2025 Rajeh Taher/WhiskeySockets) is also MIT-licensed — that license permits
+this use, and Baileys' copyright and permission notice are retained in
+[LICENSE](LICENSE) and [NOTICE](NOTICE) as it requires. Huge thanks to the Baileys
+authors for the reference implementation that made this possible.
 
 **Unofficial.** Not affiliated with, endorsed by, or sponsored by WhatsApp or
 Meta. Use it on accounts you control and in line with WhatsApp's terms.

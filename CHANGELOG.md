@@ -5,6 +5,35 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-07-04
+
+### Changed
+
+- **Debug logging separates signal from wire noise.** The always-on `:debug`
+  stream now carries only routine bot activity (send/receive/receipts/presence);
+  low-level frame/byte/hex tracing was removed from it and remains available
+  opt-in via the `AMARULA_FRAME_TAP` env var. Sends emit a single
+  `Sent <id> to <peer> (N device(s))` line once the relay actually succeeds, so a
+  successful send and a failed send are each one visible line.
+
+### Documentation
+
+- Corrected the consumer event tuple to `{:amarula, type, data}` across the guides
+  (was mistakenly shown as `{:whatsapp, …}`), and pointed module references at the
+  hexdocs pages instead of repo-relative source links that 404'd.
+- Rewrote the LID/PN addressing guide — the envelope (PN on the wire) vs. lock (LID
+  crypto identity) split, and the PN↔LID mapping a consumer must keep to DM someone
+  known only by LID (the by-LID device-lookup failure).
+- `GOING_PROD`: fixed accuracy bugs — history sync arrives as its own
+  `:history_sync` event (not `:messages_upsert`), a storage adapter needs only four
+  required callbacks, media `content` is an `%Amarula.Content.Media{}` struct, and
+  the `./amarula_data` storage dir must be gitignored by the consumer (the library's
+  own ignore rule doesn't travel with the dependency).
+- Hexdocs surface: hid the internal `Amarula.Protocol.*` / `Amarula.Connection.*`
+  layers, grouped `Content` / `Storage` / `RetryCache` into sidebar folders, and
+  fixed two moduledoc tables (`Amarula.Config`, `Amarula.Telemetry`) that a stray
+  `|` had broken.
+
 ## [0.4.3] - 2026-07-03
 
 ### Added
@@ -664,7 +693,9 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/tubedude/amarula/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/tubedude/amarula/compare/v0.3.0...v0.4.3
 [0.3.0]: https://github.com/tubedude/amarula/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/tubedude/amarula/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/tubedude/amarula/compare/v0.2.2...v0.2.3

@@ -395,7 +395,7 @@ sequenceDiagram
 |-------|------|------|
 | `:connection_update` | `%{connection: :connecting\|:open, qr, received_pending_notifications}` (partial) | lifecycle transitions; `qr` during pairing |
 | `:pairing_success` | `%{jid, lid, platform}` | phone scanned the QR (first link only) |
-| `:messages_upsert` | `%{from, id, messages: [%Amarula.Msg{}]}` | an incoming message (see [`Amarula.Msg`](lib/amarula/msg.ex)) |
+| `:messages_upsert` | `%{from, id, messages: [%Amarula.Msg{}]}` | an incoming message (see `Amarula.Msg`) |
 | `:receipt_update` | `%{message_ids, from, participant, status, timestamp}` | a message you sent was delivered/read/played |
 | `:history_sync` | `%{chats, contacts, ...}` | initial + incremental history download |
 | `:chats_update` / `:contacts_update` | `[%Amarula.Chat{}]` / `[%Amarula.Contact{}]` | history / app-state sync |
@@ -437,7 +437,7 @@ Amarula.new(%{
 })
 ```
 
-The full key list (with defaults) is in [`Amarula.Config`](lib/amarula/config.ex).
+The full key list (with defaults) is in `Amarula.Config`.
 Only the pluggable backends are app-global:
 
 ```elixir
@@ -455,12 +455,12 @@ your console won't be flooded. To quiet the connection specifically:
 Logger.put_module_level(Amarula.Connection, :warning)
 ```
 
-For production observability prefer [`Amarula.Telemetry`](lib/amarula/telemetry.ex)
+For production observability prefer `Amarula.Telemetry`
 (structured `:telemetry` events) over log scraping.
 
 ## Documentation
 
-- [`Amarula`](lib/amarula.ex) — the public API and entry point
+- `Amarula` — the public API and entry point
 - [`docs/INFRASTRUCTURE.md`](https://github.com/tubedude/amarula/blob/main/docs/INFRASTRUCTURE.md) — process model, supervision
   tree, and send/ack/crash semantics (the living architecture reference)
 - [`docs/`](https://github.com/tubedude/amarula/tree/main/docs) — design/port plans (point-in-time)

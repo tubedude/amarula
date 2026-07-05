@@ -38,7 +38,7 @@ Amarula already has a **consumer event** path, and telemetry is **not** that:
 
 - `ConnectionManager.emit_event/3` → `emit_to_subscribers/3` push
   `{:connection_event, {type, data}}` to subscribed pids; `Socket` forwards them to
-  the consumer's `parent_pid` as `{:whatsapp, type, data}` (`:messages_upsert`,
+  the consumer's `parent_pid` as `{:amarula, type, data}` (`:messages_upsert`,
   `:connection_update`, `:receipt_update`, `:group_update`, `:chats_update`, …).
   These are **application semantics** — the payload carries real message content,
   JIDs, chats. A bot consumes them to *act* on messages.
@@ -46,7 +46,7 @@ Amarula already has a **consumer event** path, and telemetry is **not** that:
 - **Telemetry is operational metrics** — counts, durations, booleans, kinds. It is
   for *observing* the client, not for delivering data to it. It must carry **no
   PII / content / key material** (see Privacy rule). A consumer attaches a
-  telemetry handler to feed a dashboard; it never replaces the `{:whatsapp, …}`
+  telemetry handler to feed a dashboard; it never replaces the `{:amarula, …}`
   callbacks.
 
 The two live side by side: an emission point may emit *both* a consumer event

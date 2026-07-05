@@ -60,7 +60,7 @@ fat process). No separate manager GenServer.
 | Today | After |
 |-------|-------|
 | Socket.handle_call({:send_text,…}) → CM.call | Connection.handle_call directly |
-| CM emit_event → event_handlers → Socket subscriber → parent_pid | Connection sends `{:whatsapp, …}` straight to parent_pid |
+| CM emit_event → event_handlers → Socket subscriber → parent_pid | Connection sends `{:amarula, …}` straight to parent_pid |
 | `subscribe/unsubscribe/3` + `event_handlers` map | **deleted** (no internal subscribers; parent_pid is the only sink) |
 | Socket struct (instance_id, conn, parent_pid, pending_sends) | folded into Connection state (which already has conn/instance/parent) |
 | `ConnectionManager.subscribe(...)` bridge in Socket.init | **deleted** |
@@ -80,7 +80,7 @@ process named `Connection` instead of CM).
    Connection pid. Move Socket's public client functions (send_text, group_*, …)
    onto Connection (most already have CM twins — dedupe to one). The facade
    `Amarula` delegates to Connection.
-3. **Delete the event bridge + Socket.** Connection emits `{:whatsapp, type, data}`
+3. **Delete the event bridge + Socket.** Connection emits `{:amarula, type, data}`
    directly to `parent_pid` (replace `emit_event`/`emit_to_subscribers` +
    `event_handlers` with a direct send to the stored parent_pid). Remove
    `subscribe/unsubscribe`. Delete `Socket` and its handle_info forwards.

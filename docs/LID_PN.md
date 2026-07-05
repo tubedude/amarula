@@ -60,23 +60,57 @@ wins whenever a mapping exists.** `LidMappingFileStore.signal_address/2` is the
 chokepoint — give it any jid, it returns the LID-based Signal address if mapped,
 else the plain PN one.
 
-## The gotcha: storage is LID, **the wire stays PN**
+## The gotcha: envelope vs. lock
 
-This trips people up, so hold both ideas at once:
+Think of an outgoing message as a **letter**:
+
+- **The envelope** — the wire `<to jid>` — carries the name you *addressed*. If you
+  sent to `5511…@s.whatsapp.net`, the envelope stays that **PN**. That's the
+  addressing the server routes on.
+- **The lock inside** — the Signal session that encrypted the ciphertext — is keyed
+  to the person's **crypto identity**, which is the **LID** once a mapping exists.
+
+So one packet leaves with a **PN on the envelope** but its contents were sealed with
+the **LID's** keys. Envelope ≠ lock, and that split is correct — not a bug:
 
 | Layer                       | Address used                                     |
 | --------------------------- | ------------------------------------------------ |
-| **Signal session storage**  | LID (when mapped) — e.g. `20000000001_1.0`       |
-| **Prekey bundle fetch**     | LID (when mapped) — server requires it           |
-| **Wire `<to jid>`**         | whatever you addressed (PN if you sent to a PN)  |
-
-You message `5511…@s.whatsapp.net`. The `<participants><to jid="…@s.whatsapp.net">`
-on the wire **stays that PN device jid** — that's the addressing the server expects
-from a sender. But the ciphertext inside was encrypted with the session stored
-under the **LID**. Wire identity ≠ crypto identity, and that's correct, not a bug.
+| **Wire `<to jid>`** (envelope) | whatever you addressed (PN if you sent to a PN) |
+| **Signal session storage** (lock) | LID (when mapped) — e.g. `20000000001_1.0`  |
+| **Prekey bundle fetch** (lock) | LID (when mapped) — server requires it         |
 
 `send_flow_test.exs` pins exactly this: the session lives at the LID address while
 `<to>` is still the PN.
+
+## What you have to keep to address properly (the 400)
+
+Amarula picks the *lock* (LID) for you. **You** are responsible for the *envelope* —
+and the envelope must be a **PN for a DM**. This is the part that bites:
+
+> **Address DMs by PN. Never send a DM straight to a raw `@lid`.**
+
+Why: to encrypt, Amarula first has to resolve the recipient's **devices**, and
+WhatsApp's device directory (USync) is **keyed by phone number**. Hand it a bare
+LID and the lookup gets **no answer** — you'll see a USync timeout, or the server
+rejecting the request as a **400 / bad-request**, and the send fails before any
+ciphertext is built. (Groups sidestep this: group metadata hands you each member's
+PN to look up with.)
+
+So the one thing to **keep** is the **PN↔LID mapping**, so you can turn a LID back
+into a sendable PN:
+
+- You often only *have* a LID — e.g. a `:messages_upsert` from a **group member**
+  arrives under their LID. You can't DM that LID directly.
+- Translate it first: `Amarula.Contacts.pn_for_lid(conn, lid)` returns the PN
+  **if the profile has learned the mapping**. Send to *that* PN.
+- If it returns `nil`, the profile never learned the pairing — populate it once with
+  `Amarula.Contacts.resolve_lid(conn, [phone])` (a USync), or wait for a
+  `:lid_mapping_update`, then retry. **Sending before the mapping exists is exactly
+  the 400 you hit.**
+
+In short: the LID is for reading identity and for the crypto Amarula handles
+internally; the **PN is what you put on the envelope**. Keep the mapping so you can
+always get back to a PN.
 
 ## Where the mapping comes from
 

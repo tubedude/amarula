@@ -332,7 +332,7 @@ companion's initial sync complete (without it the phone shows the device as
 
 Receipts, notifications, presence, and acks dispatch to their own handlers and emit
 their own events (`:receipt_update`, `:group_update`, …). Consumer events all reach
-`parent_pid` as `{:whatsapp, type, data}`.
+`parent_pid` as `{:amarula, type, data}`.
 
 ## Failure containment
 

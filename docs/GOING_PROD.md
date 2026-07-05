@@ -31,21 +31,32 @@ Pass `:storage` on the config (`Amarula.new/1`). Two adapters ship:
 | `Amarula.Storage.DETS` | `{Amarula.Storage.DETS, ...}` | single node, fewer inodes. |
 
 If you pass no `:storage`, the default is the File adapter rooted at
-`./amarula_data` (override with the `AMARULA_DATA_DIR` env var). That default path
-is already in `.gitignore` (along with `amarula_auth`/`amarula_store`) so credentials
-never get committed by accident — keep any custom root ignored too.
+`./amarula_data` (override with the `AMARULA_DATA_DIR` env var). This directory
+holds live credentials and Signal sessions — **treat it like a secret**. Amarula
+ignores it inside its *own* repo, but that ignore rule does **not** travel with the
+dependency, so in your app you must add it to your `.gitignore` yourself:
+
+```gitignore
+# Amarula credential + session storage — never commit
+/amarula_data/
+```
+
+(Match whatever root you configure; if you set `AMARULA_DATA_DIR` or a custom
+`:storage` root, ignore that path instead.)
 
 Both adapters are **node-local on disk**. For multi-node, or for "creds must survive the
-box dying," write a DB/object-store adapter — implement the five callbacks
-(`new/get/put/delete/clear`, plus optional `list_profiles`) and pass
+box dying," write a DB/object-store adapter — implement the four required callbacks
+(`new/get/put/delete`); `clear` and `list_profiles` are optional. Pass
 `{YourAdapter, opts}`. The protocol layer only ever says "save this session" /
 "load that mapping"; it never touches your backend directly.
 
 ### Gotchas
 
-- **Values are opaque Elixir terms** (`:erlang.term_to_binary/1`) — atom keys,
-  raw binaries. **Not** interchangeable with Baileys' JSON state, and a DB adapter
-  must store an opaque blob, not try to map columns.
+- **Your adapter receives live Elixir terms** — nested maps/structs with atom keys
+  and raw binaries, not a pre-serialized blob. Serialize them opaquely and
+  losslessly (the File adapter uses `:erlang.term_to_binary/1`); a DB adapter should
+  store one blob column, not try to map fields. The terms are **not** interchangeable
+  with Baileys' JSON state.
 - **Concurrency.** Adapters must be safe to call from multiple processes for the
   same scope. The File adapter does atomic temp-file + rename; a DB adapter gets
   this for free per row.
@@ -126,7 +137,7 @@ things tidy within a healthy cluster. You use both — the lease for safety, the
 ## 3. Message storage
 
 **Amarula does not persist messages. That is your job.** An inbound message is
-delivered **once** as `{:whatsapp, :messages_upsert, %{from, id, messages:
+delivered **once** as `{:amarula, :messages_upsert, %{from, id, messages:
 [%Amarula.Msg{}]}}` to your `parent_pid`, then forgotten. No replay, no inbox.
 
 ### What to store
@@ -158,8 +169,8 @@ case msg.type do
     save_text(msg.id, text)
 
   :media ->
-    # content is a DESCRIPTOR, not bytes:
-    #   %{kind: :image | :video | :audio | :document | :sticker, media: struct}
+    # content is an %Amarula.Content.Media{} descriptor (URL + keys), not bytes.
+    # Its :kind is :image | :video | :audio | :document | :sticker.
     %{kind: kind} = msg.content
     # ...store the descriptor; fetch bytes on demand (below)
 
@@ -209,9 +220,10 @@ pointer (and the `kind`), not the raw bytes in your row.
 
 ### History sync
 
-On first pair, WhatsApp pushes a history-sync blob (recent chats/messages). It
-arrives through the normal event path — treat it as a bulk `:messages_upsert` to
-seed your store, then rely on live `:messages_upsert` going forward.
+On first pair, WhatsApp pushes a history-sync blob (recent chats/contacts/messages).
+It arrives as its **own** `:history_sync` event, **not** as `:messages_upsert` — so
+handle both: seed your store from `:history_sync`, then rely on live
+`:messages_upsert` going forward. Pull more on demand with `fetch_history/4`.
 
 ---
 

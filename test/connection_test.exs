@@ -670,6 +670,39 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
+  describe "duplicate_decrypt_error?/1 — consumed-key duplicate detection (ack 487, not 500+retry)" do
+    test "matches the unwrapped pkmsg/whisper texts" do
+      assert Connection.duplicate_decrypt_error?([%RuntimeError{message: "Invalid PreKey ID"}])
+      assert Connection.duplicate_decrypt_error?(["Key used already or never filled"])
+    end
+
+    test "matches the WRAPPED msg-path error (consumed-key DecryptError inside 'No matching sessions')" do
+      # The 1:1 `msg` path runs a multi-session trial decrypt that wraps the
+      # per-session DecryptError; the consumed-key text is a substring, not the
+      # whole message. This is the redelivery-after-lost-ack case that used to
+      # nack 500 + retry instead of ack 487.
+      wrapped = %RuntimeError{
+        message:
+          ~s(No matching sessions found for message: [%DecryptError{message: "Key used already or never filled"}])
+      }
+
+      assert Connection.duplicate_decrypt_error?([wrapped])
+    end
+
+    test "does NOT match a genuine decrypt failure (still retries)" do
+      refute Connection.duplicate_decrypt_error?([%RuntimeError{message: "Bad MAC"}])
+
+      refute Connection.duplicate_decrypt_error?([
+               %RuntimeError{
+                 message:
+                   ~s(No matching sessions found for message: [%DecryptError{message: "Bad MAC"}])
+               }
+             ])
+
+      refute Connection.duplicate_decrypt_error?([:no_session, :no_content])
+    end
+  end
+
   describe "own_chat?/2 — the self-chat command channel (LID/PN agnostic)" do
     alias Amarula.{Address, Msg, Storage}
     alias Amarula.Protocol.Proto

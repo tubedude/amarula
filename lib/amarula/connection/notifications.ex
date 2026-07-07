@@ -16,10 +16,11 @@ defmodule Amarula.Connection.Notifications do
 
     * `{:disappearing, duration}` — default disappearing-mode changed
     * `{:blocklist, [%{jid, action}]}` — blocklist additions/removals
+    * `:own_devices` — our own linked-device set changed (a `<devices>` child)
     * `:ignore` — nothing we handle
   """
   @spec account_sync(Node.t()) ::
-          {:disappearing, String.t() | nil} | {:blocklist, [map()]} | :ignore
+          {:disappearing, String.t() | nil} | {:blocklist, [map()]} | :own_devices | :ignore
   def account_sync(node) do
     cond do
       child = NodeUtils.get_binary_node_child(node, "disappearing_mode") ->
@@ -34,6 +35,9 @@ defmodule Amarula.Connection.Notifications do
           end)
 
         {:blocklist, items}
+
+      NodeUtils.get_binary_node_child(node, "devices") ->
+        :own_devices
 
       true ->
         :ignore
@@ -65,13 +69,47 @@ defmodule Amarula.Connection.Notifications do
   end
 
   @doc """
-  Parse a `picture` notification into `{from, img_url}` where `img_url` is
-  `"changed"` (a `<set>` is present) or `"removed"`.
+  Parse a `picture` notification into a `%{id, img_url, picture_id, author}` map:
+
+    * `id` — whose avatar changed (normalized jid)
+    * `img_url` — `"changed"` (a `<set>`/`<add>` child) or `"removed"` (a `<delete>`)
+    * `picture_id` — the new picture's id (use it to fetch the CDN URL), `nil` on
+      removal
+    * `author` — who made the change (normalized jid; set on group avatars), or `nil`
   """
-  @spec picture(Node.t()) :: {String.t(), String.t()}
+  @spec picture(Node.t()) :: %{
+          id: String.t(),
+          img_url: String.t(),
+          picture_id: String.t() | nil,
+          author: String.t() | nil
+        }
   def picture(node) do
-    from = node |> NodeUtils.get_attr("from") |> JID.jid_normalized_user()
-    img_url = if NodeUtils.get_binary_node_child(node, "set"), do: "changed", else: "removed"
-    {from, img_url}
+    id = node |> NodeUtils.get_attr("from") |> JID.jid_normalized_user()
+    child = action_child(node)
+    changed? = match?(%Node{tag: tag} when tag in ~w(set add), child)
+
+    %{
+      id: id,
+      img_url: if(changed?, do: "changed", else: "removed"),
+      picture_id: if(changed?, do: NodeUtils.get_attr(child, "id")),
+      author: author(child)
+    }
   end
+
+  # The picture notification's action child: <set>/<add> (new avatar) or <delete>.
+  defp action_child(node) do
+    Enum.find(node.content || [], fn
+      %Node{tag: tag} -> tag in ~w(set add delete)
+      _ -> false
+    end)
+  end
+
+  defp author(%Node{} = child) do
+    case NodeUtils.get_attr(child, "author") do
+      nil -> nil
+      jid -> JID.jid_normalized_user(jid)
+    end
+  end
+
+  defp author(_), do: nil
 end

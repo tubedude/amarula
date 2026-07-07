@@ -16,11 +16,12 @@ Two integrity fixes surfaced by reviewing the whatsmeow implementation.
   collection level: the snapshot MAC (authenticating the resulting LTHash) and the
   patch MAC (authenticating the patch's mutations) were computed but never enforced.
   A patch whose MAC doesn't match is now rejected and not applied.
-- **Media downloads now verify the declared SHA-256 hashes.** `download/2` checked
-  only the HMAC; the descriptor's `file_enc_sha256` (ciphertext) and `file_sha256`
-  (plaintext) — already carried on `%Amarula.Content.Media{}` — were never verified.
-  Both are now checked when present (ciphertext before decrypt, plaintext after);
-  a mismatch returns `{:error, :bad_enc_hash}` / `{:error, :bad_file_hash}`.
+- **Media downloads now verify the declared plaintext hash.** After decrypting,
+  `download/2` checks the decrypted bytes against the sender's `file_sha256` (carried
+  on `%Amarula.Content.Media{}`) — end-to-end content integrity on top of the MAC,
+  catching a decrypt/unpad bug. A mismatch returns `{:error, :bad_file_hash}`; a
+  descriptor without the hash is skipped. (The MAC already covers ciphertext
+  integrity, so the redundant `file_enc_sha256` check isn't performed.)
 
 ## [0.4.4] - 2026-07-04
 

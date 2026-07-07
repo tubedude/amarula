@@ -80,14 +80,14 @@ defmodule Amarula.Protocol.Messages.Media do
 
   def download(_ref, _type), do: {:error, :invalid_media}
 
-  # The MAC (checked in `decrypt/3`) authenticates the blob against the media key.
-  # The descriptor's SHA-256 hashes are an extra integrity check that also matches
-  # what the sender declared: verify the ciphertext hash (`file_enc_sha256`) before
-  # decrypting and the plaintext hash (`file_sha256`) after. A hash the descriptor
-  # doesn't carry is skipped.
+  # The MAC (checked in `decrypt/3`) already authenticates the ciphertext against the
+  # media key, so ciphertext integrity is covered. After decrypting, verify the
+  # plaintext against the sender's declared `file_sha256` — end-to-end content
+  # integrity that also catches a decrypt/unpad bug. (The `file_enc_sha256` hash the
+  # descriptor also carries would be redundant with the MAC, so we don't check it.)
+  # Skipped if the descriptor doesn't carry `file_sha256`.
   defp verify_and_decrypt(ref, enc, media_key, type) do
-    with :ok <- verify_hash(enc, Map.get(ref, :file_enc_sha256), :bad_enc_hash),
-         {:ok, plaintext} <- decrypt(enc, media_key, type),
+    with {:ok, plaintext} <- decrypt(enc, media_key, type),
          :ok <- verify_hash(plaintext, Map.get(ref, :file_sha256), :bad_file_hash) do
       {:ok, plaintext}
     end

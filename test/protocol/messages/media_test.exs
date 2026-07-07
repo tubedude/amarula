@@ -60,35 +60,14 @@ defmodule Amarula.Protocol.Messages.MediaTest do
       assert {:ok, ^data} = Media.download(ref, :video)
     end
 
-    test "verifies the descriptor's SHA-256 hashes when present" do
+    test "verifies the declared plaintext hash when present" do
       data = :crypto.strong_rand_bytes(300)
       {:ok, e} = Media.encrypt(data, :image)
 
       Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, e.enc) end)
 
-      ref = %{
-        direct_path: "/v/t62/enc",
-        media_key: e.media_key,
-        file_enc_sha256: e.file_enc_sha256,
-        file_sha256: e.file_sha256
-      }
-
+      ref = %{direct_path: "/v/t62/enc", media_key: e.media_key, file_sha256: e.file_sha256}
       assert {:ok, ^data} = Media.download(ref, :image)
-    end
-
-    test "a wrong ciphertext hash is rejected before decrypt (:bad_enc_hash)" do
-      data = :crypto.strong_rand_bytes(300)
-      {:ok, e} = Media.encrypt(data, :image)
-
-      Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, e.enc) end)
-
-      ref = %{
-        direct_path: "/v/t62/enc",
-        media_key: e.media_key,
-        file_enc_sha256: :crypto.strong_rand_bytes(32)
-      }
-
-      assert {:error, :bad_enc_hash} = Media.download(ref, :image)
     end
 
     test "a wrong plaintext hash is rejected after decrypt (:bad_file_hash)" do
@@ -100,7 +79,6 @@ defmodule Amarula.Protocol.Messages.MediaTest do
       ref = %{
         direct_path: "/v/t62/enc",
         media_key: e.media_key,
-        file_enc_sha256: e.file_enc_sha256,
         file_sha256: :crypto.strong_rand_bytes(32)
       }
 

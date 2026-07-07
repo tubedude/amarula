@@ -3305,15 +3305,27 @@ defmodule Amarula.Connection do
   # Detect a libsignal consumed-key failure (a duplicate redelivery of an
   # already-decrypted message): either the ratchet counter is spent ("Key used
   # already or never filled") or the one-time prekey a pkmsg references is gone
-  # ("Invalid PreKey ID"). Matches whether the reason is a raised RuntimeError
-  # struct or a plain string.
-  defp duplicate_decrypt_error?(errors) do
+  # ("Invalid PreKey ID").
+  #
+  # Match on SUBSTRING, not equality: the two enc types surface the signal
+  # differently. A `pkmsg` raises the libsignal text unwrapped, but a `msg` goes
+  # through the multi-session trial decrypt, which wraps the per-session
+  # DecryptError inside "No matching sessions found for message: <inspect(errs)>"
+  # (`SessionCipher.decrypt_with_sessions`). The consumed-key text is still in
+  # there — an exact match missed it and nacked 500 + retried the *most common*
+  # duplicate (a normal ratchet message redelivered after a lost ack / 515 restart).
+  # Exposed (not private) so it can be unit-tested directly.
+  @doc false
+  def duplicate_decrypt_error?(errors) do
     Enum.any?(errors, fn
-      %{message: msg} -> msg in @duplicate_decrypt_error_texts
-      msg when is_binary(msg) -> msg in @duplicate_decrypt_error_texts
+      %{message: msg} when is_binary(msg) -> duplicate_text?(msg)
+      msg when is_binary(msg) -> duplicate_text?(msg)
       _ -> false
     end)
   end
+
+  defp duplicate_text?(msg),
+    do: Enum.any?(@duplicate_decrypt_error_texts, &String.contains?(msg, &1))
 
   # One-time prekeys consumed by a PreKeySignalMessage must be deleted, like
   # libsignal's removePreKey after decryptPreKeyWhisperMessage.

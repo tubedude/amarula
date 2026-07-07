@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Duplicate 1:1 message redeliveries are acked, not retried.** A normal ratchet
+  message (`<enc type="msg">`) redelivered after a lost ack or a 515 restart is a
+  consumed-key duplicate, but the multi-session trial decrypt wraps the libsignal
+  "Key used already or never filled" signal inside a generic "No matching sessions
+  found" error. The duplicate check matched that text exactly, so it missed the
+  wrapped form and nacked `500` + sent a spurious retry receipt (the poison-redelivery
+  loop the `487` path exists to prevent). It now matches the consumed-key text as a
+  substring, covering both the `pkmsg` (unwrapped) and `msg` (wrapped) forms.
+
 ## [0.4.5] - 2026-07-07
 
 Two integrity fixes surfaced by reviewing the whatsmeow implementation.

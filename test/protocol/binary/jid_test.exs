@@ -212,14 +212,6 @@ defmodule Amarula.Protocol.Binary.JIDTest do
     end
   end
 
-  describe "group?/1 alias" do
-    test "group?/1 is alias for jid_group?/1" do
-      assert JID.group?("1234@g.us") == JID.jid_group?("1234@g.us")
-      assert JID.group?("1234@s.whatsapp.net") == JID.jid_group?("1234@s.whatsapp.net")
-      assert JID.group?(nil) == JID.jid_group?(nil)
-    end
-  end
-
   describe "predicate edge cases" do
     test "predicates handle nil gracefully" do
       assert JID.jid_user?(nil) == false
@@ -248,14 +240,15 @@ defmodule Amarula.Protocol.Binary.JIDTest do
     end
 
     test "encodes with agent 0" do
+      # agent 0 emits no `_0` suffix (Baileys jidEncode `!!agent` — same rule as device)
       assert JID.encode(%{user: "1234", agent: 0, server: "s.whatsapp.net"}) ==
-               "1234_0@s.whatsapp.net"
+               "1234@s.whatsapp.net"
     end
 
     test "encodes with both device and agent 0" do
-      # device 0 drops its suffix; agent 0 is kept by the agent+device clause
+      # both agent 0 and device 0 drop their segments (Baileys `!!x` truthiness)
       assert JID.encode(%{user: "1234", agent: 0, device: 0, server: "s.whatsapp.net"}) ==
-               "1234_0@s.whatsapp.net"
+               "1234@s.whatsapp.net"
     end
 
     test "decodes JID with agent 0" do

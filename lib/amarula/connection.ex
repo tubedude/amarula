@@ -1677,25 +1677,28 @@ defmodule Amarula.Connection do
       # increments and desync the cipher (server rejects later frames with bad-mac).
       state = %{state | noise_state: updated_noise_state}
 
-      # Process each decoded frame and accumulate state changes
+      # Process each decoded frame and accumulate state changes.
       updated_state =
-        Enum.with_index(frames)
-        |> Enum.reduce(state, fn {frame, idx}, acc_state ->
-          # Only decode is wrapped: WhatsApp interleaves non-binary WS control
-          # frames (close/pong) into this stream that the Decoder can't parse, so
-          # a decode failure means "route as a control frame", not "crash". Node
-          # handling (process_server_node) is deliberately OUTSIDE the rescue —
-          # a crash there is a real protocol/state bug and should let the socket
-          # crash so the supervisor restores a clean noise/crypto state.
-          case decode_frame(frame, idx) do
-            {:ok, binary_node} -> process_server_node(acc_state, binary_node)
-            :control -> handle_control_frame(acc_state, frame)
-          end
-        end)
+        frames
+        |> Enum.with_index()
+        |> Enum.reduce(state, &process_indexed_frame/2)
 
       # noise_state already lives inside updated_state and reflects both the read
       # decode and any sends performed while handling these frames.
       {:ok, updated_state}
+    end
+  end
+
+  # Only decode is wrapped: WhatsApp interleaves non-binary WS control frames
+  # (close/pong) into this stream that the Decoder can't parse, so a decode failure
+  # means "route as a control frame", not "crash". Node handling
+  # (process_server_node) is deliberately OUTSIDE the rescue — a crash there is a
+  # real protocol/state bug and should let the socket crash so the supervisor
+  # restores a clean noise/crypto state.
+  defp process_indexed_frame({frame, idx}, acc_state) do
+    case decode_frame(frame, idx) do
+      {:ok, binary_node} -> process_server_node(acc_state, binary_node)
+      :control -> handle_control_frame(acc_state, frame)
     end
   end
 

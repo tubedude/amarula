@@ -50,10 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before the next send), instead of leaving the ratchet stranded — which previously
   caused a window of undecryptable messages. No renegotiation when a session already
   exists to move.
-- **A duplicate message redelivery is acknowledged as received, not as a parse
-  error.** When the server redelivers a message we've already decrypted, Amarula now
-  sends the same delivery receipt the success path does (draining the offline queue)
-  rather than nacking `487` (which mislabels a known message as a parse failure).
+- **Duplicate 1:1 message redeliveries are acknowledged as received, not retried.** A
+  ratchet message redelivered after a lost ack or a 515 restart is a consumed-key
+  duplicate. Amarula now recognises it structurally (a typed decrypt error, covering
+  both the `pkmsg` and the wrapped `msg` forms) and sends the same delivery receipt
+  the success path does — draining the server's offline queue — instead of nacking
+  `500` and firing a spurious retry receipt (the redelivery/poison loop).
 
 ## [0.4.5] - 2026-07-07
 
@@ -762,7 +764,8 @@ First public release.
   device-unlink now lives only in `wipe_credentials/1`.
 
 [Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/tubedude/amarula/compare/v0.4.4...v0.5.0
+[0.5.0]: https://github.com/tubedude/amarula/compare/v0.4.5...v0.5.0
+[0.4.5]: https://github.com/tubedude/amarula/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/tubedude/amarula/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/tubedude/amarula/compare/v0.3.0...v0.4.3
 [0.3.0]: https://github.com/tubedude/amarula/compare/v0.2.4...v0.3.0

@@ -60,6 +60,31 @@ defmodule Amarula.Protocol.Messages.MediaTest do
       assert {:ok, ^data} = Media.download(ref, :video)
     end
 
+    test "verifies the declared plaintext hash when present" do
+      data = :crypto.strong_rand_bytes(300)
+      {:ok, e} = Media.encrypt(data, :image)
+
+      Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, e.enc) end)
+
+      ref = %{direct_path: "/v/t62/enc", media_key: e.media_key, file_sha256: e.file_sha256}
+      assert {:ok, ^data} = Media.download(ref, :image)
+    end
+
+    test "a wrong plaintext hash is rejected after decrypt (:bad_file_hash)" do
+      data = :crypto.strong_rand_bytes(300)
+      {:ok, e} = Media.encrypt(data, :image)
+
+      Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, e.enc) end)
+
+      ref = %{
+        direct_path: "/v/t62/enc",
+        media_key: e.media_key,
+        file_sha256: :crypto.strong_rand_bytes(32)
+      }
+
+      assert {:error, :bad_file_hash} = Media.download(ref, :image)
+    end
+
     test "surfaces a non-200 (expired URL) as {:http, status}" do
       Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 404, "gone") end)
 

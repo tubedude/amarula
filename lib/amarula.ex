@@ -1059,8 +1059,8 @@ defmodule Amarula do
   *metadata* (directPath/mediaKey), not the bytes — call this to fetch them
   lazily, passing a `%Amarula.Msg{type: :media}` (or its `content`, an
   `%Amarula.Content.Media{}`). Returns `{:ok, bytes}` or `{:error, reason}`
-  (`:bad_mac` on a failed integrity check, `:invalid_media` on a malformed
-  descriptor).
+  (`:bad_mac` or `:bad_file_hash` on a failed integrity check, `:invalid_media` on
+  a malformed descriptor).
 
       %Amarula.Msg{type: :media} = msg
       {:ok, bytes} = Amarula.download_media(msg)

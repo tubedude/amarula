@@ -1677,25 +1677,28 @@ defmodule Amarula.Connection do
       # increments and desync the cipher (server rejects later frames with bad-mac).
       state = %{state | noise_state: updated_noise_state}
 
-      # Process each decoded frame and accumulate state changes
+      # Process each decoded frame and accumulate state changes.
       updated_state =
-        Enum.with_index(frames)
-        |> Enum.reduce(state, fn {frame, idx}, acc_state ->
-          # Only decode is wrapped: WhatsApp interleaves non-binary WS control
-          # frames (close/pong) into this stream that the Decoder can't parse, so
-          # a decode failure means "route as a control frame", not "crash". Node
-          # handling (process_server_node) is deliberately OUTSIDE the rescue —
-          # a crash there is a real protocol/state bug and should let the socket
-          # crash so the supervisor restores a clean noise/crypto state.
-          case decode_frame(frame, idx) do
-            {:ok, binary_node} -> process_server_node(acc_state, binary_node)
-            :control -> handle_control_frame(acc_state, frame)
-          end
-        end)
+        frames
+        |> Enum.with_index()
+        |> Enum.reduce(state, &process_indexed_frame/2)
 
       # noise_state already lives inside updated_state and reflects both the read
       # decode and any sends performed while handling these frames.
       {:ok, updated_state}
+    end
+  end
+
+  # Only decode is wrapped: WhatsApp interleaves non-binary WS control frames
+  # (close/pong) into this stream that the Decoder can't parse, so a decode failure
+  # means "route as a control frame", not "crash". Node handling
+  # (process_server_node) is deliberately OUTSIDE the rescue — a crash there is a
+  # real protocol/state bug and should let the socket crash so the supervisor
+  # restores a clean noise/crypto state.
+  defp process_indexed_frame({frame, idx}, acc_state) do
+    case decode_frame(frame, idx) do
+      {:ok, binary_node} -> process_server_node(acc_state, binary_node)
+      :control -> handle_control_frame(acc_state, frame)
     end
   end
 
@@ -3305,15 +3308,27 @@ defmodule Amarula.Connection do
   # Detect a libsignal consumed-key failure (a duplicate redelivery of an
   # already-decrypted message): either the ratchet counter is spent ("Key used
   # already or never filled") or the one-time prekey a pkmsg references is gone
-  # ("Invalid PreKey ID"). Matches whether the reason is a raised RuntimeError
-  # struct or a plain string.
-  defp duplicate_decrypt_error?(errors) do
+  # ("Invalid PreKey ID").
+  #
+  # Match on SUBSTRING, not equality: the two enc types surface the signal
+  # differently. A `pkmsg` raises the libsignal text unwrapped, but a `msg` goes
+  # through the multi-session trial decrypt, which wraps the per-session
+  # DecryptError inside "No matching sessions found for message: <inspect(errs)>"
+  # (`SessionCipher.decrypt_with_sessions`). The consumed-key text is still in
+  # there — an exact match missed it and nacked 500 + retried the *most common*
+  # duplicate (a normal ratchet message redelivered after a lost ack / 515 restart).
+  # Exposed (not private) so it can be unit-tested directly.
+  @doc false
+  def duplicate_decrypt_error?(errors) do
     Enum.any?(errors, fn
-      %{message: msg} -> msg in @duplicate_decrypt_error_texts
-      msg when is_binary(msg) -> msg in @duplicate_decrypt_error_texts
+      %{message: msg} when is_binary(msg) -> duplicate_text?(msg)
+      msg when is_binary(msg) -> duplicate_text?(msg)
       _ -> false
     end)
   end
+
+  defp duplicate_text?(msg),
+    do: Enum.any?(@duplicate_decrypt_error_texts, &String.contains?(msg, &1))
 
   # One-time prekeys consumed by a PreKeySignalMessage must be deleted, like
   # libsignal's removePreKey after decryptPreKeyWhisperMessage.
@@ -3636,9 +3651,18 @@ defmodule Amarula.Connection do
     |> Sync.extract_collections()
     |> Enum.each(fn %{name: name, patches: patches} ->
       prior = load_collection_state(state, name)
-      {:ok, changes, new_state} = Sync.decode_collection(patches, prior, get_key)
-      save_collection_state(state, name, new_state)
-      emit_app_state_changes(state, changes)
+
+      case Sync.decode_collection(patches, prior, get_key, name) do
+        {:ok, changes, new_state} ->
+          save_collection_state(state, name, new_state)
+          emit_app_state_changes(state, changes)
+
+        {:error, reason} ->
+          # A patch whose snapshot/patch MAC doesn't match is unauthenticated — drop
+          # it (don't persist the state or emit changes). Prior state is kept, so the
+          # next resync re-requests from the same version.
+          Logger.warning("app-state sync for #{name} rejected (#{inspect(reason)}); not applied")
+      end
     end)
   end
 

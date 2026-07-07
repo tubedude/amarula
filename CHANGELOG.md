@@ -27,6 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   If it isn't running when you connect, Amarula raises with a message telling you
   to add `Amarula.Supervisor`, instead of a `:noproc` exit.
 
+### Fixed
+
+- **App-state sync now verifies the snapshot and patch MACs.** Incoming app-state
+  patches were checked at the per-record level (value/index MAC) but not at the
+  collection level: the snapshot MAC (authenticating the resulting LTHash) and the
+  patch MAC (authenticating the patch's mutations) were computed but never enforced.
+  A patch whose MAC doesn't match is now rejected and not applied.
+- **Media downloads now verify the declared plaintext hash.** After decrypting,
+  `download/2` checks the decrypted bytes against the sender's `file_sha256` (carried
+  on `%Amarula.Content.Media{}`) — end-to-end content integrity on top of the MAC,
+  catching a decrypt/unpad bug. A mismatch returns `{:error, :bad_file_hash}`; a
+  descriptor without the hash is skipped. (The MAC already covers ciphertext
+  integrity, so the redundant `file_enc_sha256` check isn't performed.)
+
 ## [0.4.4] - 2026-07-04
 
 ### Changed

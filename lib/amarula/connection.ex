@@ -103,7 +103,8 @@ defmodule Amarula.Connection do
     pending_sends: %{},
     pending_acks: %{},
     pending_media_retries: %{},
-    sender_monitors: %{}
+    sender_monitors: %{},
+    migrated_pn_sessions: MapSet.new()
   ]
 
   @typedoc """
@@ -171,7 +172,10 @@ defmodule Amarula.Connection do
           # to decrypt the reply, and the timeout timer.
           pending_media_retries: %{
             String.t() => {GenServer.from(), binary(), reference()}
-          }
+          },
+          # PN users whose Signal sessions have been migrated onto their LID this
+          # connection — an idempotency guard so we migrate once, not per message.
+          migrated_pn_sessions: MapSet.t()
         }
 
   # Client API
@@ -396,6 +400,15 @@ defmodule Amarula.Connection do
   @spec assert_lid_sessions(GenServer.server(), [String.t()]) :: :ok
   def assert_lid_sessions(_pid, []), do: :ok
   def assert_lid_sessions(pid, lids), do: GenServer.cast(pid, {:assert_lid_sessions, lids})
+
+  @doc """
+  Cast newly-learned LID↔PN pairs so existing PN Signal sessions are re-keyed onto
+  the LID address instead of renegotiating. `pairs` is `[{lid_jid, pn_jid}, ...]`.
+  Contacts with no prior PN session get a fresh prekey-bundle fetch instead.
+  """
+  @spec migrate_pn_sessions(GenServer.server(), [{String.t(), String.t()}]) :: :ok
+  def migrate_pn_sessions(_pid, []), do: :ok
+  def migrate_pn_sessions(pid, pairs), do: GenServer.cast(pid, {:migrate_pn_sessions, pairs})
 
   @doc """
   Cast newly-learned LID↔PN pairs so the consumer gets a `:lid_mapping_update`
@@ -901,6 +914,14 @@ defmodule Amarula.Connection do
   def handle_cast({:assert_lid_sessions, lids}, state) do
     Logger.debug("Force-refreshing sessions for #{length(lids)} newly mapped LID(s)")
     {:noreply, force_refresh_sessions(state, lids)}
+  end
+
+  # Re-key existing PN sessions onto their LID; only contacts with no PN session to
+  # move need a fresh bundle (fetching for a migrated one would clobber the ratchet).
+  @impl GenServer
+  def handle_cast({:migrate_pn_sessions, pairs}, state) do
+    {needs_fetch, state} = Enum.flat_map_reduce(pairs, state, &migrate_pair/2)
+    {:noreply, force_refresh_sessions(state, needs_fetch)}
   end
 
   @impl GenServer
@@ -2358,9 +2379,71 @@ defmodule Amarula.Connection do
     end
   end
 
+  # Before decrypting, if the sender is PN-addressed but we know their LID, move
+  # their PN session onto the LID address. Idempotent per pn user per connection
+  # (the migrated_pn_sessions guard also spares a storage read for repeat senders).
+  defp maybe_migrate_sender_session(state, node) do
+    author = NodeUtils.get_attr(node, "participant") || NodeUtils.get_attr(node, "from")
+
+    with true <- is_binary(author) and JID.jid_user?(author) and not JID.lid_user?(author),
+         %{user: pn_user} <- JID.decode(author),
+         false <- MapSet.member?(state.migrated_pn_sessions, pn_user),
+         lid_user when is_binary(lid_user) <- LidMappingFileStore.lid_for_pn(conn(state), author) do
+      # Ignore the :migrated/:none result on purpose: the receive path never
+      # force-fetches a bundle. A :none (no PN session to move) just means an
+      # inbound pkmsg will establish the session on decrypt — fetching is a
+      # send-side concern (see the migrate_pn_sessions handler).
+      {state, _result} = migrate_pn_user(state, pn_user, lid_user)
+      state
+    else
+      # Every else case is routine, not the undecodable-jid anomaly migrate_pair
+      # logs: not a PN user, already migrated, or no LID mapping. `jid_user?` having
+      # passed guarantees `JID.decode/1` returns a map, so that clause can't fail.
+      _ -> state
+    end
+  end
+
+  # Idempotently re-key one PN user's sessions onto their LID, recording it so we
+  # migrate once. Returns {state, :migrated | :none | :already}: `:none` means the
+  # user had no PN session to move (caller may want a fresh bundle instead).
+  defp migrate_pn_user(state, pn_user, lid_user) do
+    if MapSet.member?(state.migrated_pn_sessions, pn_user) do
+      {state, :already}
+    else
+      state = %{state | migrated_pn_sessions: MapSet.put(state.migrated_pn_sessions, pn_user)}
+
+      case SessionStore.migrate_pn_to_lid(conn(state), pn_user, lid_user) do
+        0 -> {state, :none}
+        _ -> {state, :migrated}
+      end
+    end
+  end
+
+  # Migrate one newly-mapped {lid, pn} pair, threading state and emitting the lid
+  # into the fetch list ONLY when there was no PN session to re-key (:none) — a
+  # migrated contact must not be force-refreshed, which would clobber the moved
+  # ratchet. Shaped for Enum.flat_map_reduce/3 (zero-or-one lids out, state through).
+  defp migrate_pair({lid, pn}, state) do
+    with %{user: pn_user} <- JID.decode(pn),
+         %{user: lid_user} <- JID.decode(lid) do
+      case migrate_pn_user(state, pn_user, lid_user) do
+        {state, :none} -> {[lid], state}
+        {state, _} -> {[], state}
+      end
+    else
+      # The pairs come from USync, so an undecodable jid is an upstream anomaly, not
+      # routine — surface it (JID-free) rather than dropping it silently.
+      _ ->
+        Logger.warning("migrate_pn_sessions: skipping a mapping pair with an undecodable jid")
+        {[], state}
+    end
+  end
+
   # Build + send the <iq xmlns=encrypt> key fetch that force-refreshes the named
   # jids' Signal sessions (Baileys assertSessions force=true). Used both for
   # newly-mapped LIDs and for an identity-change notification.
+  defp force_refresh_sessions(state, []), do: state
+
   defp force_refresh_sessions(state, jids) do
     user_nodes =
       Enum.map(jids, fn jid ->
@@ -3238,6 +3321,11 @@ defmodule Amarula.Connection do
     msg_id = NodeUtils.get_attr(node, "from") && NodeUtils.get_attr(node, "id")
     from = NodeUtils.get_attr(node, "from")
     own_sender? = own_sender?(state, node, from)
+
+    # If the sender is PN-addressed but we now know their LID, move their Signal
+    # session onto the LID address BEFORE decrypting — otherwise the LID-aware
+    # address lookup in decrypt_node would miss the still-PN-keyed ratchet. #15.
+    state = maybe_migrate_sender_session(state, node)
 
     store = SessionStore.build(state.auth_creds)
 

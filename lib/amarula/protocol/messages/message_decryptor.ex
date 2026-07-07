@@ -17,9 +17,9 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
 
   require Logger
 
-  alias Amarula.Protocol.Binary.{JID, NodeUtils}
+  alias Amarula.Protocol.Binary.NodeUtils
   alias Amarula.Protocol.Proto
-  alias Amarula.Protocol.Signal.{SessionCipher, SessionStore}
+  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionCipher, SessionStore}
 
   alias Amarula.Protocol.Signal.Group.{
     GroupCipher,
@@ -27,8 +27,6 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
     SenderKeyName,
     SenderKeyStore
   }
-
-  @whatsapp_domain 0
 
   @doc """
   Decrypt all decryptable `<enc>` children of `node`.
@@ -51,7 +49,9 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
     from = NodeUtils.get_attr(node, "from")
     participant = NodeUtils.get_attr(node, "participant")
     author = participant || from
-    addr = signal_address(author)
+    # LID-aware: for a PN sender we now know the LID of, resolve to the LID
+    # signal-address (where handle_message just migrated their session). #15.
+    addr = LidMappingFileStore.signal_address(conn, author)
 
     ctx = %{
       addr: addr,
@@ -217,16 +217,4 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   # Group message sender key name: group JID as group, author JID as sender.
   # jidToSignalProtocolAddress: "<user>.<device>", with "_<domainType>" suffix for
   # non-WhatsApp domains (lid, etc.).
-  defp signal_address(jid) do
-    case JID.decode(jid) do
-      %{user: user} = decoded ->
-        dt = Map.get(decoded, :domain_type, @whatsapp_domain)
-        device = Map.get(decoded, :device, 0)
-        signal_user = if dt == @whatsapp_domain, do: user, else: "#{user}_#{dt}"
-        "#{signal_user}.#{device}"
-
-      _ ->
-        raise "could not decode JID for signal address: #{inspect(jid)}"
-    end
-  end
 end

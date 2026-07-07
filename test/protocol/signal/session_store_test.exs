@@ -81,6 +81,52 @@ defmodule Amarula.Protocol.Signal.SessionStoreTest do
     assert Map.has_key?(loaded.sessions, Base.encode64(<<0::16>>))
   end
 
+  describe "migrate_pn_to_lid/3" do
+    test "moves a PN session onto the LID address and deletes the PN entry", %{conn: conn} do
+      :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{r: 1}})
+
+      assert 1 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+
+      assert SessionStore.load_session(conn, "188888_1.0") == %{sessions: %{r: 1}}
+      assert SessionStore.load_session(conn, "199999.0") == nil
+    end
+
+    test "migrates every device the PN user has", %{conn: conn} do
+      :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{d: 0}})
+      :ok = SessionStore.store_session(conn, "199999.3", %{sessions: %{d: 3}})
+
+      assert 2 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+
+      assert SessionStore.load_session(conn, "188888_1.0") == %{sessions: %{d: 0}}
+      assert SessionStore.load_session(conn, "188888_1.3") == %{sessions: %{d: 3}}
+      assert SessionStore.load_session(conn, "199999.0") == nil
+      assert SessionStore.load_session(conn, "199999.3") == nil
+    end
+
+    test "the live PN ratchet wins over a pre-existing LID session", %{conn: conn} do
+      :ok = SessionStore.store_session(conn, "188888_1.0", %{sessions: %{stale: true}})
+      :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{live: true}})
+
+      assert 1 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+      assert SessionStore.load_session(conn, "188888_1.0") == %{sessions: %{live: true}}
+    end
+
+    test "returns 0 and changes nothing when the PN user has no session", %{conn: conn} do
+      assert 0 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+      assert SessionStore.load_session(conn, "188888_1.0") == nil
+    end
+
+    test "leaves a different user whose id merely shares a prefix untouched", %{conn: conn} do
+      :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{target: true}})
+      :ok = SessionStore.store_session(conn, "1999990.0", %{sessions: %{bystander: true}})
+
+      assert 1 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+
+      # The "." boundary in the prefix prevents matching the longer id.
+      assert SessionStore.load_session(conn, "1999990.0") == %{sessions: %{bystander: true}}
+    end
+  end
+
   defp entry(base_key, opts) do
     %{
       registration_id: 1,

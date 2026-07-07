@@ -88,6 +88,21 @@ defmodule Amarula.Storage.DETS do
     end
   end
 
+  @impl true
+  def list_keys(%{root: root}, profile, namespace) do
+    # Records are {{namespace, key}, value}; match the key out for this namespace.
+    keys =
+      open(root, profile)
+      |> :dets.match({{namespace, :"$1"}, :_})
+      |> Enum.map(fn [key] -> key end)
+
+    {:ok, keys}
+  rescue
+    e ->
+      Logger.warning("Storage.DETS: list_keys failed (#{inspect(e)})")
+      {:error, e}
+  end
+
   # --- internals ---
 
   # Open (idempotently) the per-profile DETS table, named by {root, profile} so

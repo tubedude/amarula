@@ -50,13 +50,29 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
       restart: :temporary
     }
 
-    with {:ok, sup} <-
-           DynamicSupervisor.start_child(Amarula.Application.connections_supervisor(), spec),
+    with :ok <- ensure_supervisor_running(),
+         {:ok, sup} <-
+           DynamicSupervisor.start_child(Amarula.Supervisor.connections_supervisor(), spec),
          connection when is_pid(connection) <- whereis(instance_id, :connection) do
       {:ok, sup, connection}
     else
       :undefined -> {:error, :connection_not_started}
       {:error, _} = err -> err
+    end
+  end
+
+  # `Amarula.Supervisor` is added by the consumer, not started automatically. If it
+  # isn't running, raise a message naming the fix instead of exiting with `:noproc`.
+  defp ensure_supervisor_running do
+    if Process.whereis(Amarula.Supervisor.connections_supervisor()) do
+      :ok
+    else
+      raise """
+      Amarula.Supervisor is not running. Add `Amarula.Supervisor` to your supervision \
+      tree, before any `{Amarula, …}` connection children:
+
+          children = [Amarula.Supervisor, MyApp.Bot, {Amarula, profile: :me, parent: MyApp.Bot}]
+      """
     end
   end
 

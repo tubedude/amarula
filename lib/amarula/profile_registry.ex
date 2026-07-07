@@ -7,7 +7,7 @@ defmodule Amarula.ProfileRegistry do
   ## Reach = the registry module's reach
 
   By default this is a local Elixir `Registry` (this module name doubles as the
-  default registry's process name, started by `Amarula.Application`), so uniqueness
+  default registry's process name, started by `Amarula.Supervisor`), so uniqueness
   is enforced **per node**. A clustered consumer can supply a different,
   `:via`-compatible registry via the `:registry` connection config — e.g.
   `Horde.Registry` for **cluster-wide** uniqueness:

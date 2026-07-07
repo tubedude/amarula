@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-07
+
+### Changed
+
+- **BREAKING — Amarula no longer starts its process tree unconditionally.** The two
+  registries and the connections `DynamicSupervisor` now live in a new
+  **`Amarula.Supervisor`**, which by default is **not** started for you — add it to
+  your own supervision tree so you control its placement, restart strategy, and
+  nesting. To keep the old auto-start behaviour, opt in with
+  `config :amarula, start_supervisor: true` and the library's application starts it
+  for you.
+
+  **Migration:** either add that config line, or add `Amarula.Supervisor` as a
+  child, **before** any `{Amarula, …}` connection children and before `connect/2`:
+
+      children = [
+        Amarula.Supervisor,
+        MyApp.Bot,
+        {Amarula, profile: :me, parent: MyApp.Bot}
+      ]
+
+  If it isn't running when you connect, Amarula raises with a message telling you
+  to add `Amarula.Supervisor`, instead of a `:noproc` exit.
+
 ## [0.4.4] - 2026-07-04
 
 ### Changed
@@ -693,7 +717,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tubedude/amarula/compare/v0.4.4...v0.5.0
 [0.4.4]: https://github.com/tubedude/amarula/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/tubedude/amarula/compare/v0.3.0...v0.4.3
 [0.3.0]: https://github.com/tubedude/amarula/compare/v0.2.4...v0.3.0

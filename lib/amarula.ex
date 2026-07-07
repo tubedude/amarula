@@ -345,6 +345,7 @@ defmodule Amarula do
   `connect/2` by hand:
 
       children = [
+        Amarula.Supervisor,                                    # Amarula's shared tree (add it first)
         MyApp.WhatsAppRouter,                                  # your event sink (a named process)
         {Amarula, profile: :sales,   parent: MyApp.WhatsAppRouter},
         {Amarula, profile: :support, parent: MyApp.WhatsAppRouter}
@@ -352,7 +353,11 @@ defmodule Amarula do
 
       Supervisor.start_link(children, strategy: :one_for_one)
 
-  The argument is a keyword list (or map): the `new/1` config, plus `:parent` —
+  `Amarula.Supervisor` starts the library's shared tree and must come **before** any
+  `{Amarula, …}` child. It is not started for you by default (or set
+  `config :amarula, start_supervisor: true` to have Amarula's application start it).
+  The rest of the argument is a keyword list (or map): the `new/1` config, plus
+  `:parent` —
   the event sink (a **registered name**, so it survives restarts; see `connect/2`).
   Each child gets a distinct `id` of `{Amarula, profile}`, so several profiles
   coexist under one supervisor.

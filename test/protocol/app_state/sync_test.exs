@@ -1,7 +1,7 @@
 defmodule Amarula.Protocol.AppState.SyncTest do
   use ExUnit.Case, async: true
 
-  alias Amarula.Protocol.AppState.{Keys, Mutation, Patch, Sync}
+  alias Amarula.Protocol.AppState.{Keys, LTHash, Mutation, Patch, Sync}
   alias Amarula.Protocol.Binary.{Node, NodeUtils}
   alias Amarula.Protocol.Proto
 
@@ -39,20 +39,58 @@ defmodule Amarula.Protocol.AppState.SyncTest do
       # Build a SyncdPatch with one SET mutation (a pin action on a chat).
       index = ["pin_v1", "5511999999999@s.whatsapp.net"]
       av = %Proto.SyncActionValue{pinAction: %Proto.SyncActionValue.PinAction{pinned: true}}
-      patch = build_patch(index, av, keys, 1)
+      patch = build_patch(index, av, keys, 1, "regular")
 
       # Wrap it in a sync IQ reply node: <iq><sync><collection name=regular><patch>…
       reply = sync_reply("regular", [Proto.SyncdPatch.encode(patch)])
 
       [%{name: "regular", patches: [decoded_patch]}] = Sync.extract_collections(reply)
-      {:ok, changes, new_state} = Sync.decode_collection([decoded_patch], Patch.new_state(), gk)
+
+      {:ok, changes, new_state} =
+        Sync.decode_collection([decoded_patch], Patch.new_state(), gk, "regular")
 
       assert [{:chat, %Amarula.Chat{pinned: true}}] = changes
       assert new_state.version == 1
     end
+
+    test "a tampered snapshot MAC is rejected", %{keys: keys, get_key: gk} do
+      patch =
+        pin_patch(keys, 1, "regular")
+        |> Map.put(:snapshotMac, :crypto.strong_rand_bytes(32))
+
+      assert {:error, {:snapshot_mac_mismatch, "regular"}} =
+               Sync.decode_collection([patch], Patch.new_state(), gk, "regular")
+    end
+
+    test "a tampered patch MAC is rejected", %{keys: keys, get_key: gk} do
+      patch =
+        pin_patch(keys, 1, "regular")
+        |> Map.put(:patchMac, :crypto.strong_rand_bytes(32))
+
+      assert {:error, {:patch_mac_mismatch, "regular"}} =
+               Sync.decode_collection([patch], Patch.new_state(), gk, "regular")
+    end
+
+    test "validate_macs: false skips the collection MACs", %{keys: keys, get_key: gk} do
+      patch =
+        pin_patch(keys, 1, "regular")
+        |> Map.put(:snapshotMac, :crypto.strong_rand_bytes(32))
+        |> Map.put(:patchMac, :crypto.strong_rand_bytes(32))
+
+      assert {:ok, [{:chat, %Amarula.Chat{pinned: true}}], _} =
+               Sync.decode_collection([patch], Patch.new_state(), gk, "regular",
+                 validate_macs: false
+               )
+    end
   end
 
-  defp build_patch(index, action_value, keys, version) do
+  defp pin_patch(keys, version, name) do
+    index = ["pin_v1", "5511999999999@s.whatsapp.net"]
+    av = %Proto.SyncActionValue{pinAction: %Proto.SyncActionValue.PinAction{pinned: true}}
+    build_patch(index, av, keys, version, name)
+  end
+
+  defp build_patch(index, action_value, keys, version, name) do
     index_bytes = Jason.encode!(index)
     action = %Proto.SyncActionData{index: index_bytes, value: action_value, version: 1}
     plaintext = Proto.SyncActionData.encode(action)
@@ -73,9 +111,20 @@ defmodule Amarula.Protocol.AppState.SyncTest do
       keyId: %Proto.KeyId{id: @key_id}
     }
 
+    # The resulting LTHash after this single SET, and the collection MACs the server
+    # signs it with — so the patch authenticates against `keys`.
+    hash = LTHash.subtract_then_add(LTHash.zero(), [], [value_mac])
+    snapshot_mac = Mutation.generate_snapshot_mac(hash, version, name, keys.snapshot_mac_key)
+
+    patch_mac =
+      Mutation.generate_patch_mac(snapshot_mac, [value_mac], version, name, keys.patch_mac_key)
+
     %Proto.SyncdPatch{
       version: %Proto.SyncdVersion{version: version},
-      mutations: [%Proto.SyncdMutation{operation: :SET, record: record}]
+      mutations: [%Proto.SyncdMutation{operation: :SET, record: record}],
+      keyId: %Proto.KeyId{id: @key_id},
+      snapshotMac: snapshot_mac,
+      patchMac: patch_mac
     }
   end
 

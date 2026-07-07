@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **App-state sync now verifies the snapshot and patch MACs.** Incoming app-state
+  patches were checked at the per-record level (value/index MAC) but not at the
+  collection level: the snapshot MAC (authenticating the resulting LTHash) and the
+  patch MAC (authenticating the patch's mutations) were computed but never enforced.
+  A patch whose MAC doesn't match is now rejected and not applied.
+
 ## [0.4.4] - 2026-07-04
 
 ### Changed

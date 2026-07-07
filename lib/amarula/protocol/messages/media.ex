@@ -64,9 +64,14 @@ defmodule Amarula.Protocol.Messages.Media do
     with url when is_binary(url) <- download_url(ref),
          media_key when is_binary(media_key) <- Map.get(ref, :media_key) do
       case Req.get(url, [decode_body: false] ++ req_options()) do
-        {:ok, %{status: 200, body: enc}} when is_binary(enc) -> decrypt(enc, media_key, type)
-        {:ok, %{status: status}} -> {:error, {:http, status}}
-        {:error, reason} -> {:error, reason}
+        {:ok, %{status: 200, body: enc}} when is_binary(enc) ->
+          verify_and_decrypt(ref, enc, media_key, type)
+
+        {:ok, %{status: status}} ->
+          {:error, {:http, status}}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     else
       _ -> {:error, :invalid_media}
@@ -74,6 +79,25 @@ defmodule Amarula.Protocol.Messages.Media do
   end
 
   def download(_ref, _type), do: {:error, :invalid_media}
+
+  # The MAC (checked in `decrypt/3`) authenticates the blob against the media key.
+  # The descriptor's SHA-256 hashes are an extra integrity check that also matches
+  # what the sender declared: verify the ciphertext hash (`file_enc_sha256`) before
+  # decrypting and the plaintext hash (`file_sha256`) after. A hash the descriptor
+  # doesn't carry is skipped.
+  defp verify_and_decrypt(ref, enc, media_key, type) do
+    with :ok <- verify_hash(enc, Map.get(ref, :file_enc_sha256), :bad_enc_hash),
+         {:ok, plaintext} <- decrypt(enc, media_key, type),
+         :ok <- verify_hash(plaintext, Map.get(ref, :file_sha256), :bad_file_hash) do
+      {:ok, plaintext}
+    end
+  end
+
+  defp verify_hash(_data, nil, _err), do: :ok
+
+  defp verify_hash(data, expected, err) when is_binary(expected) do
+    if :crypto.hash(:sha256, data) == expected, do: :ok, else: {:error, err}
+  end
 
   # Extra Req options merged into every request. Empty in prod; tests set
   #   config :amarula, :req_options, plug: {Req.Test, Amarula.Protocol.Messages.Media}

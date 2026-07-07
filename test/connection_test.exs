@@ -670,7 +670,7 @@ defmodule Amarula.ConnectionTest do
     end
   end
 
-  describe "duplicate_decrypt_error?/1 — consumed-key duplicate detection (ack 487, not 500+retry)" do
+  describe "duplicate_decrypt_error?/1 — consumed-key duplicate detection (receipt as delivered, not nack)" do
     alias Amarula.Protocol.Signal.DecryptError
 
     test "matches a structured :key_unavailable DecryptError (both enc paths surface this)" do

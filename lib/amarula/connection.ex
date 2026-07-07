@@ -43,9 +43,11 @@ defmodule Amarula.Connection do
     sticker: "image/webp"
   }
 
-  # Baileys NACK_REASONS (decode-wa-message.ts)
+  # Baileys NACK_REASONS (decode-wa-message.ts). Only 500 (unhandled) is used — a
+  # decrypt we can't recover from, retried once then nacked. Duplicates are receipted
+  # as delivered (see the duplicate_decrypt_error? branch), not nacked; WhatsApp's
+  # accurate code for that case would be 496 (SignalErrorOldCounter), noted there.
   @nack_unhandled_error 500
-  @nack_parsing_error 487
   # Baileys maxMsgRetryCount default — cap on retry-resends per message.
   @max_msg_retry_count 5
 
@@ -3268,16 +3270,23 @@ defmodule Amarula.Connection do
       # references is gone: the ratchet counter was consumed, or the pkmsg's
       # one-time prekey isn't in our store. Almost always a duplicate redelivery
       # (the first decrypt consumed the key), though a genuinely unknown prekey id
-      # lands here too — and either way a retry is pointless (the sender can't
-      # re-encrypt to key material we've moved past or never had). Nacking 500 makes
-      # the server redeliver it forever (a poison-message loop), so — like Baileys
-      # (messages-recv.ts:1629) — ack ParsingError(487) and do NOT retry.
+      # lands here too. Either way we can't (and needn't) retry.
+      #
+      # We treat it as RECEIVED: send the same <receipt> the success path does
+      # (which is what drains the server's offline queue), NOT an error nack. A
+      # duplicate is a message we already have, so nacking 487 (ParsingError) would
+      # mislabel it as a parse failure. WhatsApp does have an accurate code for this
+      # exact condition — 496 (SignalErrorOldCounter) — but whatsmeow (the more
+      # rigorous reference impl) defines 496 and deliberately doesn't use it either,
+      # preferring the positive delivery receipt. We follow whatsmeow: it's the most
+      # honest signal to the server (received, not an error) and sidesteps any
+      # error-rate heuristics. (Baileys nacks 487 here; we diverge on purpose.)
       duplicate_decrypt_error?(errors) ->
         Logger.debug(
-          "Message #{msg_id} from #{from}: already-decrypted duplicate — ack ParsingError"
+          "Message #{msg_id} from #{from}: already-decrypted duplicate — receipt as delivered"
         )
 
-        send_message_ack(state, node, @nack_parsing_error)
+        send_delivery_receipt(state, node)
 
       true ->
         Logger.debug("Message #{msg_id} from #{from}: nothing decrypted — retry + nack")

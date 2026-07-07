@@ -113,8 +113,7 @@ There are two distinct registries; keep them straight.
 
 ### Instance registry — intra-tree wiring
 
-`Amarula.InstanceRegistry` is one app-level `Registry` (started by
-`Amarula.Application`) that names the infrastructure of *every* connection tree,
+`Amarula.InstanceRegistry` is one app-level `Registry` (started by `Amarula.Supervisor`) that names the infrastructure of *every* connection tree,
 keyed by the connection's `instance_id`. It is not a child of any tree. It does two
 jobs:
 
@@ -147,8 +146,7 @@ wiring stays local. Moving a running tree between nodes is out of scope.
 
 ### Profile registry — one connection per profile
 
-An app-level `Registry` (`Amarula.ProfileRegistry`, started by
-`Amarula.Application`) mapping `profile → Connection pid`. Two jobs:
+An app-level `Registry` (`Amarula.ProfileRegistry`, started by `Amarula.Supervisor`) mapping `profile → Connection pid`. Two jobs:
 
 1. **One connection per profile.** Starting a profile that is already live returns
    `{:error, {:already_running, pid}}`. The registration happens atomically in

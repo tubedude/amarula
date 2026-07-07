@@ -104,9 +104,7 @@ Supervisor.start_link(children, strategy: :one_for_one)
 ```
 
 `Amarula.Supervisor` starts the library's shared registries + dynamic supervisor;
-add it **first**. By default Amarula does not start it for you — or set
-`config :amarula, start_supervisor: true` to have Amarula's application start it
-automatically (handy for a single containerized app).
+add it **first** — it is not started for you.
 `:parent` is the event sink (pass a **registered name** so it survives restarts);
 the rest is the `new/1` config. Each child gets a distinct id of `{Amarula, profile}`,
 so profiles coexist. This is for **already-paired** accounts (pair first with

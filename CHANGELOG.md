@@ -9,16 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING — Amarula no longer starts its process tree unconditionally.** The two
-  registries and the connections `DynamicSupervisor` now live in a new
-  **`Amarula.Supervisor`**, which by default is **not** started for you — add it to
-  your own supervision tree so you control its placement, restart strategy, and
-  nesting. To keep the old auto-start behaviour, opt in with
-  `config :amarula, start_supervisor: true` and the library's application starts it
-  for you.
+- **BREAKING — Amarula no longer starts its process tree; you add it to yours.** The
+  library no longer defines an `Application` — the two registries and the connections
+  `DynamicSupervisor` now live in a new **`Amarula.Supervisor`** that you add to your
+  own supervision tree, so you control its placement, restart strategy, and nesting,
+  and there is no global auto-start.
 
-  **Migration:** either add that config line, or add `Amarula.Supervisor` as a
-  child, **before** any `{Amarula, …}` connection children and before `connect/2`:
+  **Migration:** add `Amarula.Supervisor` as a child, **before** any `{Amarula, …}`
+  connection children and before `connect/2`:
 
       children = [
         Amarula.Supervisor,

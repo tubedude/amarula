@@ -47,10 +47,9 @@ starts it. Events go to `:parent_pid` (default: the caller).
 connecting an already-live profile returns `{:error, {:already_running, pid}}`; use
 `Amarula.whereis(profile)` to get the existing one.
 
-Add `Amarula.Supervisor` to your supervision tree — by default Amarula does **not**
-start its process tree for you (as of 0.5.0). It must come **before** any connection
-child or `connect/2` call. (Or set `config :amarula, start_supervisor: true` to have
-Amarula's application start it automatically.)
+Add `Amarula.Supervisor` to your supervision tree — Amarula does **not** start its
+process tree for you (as of 0.5.0). It must come **before** any connection child or
+`connect/2` call.
 
 For a **fixed set of already-paired accounts known at boot**, start them in your own
 supervision tree with `Amarula.child_spec/1` — `{Amarula, profile: :sales, parent:

@@ -3448,11 +3448,10 @@ defmodule Amarula.Connection do
       # (which is what drains the server's offline queue), NOT an error nack. A
       # duplicate is a message we already have, so nacking 487 (ParsingError) would
       # mislabel it as a parse failure. WhatsApp does have an accurate code for this
-      # exact condition — 496 (SignalErrorOldCounter) — but whatsmeow (the more
-      # rigorous reference impl) defines 496 and deliberately doesn't use it either,
-      # preferring the positive delivery receipt. We follow whatsmeow: it's the most
-      # honest signal to the server (received, not an error) and sidesteps any
-      # error-rate heuristics. (Baileys nacks 487 here; we diverge on purpose.)
+      # exact condition — 496 (SignalErrorOldCounter) — but even that reads as an
+      # error to the server's rate heuristics, so we prefer the positive delivery
+      # receipt: the most honest signal (received, not an error). (Baileys nacks 487
+      # here; we diverge on purpose.)
       duplicate_decrypt_error?(errors) ->
         Logger.debug(
           "Message #{msg_id} from #{from}: already-decrypted duplicate — receipt as delivered"

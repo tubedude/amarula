@@ -856,7 +856,7 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       receipt = recv_frame()
       assert receipt.tag == "receipt"
       assert attr(receipt, "type") == "server-error"
-      # Addressed to our own (non-AD) user jid, per whatsmeow.
+      # Addressed to our own (non-AD) user jid.
       assert attr(receipt, "to") == @me_jid
 
       rmr = NodeUtils.get_binary_node_child(receipt, "rmr")

@@ -685,8 +685,10 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       {count, newly} = LidMappingFileStore.store_mappings(ctx.conn, pairs)
       if count > 0, do: Logger.debug("Stored #{count} LID↔PN mapping(s) from USync")
 
-      new_lids = for {lid, _pn} <- newly, do: lid
-      Connection.assert_lid_sessions(ctx.cm, new_lids)
+      # Re-key each newly-mapped contact's existing PN session onto their LID
+      # rather than renegotiating; the handler falls back to a fresh bundle fetch
+      # only for contacts that had no PN session to move.
+      Connection.migrate_pn_sessions(ctx.cm, newly)
       # Surface the newly-learned pairs to the consumer (:lid_mapping_update).
       Connection.notify_lid_mappings(ctx.cm, newly)
     end

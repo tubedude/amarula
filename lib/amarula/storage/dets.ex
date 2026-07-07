@@ -88,6 +88,22 @@ defmodule Amarula.Storage.DETS do
     end
   end
 
+  @impl true
+  def list_keys(%{root: root}, profile, namespace) do
+    # Records are {{namespace, key}, value}; match the key out for this namespace.
+    # :dets.match returns {:error, reason} as a VALUE (not a raise), so case on it
+    # rather than letting Enum.map trip over the tuple. (open/2 can still raise —
+    # the rescue keeps that from taking down the caller.)
+    case :dets.match(open(root, profile), {{namespace, :"$1"}, :_}) do
+      {:error, reason} -> {:error, reason}
+      matches -> {:ok, Enum.map(matches, fn [key] -> key end)}
+    end
+  rescue
+    e ->
+      Logger.warning("Storage.DETS: list_keys failed (#{inspect(e)})")
+      {:error, e}
+  end
+
   # --- internals ---
 
   # Open (idempotently) the per-profile DETS table, named by {root, profile} so

@@ -167,6 +167,47 @@ defmodule Amarula.Storage.File do
     end
   end
 
+  @impl true
+  def list_keys(%{root: root}, profile, namespace) do
+    prefix = Map.fetch!(@prefixes, namespace)
+
+    case File.ls(dir(root, profile)) do
+      {:ok, entries} ->
+        keys =
+          for name <- entries,
+              String.starts_with?(name, prefix),
+              String.ends_with?(name, ".term"),
+              key = decode_key(name, prefix),
+              not is_nil(key),
+              # `list_keys(:creds)` would otherwise surface "creds.term" as a "" key.
+              key != "",
+              do: key
+
+        {:ok, keys}
+
+      # No directory yet → nothing stored.
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, _reason} = err ->
+        err
+    end
+  end
+
+  # Recover the raw key from a "<prefix><base64url(key)>.term" filename. Returns
+  # nil for a name that doesn't decode (a foreign file, or the singleton creds file
+  # whose key is :self, not a base64 string) so it's skipped, not crashed on.
+  defp decode_key(name, prefix) do
+    name
+    |> String.replace_prefix(prefix, "")
+    |> String.replace_suffix(".term", "")
+    |> Base.url_decode64(padding: false)
+    |> case do
+      {:ok, key} -> key
+      :error -> nil
+    end
+  end
+
   # The singleton creds file is "<dir>/creds.term"; everything else is
   # "<dir>/<prefix><base64url(key)>.term".
   defp path(root, profile, :creds, :self) do

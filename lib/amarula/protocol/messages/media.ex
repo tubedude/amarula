@@ -170,15 +170,13 @@ defmodule Amarula.Protocol.Messages.Media do
   # The recovery is to send a <receipt type="server-error"> asking the *sender's
   # phone* to re-upload; the phone replies with a <notification type="mediaretry">
   # carrying a fresh directPath. Both payloads are AES-256-GCM under a key HKDF'd
-  # from the message's media_key, with the message id as the GCM AAD. Ported from
-  # whatsmeow's mediaretry.go.
+  # from the message's media_key, with the message id as the GCM AAD.
 
   @retry_hkdf_info "WhatsApp Media Retry Notification"
 
   @doc """
   HKDF-derived key that wraps the media-retry receipt/notification, keyed by the
-  message's `media_key`. (RFC 5869 empty salt = 32 zero bytes, matching whatsmeow's
-  nil salt.)
+  message's `media_key`. (RFC 5869 empty salt = 32 zero bytes.)
   """
   @spec retry_key(binary()) :: binary()
   def retry_key(media_key), do: Crypto.hkdf(media_key, 32, <<0::256>>, @retry_hkdf_info)

@@ -25,6 +25,7 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
   alias Amarula.Protocol.Crypto.Crypto
   alias Amarula.Protocol.Messages.Media
   alias Amarula.Protocol.Proto
+  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionStore}
   alias Amarula.Protocol.Socket.ConnectionSupervisor
   alias Amarula.Connection
 
@@ -349,6 +350,65 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       %{"from" => from, "id" => id, "t" => "1700000000", "type" => "text"},
       [enc]
     )
+  end
+
+  # --- PN→LID session migration (#15) ---
+
+  describe "PN→LID session migration" do
+    test "moves a PN sender's session onto the LID address before decrypting", ctx do
+      conn = ctx.conn
+
+      # We know this contact's PN and LID are the same account and hold a live
+      # PN-keyed Signal session for them.
+      SessionStore.store_session(conn, "10000000001.0", %{sessions: %{live: true}})
+      LidMappingFileStore.store_mappings(conn, [{"20000000009@lid", @jid}])
+
+      # An inbound message from the PN address drives handle_message; the retry
+      # receipt it emits (undecryptable) is our barrier that migration has run.
+      inject(ctx, undecryptable_message("MIG1", @jid))
+      assert recv_frame().tag == "receipt"
+
+      # The ratchet moved to the LID signal-address; the PN entry is gone.
+      assert SessionStore.load_session(conn, "20000000009_1.0") == %{sessions: %{live: true}}
+      assert SessionStore.load_session(conn, "10000000001.0") == nil
+    end
+
+    test "leaves a PN sender with no known LID untouched", ctx do
+      conn = ctx.conn
+      SessionStore.store_session(conn, "10000000001.0", %{sessions: %{live: true}})
+
+      inject(ctx, undecryptable_message("MIG2", @jid))
+      assert recv_frame().tag == "receipt"
+
+      # No mapping → no migration; the session stays under the PN address.
+      assert SessionStore.load_session(conn, "10000000001.0") == %{sessions: %{live: true}}
+    end
+
+    # Send-path handler (migrate_pn_sessions/2, a synchronous call). The invariant
+    # the feature rests on: a contact whose PN session we could move must NOT be
+    # force-refreshed (that would clobber the moved ratchet); only a contact with
+    # nothing to move falls back to a fresh bundle fetch.
+    test "send-path: a contact with a PN session is re-keyed, with no bundle fetch", ctx do
+      conn = ctx.conn
+      SessionStore.store_session(conn, "10000000001.0", %{sessions: %{live: true}})
+
+      assert :ok = Connection.migrate_pn_sessions(ctx.pid, [{"20000000009@lid", @jid}])
+
+      # Ratchet moved to the LID address; the PN entry is gone.
+      assert SessionStore.load_session(conn, "20000000009_1.0") == %{sessions: %{live: true}}
+      assert SessionStore.load_session(conn, "10000000001.0") == nil
+      # :migrated → NO force-refresh IQ.
+      refute_receive {:frame_out, _}, 100
+    end
+
+    test "send-path: a contact with no PN session triggers a bundle fetch", ctx do
+      assert :ok = Connection.migrate_pn_sessions(ctx.pid, [{"20000000009@lid", @jid}])
+
+      # :none → a force-refresh encrypt IQ goes out for the LID.
+      iq = recv_frame()
+      assert iq.tag == "iq"
+      assert attr(iq, "xmlns") == "encrypt"
+    end
   end
 
   # --- notification dispatch ---
@@ -822,7 +882,7 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       receipt = recv_frame()
       assert receipt.tag == "receipt"
       assert attr(receipt, "type") == "server-error"
-      # Addressed to our own (non-AD) user jid, per whatsmeow.
+      # Addressed to our own (non-AD) user jid.
       assert attr(receipt, "to") == @me_jid
 
       rmr = NodeUtils.get_binary_node_child(receipt, "rmr")

@@ -93,7 +93,14 @@ defmodule Amarula.Storage do
   Optional: adapters that don't implement it report `{:error, :not_supported}`.
   """
   @callback list_profiles(adapter_state()) :: {:ok, [profile()]} | {:error, term()}
-  @optional_callbacks clear: 2, list_profiles: 1
+
+  @doc """
+  List every `key` stored under `{profile, namespace}`. Order is unspecified.
+  Optional: adapters that don't implement it report `{:error, :not_supported}`.
+  """
+  @callback list_keys(adapter_state(), profile(), namespace()) ::
+              {:ok, [key()]} | {:error, term()}
+  @optional_callbacks clear: 2, list_profiles: 1, list_keys: 3
 
   # The adapter used when config gives bare opts / no :storage. Configurable so
   # the core privileges no concrete backend:
@@ -141,6 +148,17 @@ defmodule Amarula.Storage do
   @spec delete(Scope.t(), profile(), namespace(), key()) :: :ok | {:error, term()}
   def delete(%Scope{adapter: a, state: s}, profile, namespace, key),
     do: a.delete(s, profile, namespace, key)
+
+  @doc """
+  List every key stored under `{profile, namespace}`. `{:error, :not_supported}`
+  if the adapter can't enumerate keys.
+  """
+  @spec list_keys(Scope.t(), profile(), namespace()) :: {:ok, [key()]} | {:error, term()}
+  def list_keys(%Scope{adapter: a, state: s}, profile, namespace) do
+    if function_exported?(a, :list_keys, 3),
+      do: a.list_keys(s, profile, namespace),
+      else: {:error, :not_supported}
+  end
 
   @doc "Wipe all data for `profile` (`wipe_credentials`). `{:error, :not_supported}` if the adapter can't."
   @spec clear(Scope.t(), profile()) :: :ok | {:error, term()}

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0] - 2026-07-07
 
+### Added
+
+- **`Amarula.retry_media/2` — re-upload retry for expired media.** WhatsApp's media
+  URLs are short-lived; once the CDN drops a blob, `download_media/1` fails with
+  `{:error, {:http, 404}}`. `retry_media/2` asks the sender's phone to re-upload it
+  and returns a refreshed `%Amarula.Content.Media{}` (new `direct_path`) you can hand
+  straight back to `download_media/1`. Returns `{:error, :not_on_phone}` if the phone
+  no longer has it, `{:error, :timeout}` if it never answers.
+
 ### Changed
 
 - **BREAKING — Amarula no longer starts its process tree; you add it to yours.** The
@@ -26,6 +35,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   If it isn't running when you connect, Amarula raises with a message telling you
   to add `Amarula.Supervisor`, instead of a `:noproc` exit.
+
+### Removed
+
+- **The internal `Amarula.Baileys` parity module is gone.** Amarula is now an
+  independent OTP-native implementation rather than a single-upstream port; the
+  reference-revision tracking it held moved into `docs/PARITY.md`.
+
+### Fixed
+
+- **PN→LID Signal-session migration.** When a contact who was known by phone number
+  adopts a LID identity, their live Signal session is now re-keyed from the
+  phone-number address onto the LID address (both on receiving their next message and
+  before the next send), instead of leaving the ratchet stranded — which previously
+  caused a window of undecryptable messages. No renegotiation when a session already
+  exists to move.
+- **Duplicate 1:1 message redeliveries are acknowledged as received, not retried.** A
+  ratchet message redelivered after a lost ack or a 515 restart is a consumed-key
+  duplicate. Amarula now recognises it structurally (a typed decrypt error, covering
+  both the `pkmsg` and the wrapped `msg` forms) and sends the same delivery receipt
+  the success path does — draining the server's offline queue — instead of nacking
+  `500` and firing a spurious retry receipt (the redelivery/poison loop).
+
+## [0.4.5] - 2026-07-07
+
+Two integrity fixes surfaced by reviewing the whatsmeow implementation.
 
 ### Fixed
 
@@ -730,7 +764,8 @@ First public release.
   device-unlink now lives only in `wipe_credentials/1`.
 
 [Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/tubedude/amarula/compare/v0.4.4...v0.5.0
+[0.5.0]: https://github.com/tubedude/amarula/compare/v0.4.5...v0.5.0
+[0.4.5]: https://github.com/tubedude/amarula/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/tubedude/amarula/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/tubedude/amarula/compare/v0.3.0...v0.4.3
 [0.3.0]: https://github.com/tubedude/amarula/compare/v0.2.4...v0.3.0

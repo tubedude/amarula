@@ -5,6 +5,24 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-07-07
+
+Two integrity fixes surfaced by reviewing the whatsmeow implementation.
+
+### Fixed
+
+- **App-state sync now verifies the snapshot and patch MACs.** Incoming app-state
+  patches were checked at the per-record level (value/index MAC) but not at the
+  collection level: the snapshot MAC (authenticating the resulting LTHash) and the
+  patch MAC (authenticating the patch's mutations) were computed but never enforced.
+  A patch whose MAC doesn't match is now rejected and not applied.
+- **Media downloads now verify the declared plaintext hash.** After decrypting,
+  `download/2` checks the decrypted bytes against the sender's `file_sha256` (carried
+  on `%Amarula.Content.Media{}`) — end-to-end content integrity on top of the MAC,
+  catching a decrypt/unpad bug. A mismatch returns `{:error, :bad_file_hash}`; a
+  descriptor without the hash is skipped. (The MAC already covers ciphertext
+  integrity, so the redundant `file_enc_sha256` check isn't performed.)
+
 ## [0.4.4] - 2026-07-04
 
 ### Changed
@@ -693,7 +711,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/tubedude/amarula/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/tubedude/amarula/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/tubedude/amarula/compare/v0.3.0...v0.4.3
 [0.3.0]: https://github.com/tubedude/amarula/compare/v0.2.4...v0.3.0

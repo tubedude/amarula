@@ -3636,9 +3636,18 @@ defmodule Amarula.Connection do
     |> Sync.extract_collections()
     |> Enum.each(fn %{name: name, patches: patches} ->
       prior = load_collection_state(state, name)
-      {:ok, changes, new_state} = Sync.decode_collection(patches, prior, get_key)
-      save_collection_state(state, name, new_state)
-      emit_app_state_changes(state, changes)
+
+      case Sync.decode_collection(patches, prior, get_key, name) do
+        {:ok, changes, new_state} ->
+          save_collection_state(state, name, new_state)
+          emit_app_state_changes(state, changes)
+
+        {:error, reason} ->
+          # A patch whose snapshot/patch MAC doesn't match is unauthenticated — drop
+          # it (don't persist the state or emit changes). Prior state is kept, so the
+          # next resync re-requests from the same version.
+          Logger.warning("app-state sync for #{name} rejected (#{inspect(reason)}); not applied")
+      end
     end)
   end
 

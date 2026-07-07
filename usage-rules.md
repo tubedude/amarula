@@ -7,7 +7,7 @@ and receive messages from Elixir.
 These rules describe how to **use** the `Amarula.*` public API correctly. They are for
 agents writing consumer code against the library, not for working on the library itself.
 
-These rules track Amarula **0.4.4**. They are a curated subset, not the full API — do
+These rules track Amarula **0.4.5**. They are a curated subset, not the full API — do
 not assume an undocumented function exists. When a signature, return shape, or option is
 unclear, **read the `@doc`/`@spec` on the relevant `Amarula.*` module (hexdocs) before
 calling it** rather than guessing.
@@ -169,7 +169,7 @@ lazily:
 
 ```elixir
 %Amarula.Msg{type: :media} = msg
-{:ok, bytes} = Amarula.download_media(msg)   # {:error, :bad_mac} on integrity failure
+{:ok, bytes} = Amarula.download_media(msg)   # {:error, :bad_mac | :bad_file_hash} on integrity failure
 ```
 
 ### Avoiding self-send feedback loops

@@ -28,6 +28,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Messages.{HistorySync, MessageDecryptor}
   alias Amarula.Protocol.Presence
   alias Amarula.Protocol.Call
+  alias Amarula.Protocol.Signal.DecryptError
 
   # A send blocks the caller until the per-recipient sender finishes (up to three
   # IQ round-trips for a new recipient). The client-side call timeout must exceed
@@ -42,25 +43,11 @@ defmodule Amarula.Connection do
     sticker: "image/webp"
   }
 
-  # Baileys NACK_REASONS (decode-wa-message.ts)
+  # Baileys NACK_REASONS (decode-wa-message.ts). Only 500 (unhandled) is used — a
+  # decrypt we can't recover from, retried once then nacked. Duplicates are receipted
+  # as delivered (see the duplicate_decrypt_error? branch), not nacked; WhatsApp's
+  # accurate code for that case would be 496 (SignalErrorOldCounter), noted there.
   @nack_unhandled_error 500
-  @nack_parsing_error 487
-  # libsignal error texts that all mean "this stanza was already decrypted, the
-  # key material it references is gone" — i.e. a duplicate redelivery, not a real
-  # failure:
-  #   * "Key used already or never filled" — the ratchet counter was consumed
-  #     (a repeated <enc type="msg">/whisper message).
-  #   * "Invalid PreKey ID" — the one-time prekey a <enc type="pkmsg"> references
-  #     was consumed + deleted by the first decrypt (see remove_used_pre_keys/2),
-  #     so the redelivered pkmsg can no longer find it.
-  # These are stateless string matches on purpose: the redelivery loop recurs on
-  # every reconnect (the server re-fans the undrained stanza), so recognising the
-  # error each time is what terminates it — an in-memory "seen msg_ids" set would
-  # be wiped by the 515 restart and miss the cross-reconnect duplicates.
-  @duplicate_decrypt_error_texts [
-    "Key used already or never filled",
-    "Invalid PreKey ID"
-  ]
   # Baileys maxMsgRetryCount default — cap on retry-resends per message.
   @max_msg_retry_count 5
 
@@ -3363,19 +3350,27 @@ defmodule Amarula.Connection do
             state
         end
 
-      # A consumed-key error ("Key used already or never filled" /
-      # "Invalid PreKey ID") = the ratchet counter or one-time prekey was already
-      # consumed by the first decrypt (a duplicate redelivery). A retry is
-      # pointless — the sender can't re-encrypt to key material we've moved past —
-      # and nacking 500 makes the server keep redelivering it forever (a
-      # poison-message loop). Baileys (messages-recv.ts:1629) acks these with
-      # ParsingError(487) and does NOT retry, terminating the redelivery.
+      # `%DecryptError{reason: :key_unavailable}` = the key material this stanza
+      # references is gone: the ratchet counter was consumed, or the pkmsg's
+      # one-time prekey isn't in our store. Almost always a duplicate redelivery
+      # (the first decrypt consumed the key), though a genuinely unknown prekey id
+      # lands here too. Either way we can't (and needn't) retry.
+      #
+      # We treat it as RECEIVED: send the same <receipt> the success path does
+      # (which is what drains the server's offline queue), NOT an error nack. A
+      # duplicate is a message we already have, so nacking 487 (ParsingError) would
+      # mislabel it as a parse failure. WhatsApp does have an accurate code for this
+      # exact condition — 496 (SignalErrorOldCounter) — but whatsmeow (the more
+      # rigorous reference impl) defines 496 and deliberately doesn't use it either,
+      # preferring the positive delivery receipt. We follow whatsmeow: it's the most
+      # honest signal to the server (received, not an error) and sidesteps any
+      # error-rate heuristics. (Baileys nacks 487 here; we diverge on purpose.)
       duplicate_decrypt_error?(errors) ->
         Logger.debug(
-          "Message #{msg_id} from #{from}: already-decrypted duplicate — ack ParsingError"
+          "Message #{msg_id} from #{from}: already-decrypted duplicate — receipt as delivered"
         )
 
-        send_message_ack(state, node, @nack_parsing_error)
+        send_delivery_receipt(state, node)
 
       true ->
         Logger.debug("Message #{msg_id} from #{from}: nothing decrypted — retry + nack")
@@ -3389,30 +3384,20 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Detect a libsignal consumed-key failure (a duplicate redelivery of an
-  # already-decrypted message): either the ratchet counter is spent ("Key used
-  # already or never filled") or the one-time prekey a pkmsg references is gone
-  # ("Invalid PreKey ID").
-  #
-  # Match on SUBSTRING, not equality: the two enc types surface the signal
-  # differently. A `pkmsg` raises the libsignal text unwrapped, but a `msg` goes
-  # through the multi-session trial decrypt, which wraps the per-session
-  # DecryptError inside "No matching sessions found for message: <inspect(errs)>"
-  # (`SessionCipher.decrypt_with_sessions`). The consumed-key text is still in
-  # there — an exact match missed it and nacked 500 + retried the *most common*
-  # duplicate (a normal ratchet message redelivered after a lost ack / 515 restart).
-  # Exposed (not private) so it can be unit-tested directly.
+  # A redelivery we can't (and needn't) retry: the key material the stanza
+  # references is unavailable — the ratchet counter was consumed, or the pkmsg's
+  # one-time prekey isn't in our store. The Signal layer flags this structurally as
+  # `%DecryptError{reason: :key_unavailable}` (raised in `SessionCipher`/
+  # `SessionBuilder`, propagated through the multi-session trial decrypt), so we
+  # match the reason — not error prose, which the `msg` path wraps. It's ~always a
+  # duplicate; recognising it each time is what terminates the redelivery loop,
+  # which recurs on every 515 reconnect (the server re-fans the undrained stanza)
+  # where an in-memory "seen msg_ids" set would be wiped by the restart. Exposed
+  # for a direct test.
   @doc false
   def duplicate_decrypt_error?(errors) do
-    Enum.any?(errors, fn
-      %{message: msg} when is_binary(msg) -> duplicate_text?(msg)
-      msg when is_binary(msg) -> duplicate_text?(msg)
-      _ -> false
-    end)
+    Enum.any?(errors, &match?(%DecryptError{reason: :key_unavailable}, &1))
   end
-
-  defp duplicate_text?(msg),
-    do: Enum.any?(@duplicate_decrypt_error_texts, &String.contains?(msg, &1))
 
   # One-time prekeys consumed by a PreKeySignalMessage must be deleted, like
   # libsignal's removePreKey after decryptPreKeyWhisperMessage.

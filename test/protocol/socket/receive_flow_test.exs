@@ -383,6 +383,32 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       # No mapping → no migration; the session stays under the PN address.
       assert SessionStore.load_session(conn, "10000000001.0") == %{sessions: %{live: true}}
     end
+
+    # Send-path handler (migrate_pn_sessions/2, a synchronous call). The invariant
+    # the feature rests on: a contact whose PN session we could move must NOT be
+    # force-refreshed (that would clobber the moved ratchet); only a contact with
+    # nothing to move falls back to a fresh bundle fetch.
+    test "send-path: a contact with a PN session is re-keyed, with no bundle fetch", ctx do
+      conn = ctx.conn
+      SessionStore.store_session(conn, "10000000001.0", %{sessions: %{live: true}})
+
+      assert :ok = Connection.migrate_pn_sessions(ctx.pid, [{"20000000009@lid", @jid}])
+
+      # Ratchet moved to the LID address; the PN entry is gone.
+      assert SessionStore.load_session(conn, "20000000009_1.0") == %{sessions: %{live: true}}
+      assert SessionStore.load_session(conn, "10000000001.0") == nil
+      # :migrated → NO force-refresh IQ.
+      refute_receive {:frame_out, _}, 100
+    end
+
+    test "send-path: a contact with no PN session triggers a bundle fetch", ctx do
+      assert :ok = Connection.migrate_pn_sessions(ctx.pid, [{"20000000009@lid", @jid}])
+
+      # :none → a force-refresh encrypt IQ goes out for the LID.
+      iq = recv_frame()
+      assert iq.tag == "iq"
+      assert attr(iq, "xmlns") == "encrypt"
+    end
   end
 
   # --- notification dispatch ---

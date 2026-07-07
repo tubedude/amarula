@@ -51,4 +51,11 @@ defmodule Amarula.Storage.AdapterTest do
     assert {:ok, :for_a} = Storage.get(s, :a, :session, "x")
     assert {:ok, :for_b} = Storage.get(s, :b, :session, "x")
   end
+
+  test "list_keys/3 is optional — an adapter that omits it reports :not_supported" do
+    # PdictStore implements only get/put/delete, so the behaviour's function-exported
+    # guard must degrade rather than raise (the PN→LID migration relies on this).
+    s = Storage.scope({PdictStore, []})
+    assert {:error, :not_supported} = Storage.list_keys(s, :p, :session)
+  end
 end

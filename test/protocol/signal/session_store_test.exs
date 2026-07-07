@@ -81,11 +81,17 @@ defmodule Amarula.Protocol.Signal.SessionStoreTest do
     assert Map.has_key?(loaded.sessions, Base.encode64(<<0::16>>))
   end
 
-  describe "migrate_pn_to_lid/3" do
+  describe "migrate_pn_to_lid/4" do
+    # List the session keys and migrate in one shot, as the callers do.
+    defp migrate(conn, pn_user, lid_user) do
+      {:ok, keys} = SessionStore.list_session_keys(conn)
+      SessionStore.migrate_pn_to_lid(conn, pn_user, lid_user, keys)
+    end
+
     test "moves a PN session onto the LID address and deletes the PN entry", %{conn: conn} do
       :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{r: 1}})
 
-      assert 1 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+      assert 1 == migrate(conn, "199999", "188888")
 
       assert SessionStore.load_session(conn, "188888_1.0") == %{sessions: %{r: 1}}
       assert SessionStore.load_session(conn, "199999.0") == nil
@@ -95,7 +101,7 @@ defmodule Amarula.Protocol.Signal.SessionStoreTest do
       :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{d: 0}})
       :ok = SessionStore.store_session(conn, "199999.3", %{sessions: %{d: 3}})
 
-      assert 2 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+      assert 2 == migrate(conn, "199999", "188888")
 
       assert SessionStore.load_session(conn, "188888_1.0") == %{sessions: %{d: 0}}
       assert SessionStore.load_session(conn, "188888_1.3") == %{sessions: %{d: 3}}
@@ -107,12 +113,12 @@ defmodule Amarula.Protocol.Signal.SessionStoreTest do
       :ok = SessionStore.store_session(conn, "188888_1.0", %{sessions: %{stale: true}})
       :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{live: true}})
 
-      assert 1 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+      assert 1 == migrate(conn, "199999", "188888")
       assert SessionStore.load_session(conn, "188888_1.0") == %{sessions: %{live: true}}
     end
 
     test "returns 0 and changes nothing when the PN user has no session", %{conn: conn} do
-      assert 0 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+      assert 0 == migrate(conn, "199999", "188888")
       assert SessionStore.load_session(conn, "188888_1.0") == nil
     end
 
@@ -120,10 +126,34 @@ defmodule Amarula.Protocol.Signal.SessionStoreTest do
       :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{target: true}})
       :ok = SessionStore.store_session(conn, "1999990.0", %{sessions: %{bystander: true}})
 
-      assert 1 == SessionStore.migrate_pn_to_lid(conn, "199999", "188888")
+      assert 1 == migrate(conn, "199999", "188888")
 
       # The "." boundary in the prefix prevents matching the longer id.
       assert SessionStore.load_session(conn, "1999990.0") == %{sessions: %{bystander: true}}
+    end
+
+    test "is idempotent — a second run (e.g. after restart) is a no-op", %{conn: conn} do
+      :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{live: true}})
+
+      assert 1 == migrate(conn, "199999", "188888")
+      # The PN entry is gone, so a re-run (the connection's MapSet guard is empty
+      # again after a restart) finds nothing to move and leaves the LID session be.
+      assert 0 == migrate(conn, "199999", "188888")
+      assert SessionStore.load_session(conn, "188888_1.0") == %{sessions: %{live: true}}
+    end
+  end
+
+  describe "list_session_keys/1" do
+    test "returns every stored session address", %{conn: conn} do
+      :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{a: 1}})
+      :ok = SessionStore.store_session(conn, "188888_1.2", %{sessions: %{b: 2}})
+
+      assert {:ok, keys} = SessionStore.list_session_keys(conn)
+      assert Enum.sort(keys) == ["188888_1.2", "199999.0"]
+    end
+
+    test "is empty when nothing is stored", %{conn: conn} do
+      assert {:ok, []} = SessionStore.list_session_keys(conn)
     end
   end
 

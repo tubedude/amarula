@@ -213,8 +213,4 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
       end
     end
   end
-
-  # Group message sender key name: group JID as group, author JID as sender.
-  # jidToSignalProtocolAddress: "<user>.<device>", with "_<domainType>" suffix for
-  # non-WhatsApp domains (lid, etc.).
 end

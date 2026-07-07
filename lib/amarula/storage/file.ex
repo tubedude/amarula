@@ -179,6 +179,8 @@ defmodule Amarula.Storage.File do
               String.ends_with?(name, ".term"),
               key = decode_key(name, prefix),
               not is_nil(key),
+              # `list_keys(:creds)` would otherwise surface "creds.term" as a "" key.
+              key != "",
               do: key
 
         {:ok, keys}

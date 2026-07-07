@@ -175,7 +175,7 @@ defmodule Amarula.Connection do
           },
           # PN users whose Signal sessions have been migrated onto their LID this
           # connection — an idempotency guard so we migrate once, not per message.
-          migrated_pn_sessions: MapSet.t()
+          migrated_pn_sessions: MapSet.t(String.t())
         }
 
   # Client API
@@ -402,13 +402,18 @@ defmodule Amarula.Connection do
   def assert_lid_sessions(pid, lids), do: GenServer.cast(pid, {:assert_lid_sessions, lids})
 
   @doc """
-  Cast newly-learned LID↔PN pairs so existing PN Signal sessions are re-keyed onto
-  the LID address instead of renegotiating. `pairs` is `[{lid_jid, pn_jid}, ...]`.
-  Contacts with no prior PN session get a fresh prekey-bundle fetch instead.
+  Re-key newly-learned LID↔PN pairs so existing PN Signal sessions move onto the LID
+  address instead of renegotiating. `pairs` is `[{lid_jid, pn_jid}, ...]`. Contacts
+  with no prior PN session get a fresh prekey-bundle fetch instead.
+
+  Synchronous (a `call`) on purpose: the caller (a `ConversationSender`) reads the
+  session at the LID address immediately after in `ensure_sessions`, so the move
+  must be committed first — a cast would race that read and force a needless
+  renegotiation. Safe from deadlock: this handler never calls back into the sender.
   """
   @spec migrate_pn_sessions(GenServer.server(), [{String.t(), String.t()}]) :: :ok
   def migrate_pn_sessions(_pid, []), do: :ok
-  def migrate_pn_sessions(pid, pairs), do: GenServer.cast(pid, {:migrate_pn_sessions, pairs})
+  def migrate_pn_sessions(pid, pairs), do: GenServer.call(pid, {:migrate_pn_sessions, pairs})
 
   @doc """
   Cast newly-learned LID↔PN pairs so the consumer gets a `:lid_mapping_update`
@@ -898,6 +903,28 @@ defmodule Amarula.Connection do
     {:reply, :ok, update_creds(state, new_creds)}
   end
 
+  # Re-key existing PN sessions onto their LID; only contacts with no PN session to
+  # move need a fresh bundle (fetching for a migrated one would clobber the ratchet).
+  @impl GenServer
+  def handle_call({:migrate_pn_sessions, pairs}, _from, state) do
+    # Enumerate the session store ONCE for the whole batch (not per pair), then
+    # move each pair's ratchet; the lids that had nothing to move fall back to a
+    # fresh bundle fetch.
+    case SessionStore.list_session_keys(conn(state)) do
+      {:ok, keys} ->
+        {needs_fetch, state} = Enum.flat_map_reduce(pairs, state, &migrate_pair(&1, &2, keys))
+        {:reply, :ok, force_refresh_sessions(state, needs_fetch)}
+
+      {:error, reason} ->
+        Logger.warning(
+          "migrate_pn_sessions: cannot enumerate sessions (#{inspect(reason)}); " <>
+            "senders fall back to fresh-bundle fetches"
+        )
+
+        {:reply, :ok, state}
+    end
+  end
+
   # Catch-all: an unexpected call must not crash the whole per-connection tree.
   @impl GenServer
   def handle_call(request, _from, state) do
@@ -914,14 +941,6 @@ defmodule Amarula.Connection do
   def handle_cast({:assert_lid_sessions, lids}, state) do
     Logger.debug("Force-refreshing sessions for #{length(lids)} newly mapped LID(s)")
     {:noreply, force_refresh_sessions(state, lids)}
-  end
-
-  # Re-key existing PN sessions onto their LID; only contacts with no PN session to
-  # move need a fresh bundle (fetching for a migrated one would clobber the ratchet).
-  @impl GenServer
-  def handle_cast({:migrate_pn_sessions, pairs}, state) do
-    {needs_fetch, state} = Enum.flat_map_reduce(pairs, state, &migrate_pair/2)
-    {:noreply, force_refresh_sessions(state, needs_fetch)}
   end
 
   @impl GenServer
@@ -2388,53 +2407,74 @@ defmodule Amarula.Connection do
     with true <- is_binary(author) and JID.jid_user?(author) and not JID.lid_user?(author),
          %{user: pn_user} <- JID.decode(author),
          false <- MapSet.member?(state.migrated_pn_sessions, pn_user),
-         lid_user when is_binary(lid_user) <- LidMappingFileStore.lid_for_pn(conn(state), author) do
+         lid_user when is_binary(lid_user) <- LidMappingFileStore.lid_for_pn(conn(state), author),
+         {:ok, keys} <- SessionStore.list_session_keys(conn(state)) do
       # Ignore the :migrated/:none result on purpose: the receive path never
       # force-fetches a bundle. A :none (no PN session to move) just means an
       # inbound pkmsg will establish the session on decrypt — fetching is a
       # send-side concern (see the migrate_pn_sessions handler).
-      {state, _result} = migrate_pn_user(state, pn_user, lid_user)
+      {state, _result} = migrate_pn_user(state, pn_user, lid_user, keys)
       state
     else
-      # Every else case is routine, not the undecodable-jid anomaly migrate_pair
-      # logs: not a PN user, already migrated, or no LID mapping. `jid_user?` having
-      # passed guarantees `JID.decode/1` returns a map, so that clause can't fail.
-      _ -> state
+      # A storage adapter that can't enumerate keys can't migrate in place; the
+      # decrypt lookup will then miss the still-PN-keyed ratchet. Rare (File/DETS
+      # both enumerate) but not silent.
+      {:error, reason} ->
+        Logger.warning(
+          "PN→LID migrate on receive: cannot enumerate sessions (#{inspect(reason)})"
+        )
+
+        state
+
+      # Every other else case is routine, not an anomaly: not a PN user, already
+      # migrated, or no LID mapping. `jid_user?` having passed guarantees
+      # `JID.decode/1` returns a map, so that clause can't fail.
+      _ ->
+        state
     end
   end
 
-  # Idempotently re-key one PN user's sessions onto their LID, recording it so we
-  # migrate once. Returns {state, :migrated | :none | :already}: `:none` means the
-  # user had no PN session to move (caller may want a fresh bundle instead).
-  defp migrate_pn_user(state, pn_user, lid_user) do
+  # Idempotently re-key one PN user's sessions onto their LID (from the pre-listed
+  # `keys`), recording it so we migrate once. Returns {state, :migrated | :none |
+  # :already}: `:none` means the user had no PN session to move (caller may want a
+  # fresh bundle instead).
+  #
+  # NB: this writes session records from the Connection process. A ConversationSender
+  # mid-encrypt for the same recipient writes from ITS process, so the two can race —
+  # but inbound decrypt already writes sessions from Connection, so this only widens
+  # an existing window rather than opening a new one.
+  defp migrate_pn_user(state, pn_user, lid_user, keys) do
     if MapSet.member?(state.migrated_pn_sessions, pn_user) do
       {state, :already}
     else
       state = %{state | migrated_pn_sessions: MapSet.put(state.migrated_pn_sessions, pn_user)}
 
-      case SessionStore.migrate_pn_to_lid(conn(state), pn_user, lid_user) do
+      case SessionStore.migrate_pn_to_lid(conn(state), pn_user, lid_user, keys) do
         0 -> {state, :none}
         _ -> {state, :migrated}
       end
     end
   end
 
-  # Migrate one newly-mapped {lid, pn} pair, threading state and emitting the lid
-  # into the fetch list ONLY when there was no PN session to re-key (:none) — a
-  # migrated contact must not be force-refreshed, which would clobber the moved
-  # ratchet. Shaped for Enum.flat_map_reduce/3 (zero-or-one lids out, state through).
-  defp migrate_pair({lid, pn}, state) do
-    with %{user: pn_user} <- JID.decode(pn),
+  # Migrate one newly-mapped {lid, pn} pair (over the batch's pre-listed `keys`),
+  # threading state and emitting the lid into the fetch list ONLY when there was no
+  # PN session to re-key (:none) — a migrated contact must not be force-refreshed,
+  # which would clobber the moved ratchet. Shaped for Enum.flat_map_reduce/3.
+  defp migrate_pair({lid, pn}, state, keys) do
+    # store_mappings accepts pairs in either order; guard the orientation here so a
+    # reversed pair can't migrate the wrong direction.
+    with true <- JID.lid_user?(lid),
+         %{user: pn_user} <- JID.decode(pn),
          %{user: lid_user} <- JID.decode(lid) do
-      case migrate_pn_user(state, pn_user, lid_user) do
+      case migrate_pn_user(state, pn_user, lid_user, keys) do
         {state, :none} -> {[lid], state}
         {state, _} -> {[], state}
       end
     else
-      # The pairs come from USync, so an undecodable jid is an upstream anomaly, not
-      # routine — surface it (JID-free) rather than dropping it silently.
+      # The pairs come from USync, so a mis-oriented or undecodable jid is an
+      # upstream anomaly, not routine — surface it (JID-free) rather than drop it.
       _ ->
-        Logger.warning("migrate_pn_sessions: skipping a mapping pair with an undecodable jid")
+        Logger.warning("migrate_pn_sessions: skipping a mis-oriented or undecodable mapping pair")
         {[], state}
     end
   end

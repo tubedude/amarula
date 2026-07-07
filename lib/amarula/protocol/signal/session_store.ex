@@ -16,6 +16,8 @@ defmodule Amarula.Protocol.Signal.SessionStore do
   prefixing where needed.
   """
 
+  require Logger
+
   alias Amarula.Conn
   alias Amarula.Protocol.Signal.SessionRecord
   alias Amarula.Storage
@@ -79,7 +81,20 @@ defmodule Amarula.Protocol.Signal.SessionStore do
   end
 
   @doc """
-  Re-key every 1:1 session from a PN identity onto its LID identity.
+  List every stored 1:1 session address on `conn`.
+
+  `{:error, reason}` when the storage adapter can't enumerate keys (e.g. a custom
+  adapter that doesn't implement `list_keys/3`). Callers pass the result into
+  `migrate_pn_to_lid/4` so a batch of migrations enumerates storage once.
+  """
+  @spec list_session_keys(Conn.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def list_session_keys(%Conn{storage: scope, profile: profile}) do
+    Storage.list_keys(scope, profile, :session)
+  end
+
+  @doc """
+  Re-key every 1:1 session from a PN identity onto its LID identity, given the
+  already-listed session `keys` (see `list_session_keys/1`).
 
   When we learn a contact's phone-number identity (`pn_user`, e.g. `"5511…"`) and
   their LID (`lid_user`) are the same account, the live Signal ratchet — keyed under
@@ -95,25 +110,19 @@ defmodule Amarula.Protocol.Signal.SessionStore do
   (e.g. first contact after LID adoption), which the caller can treat as "still
   needs a fresh bundle".
   """
-  @spec migrate_pn_to_lid(Conn.t(), String.t(), String.t()) :: non_neg_integer()
-  def migrate_pn_to_lid(%Conn{storage: scope, profile: profile} = conn, pn_user, lid_user) do
+  @spec migrate_pn_to_lid(Conn.t(), String.t(), String.t(), [String.t()]) :: non_neg_integer()
+  def migrate_pn_to_lid(%Conn{} = conn, pn_user, lid_user, keys) do
     pn_prefix = pn_user <> "."
 
-    case Storage.list_keys(scope, profile, :session) do
-      {:ok, keys} ->
-        keys
-        |> Enum.filter(&String.starts_with?(&1, pn_prefix))
-        |> Enum.reduce(0, &move_session(&1, conn, pn_prefix, lid_user, &2))
-
-      # An adapter that can't enumerate keys can't be migrated in place; treat as
-      # "nothing moved" so the caller falls back to a fresh-bundle fetch.
-      _ ->
-        0
-    end
+    keys
+    |> Enum.filter(&String.starts_with?(&1, pn_prefix))
+    |> Enum.reduce(0, &move_session(&1, conn, pn_prefix, lid_user, &2))
   end
 
   # Move one PN session onto its LID address ("<lid_user>_1.<device>"), deleting the
-  # PN entry. Returns the running count, unchanged when the PN key held no record.
+  # PN entry only once the LID copy is durably written — a failed write keeps the PN
+  # entry (a later re-migration re-copies the same record) rather than losing the
+  # live ratchet. Returns the running count, unchanged when nothing was moved.
   defp move_session(
          pn_addr,
          %Conn{storage: scope, profile: profile} = conn,
@@ -124,14 +133,20 @@ defmodule Amarula.Protocol.Signal.SessionStore do
     device = String.replace_prefix(pn_addr, pn_prefix, "")
     lid_addr = "#{lid_user}_1.#{device}"
 
-    case load_session(conn, pn_addr) do
+    with record when not is_nil(record) <- load_session(conn, pn_addr),
+         :ok <- store_session(conn, lid_addr, record) do
+      Storage.delete(scope, profile, :session, pn_addr)
+      moved + 1
+    else
       nil ->
         moved
 
-      record ->
-        store_session(conn, lid_addr, record)
-        Storage.delete(scope, profile, :session, pn_addr)
-        moved + 1
+      {:error, reason} ->
+        Logger.warning(
+          "PN→LID session move failed to write the LID record (#{inspect(reason)}) — keeping the PN entry"
+        )
+
+        moved
     end
   end
 end

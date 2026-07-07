@@ -169,7 +169,7 @@ lazily:
 
 ```elixir
 %Amarula.Msg{type: :media} = msg
-{:ok, bytes} = Amarula.download_media(msg)   # {:error, :bad_mac} on integrity failure
+{:ok, bytes} = Amarula.download_media(msg)   # {:error, :bad_mac | :bad_file_hash} on integrity failure
 ```
 
 ### Avoiding self-send feedback loops

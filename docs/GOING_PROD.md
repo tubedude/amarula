@@ -195,9 +195,11 @@ What to do with the bytes is your decision, and it drives **what you store**:
   *its* URL/path next to the message. This is the usual choice — the WhatsApp URL
   expires; yours doesn't.
 - Deferring is risky: WhatsApp's CDN drops the blob after a while, and a later
-  download then returns `{:error, {:http, 404}}`. The protocol's recovery is to ask
-  the **phone to re-upload** the media — and Amarula does not implement that retry
-  path yet. So treat the descriptor as fetch-soon, not fetch-whenever.
+  download then returns `{:error, {:http, 404}}`. The recovery is to ask the
+  **phone to re-upload** the media via `Amarula.retry_media/2`, which returns a
+  refreshed descriptor you hand back to `download_media/1`. But that only works
+  while the phone still has the message and is reachable, so treat the descriptor
+  as fetch-soon, not fetch-whenever.
 
 So: text → store the string. Media → download to storage you control, store the
 pointer (and the `kind`), not the raw bytes in your row.

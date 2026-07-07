@@ -10,7 +10,8 @@ defmodule Amarula.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       aliases: aliases(),
-      description: "A WhatsApp Web client for Elixir — an idiomatic OTP port of Baileys.",
+      description:
+        "An independent, OTP-native WhatsApp Web client for Elixir — Noise handshake, Signal end-to-end encryption, multi-device.",
       package: package(),
       docs: docs(),
       test_coverage: test_coverage()

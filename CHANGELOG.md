@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0] - 2026-07-07
 
+### Added
+
+- **`Amarula.retry_media/2` — re-upload retry for expired media.** WhatsApp's media
+  URLs are short-lived; once the CDN drops a blob, `download_media/1` fails with
+  `{:error, {:http, 404}}`. `retry_media/2` asks the sender's phone to re-upload it
+  and returns a refreshed `%Amarula.Content.Media{}` (new `direct_path`) you can hand
+  straight back to `download_media/1`. Returns `{:error, :not_on_phone}` if the phone
+  no longer has it, `{:error, :timeout}` if it never answers.
+
 ### Changed
 
 - **BREAKING — Amarula no longer starts its process tree; you add it to yours.** The
@@ -26,6 +35,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   If it isn't running when you connect, Amarula raises with a message telling you
   to add `Amarula.Supervisor`, instead of a `:noproc` exit.
+
+### Removed
+
+- **The internal `Amarula.Baileys` parity module is gone.** Amarula is now an
+  independent OTP-native implementation rather than a single-upstream port; the
+  reference-revision tracking it held moved into `docs/PARITY.md`.
+
+### Fixed
+
+- **PN→LID Signal-session migration.** When a contact who was known by phone number
+  adopts a LID identity, their live Signal session is now re-keyed from the
+  phone-number address onto the LID address (both on receiving their next message and
+  before the next send), instead of leaving the ratchet stranded — which previously
+  caused a window of undecryptable messages. No renegotiation when a session already
+  exists to move.
+- **A duplicate message redelivery is acknowledged as received, not as a parse
+  error.** When the server redelivers a message we've already decrypted, Amarula now
+  sends the same delivery receipt the success path does (draining the offline queue)
+  rather than nacking `487` (which mislabels a known message as a parse failure).
+
+## [0.4.5] - 2026-07-07
+
+Two integrity fixes surfaced by reviewing the whatsmeow implementation.
 
 ### Fixed
 

@@ -67,6 +67,11 @@ defmodule Amarula.Connection do
   # How long to wait for an IQ reply before failing the waiting caller.
   @iq_timeout_ms 20_000
 
+  # How long to wait for the phone's <notification type="mediaretry"> reply to a
+  # server-error receipt before failing the waiting caller (the phone re-uploads
+  # off its own copy, so this can take longer than an IQ round-trip).
+  @media_retry_timeout_ms 30_000
+
   # The <ack> wait (default 30s, config :ack_timeout_ms) lives on
   # Connection.AckLifecycle now; @send_call_timeout must still exceed it.
   alias Amarula.Protocol.Crypto.Constants
@@ -110,6 +115,7 @@ defmodule Amarula.Connection do
     msg_retry_counts: %{},
     pending_sends: %{},
     pending_acks: %{},
+    pending_media_retries: %{},
     sender_monitors: %{}
   ]
 
@@ -172,7 +178,13 @@ defmodule Amarula.Connection do
           },
           # One monitor per recipient with a live sender holding parked sends.
           # On the sender's :DOWN we fail every pending_acks entry for that jid.
-          sender_monitors: %{String.t() => reference()}
+          sender_monitors: %{String.t() => reference()},
+          # Media re-upload requests awaiting the phone's mediaretry notification,
+          # keyed by msg id. Each holds the consumer's `from`, the media_key needed
+          # to decrypt the reply, and the timeout timer.
+          pending_media_retries: %{
+            String.t() => {GenServer.from(), binary(), reference()}
+          }
         }
 
   # Client API
@@ -713,6 +725,30 @@ defmodule Amarula.Connection do
     end
   end
 
+  # Blocking media re-upload: send a server-error receipt for a message whose CDN
+  # blob expired, then park the caller under the msg id until the phone's
+  # <notification type="mediaretry"> arrives (handle_media_retry_notification) or
+  # the media-retry timeout fires.
+  @impl GenServer
+  def handle_call(
+        {:request_media_retry, msg_id, chat_jid, from_me, participant, media_key},
+        from,
+        state
+      ) do
+    if ready_to_send?(state) do
+      own_jid = JID.jid_normalized_user(me(state).id)
+
+      receipt =
+        Media.build_retry_receipt(msg_id, own_jid, chat_jid, from_me, participant, media_key)
+
+      timer = Process.send_after(self(), {:media_retry_timeout, msg_id}, @media_retry_timeout_ms)
+      pending = Map.put(state.pending_media_retries, msg_id, {from, media_key, timer})
+      {:noreply, send_binary_node(%{state | pending_media_retries: pending}, receipt)}
+    else
+      {:reply, {:error, :not_connected}, state}
+    end
+  end
+
   @impl GenServer
   def handle_call({:relay_stanza, node}, _from, state) do
     send_reply(state, node)
@@ -1115,6 +1151,20 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_info({:iq_timeout, id}, state) do
     {:noreply, handle_iq_timeout(state, id)}
+  end
+
+  # The phone never answered our media-retry receipt within the window — fail the
+  # parked caller so retry_media/2 returns instead of hanging to its call timeout.
+  @impl GenServer
+  def handle_info({:media_retry_timeout, msg_id}, state) do
+    case Map.pop(state.pending_media_retries, msg_id) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {{from, _media_key, _timer}, pending} ->
+        GenServer.reply(from, {:error, :timeout})
+        {:noreply, %{state | pending_media_retries: pending}}
+    end
   end
 
   # --- Ack-on-send: the per-recipient Sender reports its pipe result back here;
@@ -2159,9 +2209,31 @@ defmodule Amarula.Connection do
     end
   end
 
+  # mediaretry — the phone's reply to a server-error receipt we sent to re-request
+  # an expired media blob. Decode it against the media_key we parked and reply to
+  # the waiting retry_media/2 caller with {:ok, new_direct_path} or an error.
+  defp dispatch_notification(state, "mediaretry", node) do
+    handle_media_retry_notification(state, node)
+  end
+
   defp dispatch_notification(state, type, _node) do
     Logger.debug("Notification (type=#{type}) acked — no handler")
     state
+  end
+
+  defp handle_media_retry_notification(state, node) do
+    msg_id = NodeUtils.get_attr(node, "id")
+
+    case Map.pop(state.pending_media_retries, msg_id) do
+      {nil, _} ->
+        Logger.debug("mediaretry notification for #{msg_id} with no pending waiter — ignoring")
+        state
+
+      {{from, media_key, timer}, pending} ->
+        Process.cancel_timer(timer)
+        GenServer.reply(from, Media.decode_retry_notification(node, media_key))
+        %{state | pending_media_retries: pending}
+    end
   end
 
   # Mirror of Baileys' link_code_companion_reg handler: decipher the phone's
@@ -2441,6 +2513,7 @@ defmodule Amarula.Connection do
     state
     |> clear_server_response_waiting()
     |> fail_pending_iqs(:not_connected)
+    |> fail_pending_media_retries(:not_connected)
     |> disconnect_websocket()
     |> Map.merge(%{
       noise_state: nil,
@@ -2469,6 +2542,17 @@ defmodule Amarula.Connection do
     end)
 
     %{state | pending_iqs: %{}}
+  end
+
+  # Drain parked media-retry callers on a restart, mirroring fail_pending_iqs: the
+  # phone's notification can't reach us across the socket swap, so fail fast.
+  defp fail_pending_media_retries(state, reason) do
+    Enum.each(state.pending_media_retries, fn {_id, {from, _media_key, timer}} ->
+      Process.cancel_timer(timer)
+      GenServer.reply(from, {:error, reason})
+    end)
+
+    %{state | pending_media_retries: %{}}
   end
 
   defp handle_pair_device(state, node) do

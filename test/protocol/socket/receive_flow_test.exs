@@ -22,6 +22,8 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
 
   alias Amarula.Protocol.Auth.AuthUtils
   alias Amarula.Protocol.Binary.{Node, NodeUtils}
+  alias Amarula.Protocol.Crypto.Crypto
+  alias Amarula.Protocol.Messages.Media
   alias Amarula.Protocol.Proto
   alias Amarula.Protocol.Socket.ConnectionSupervisor
   alias Amarula.Connection
@@ -805,6 +807,111 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       chats: [],
       contacts: [],
       push_names: Keyword.fetch!(opts, :push_names)
+    }
+  end
+
+  describe "media retry (server-error receipt ↔ mediaretry notification)" do
+    test "sends a server-error receipt, then resolves the caller with the refreshed path", ctx do
+      media_key = :crypto.strong_rand_bytes(32)
+      msg = media_msg(media_key)
+
+      # retry_media/2 parks on a GenServer.call — drive it from a Task so the test
+      # stays free to observe the receipt and inject the phone's reply.
+      task = Task.async(fn -> Amarula.retry_media(ctx.pid, msg) end)
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "type") == "server-error"
+      # Addressed to our own (non-AD) user jid, per whatsmeow.
+      assert attr(receipt, "to") == @me_jid
+
+      rmr = NodeUtils.get_binary_node_child(receipt, "rmr")
+      assert attr(rmr, "jid") == @jid
+      assert attr(rmr, "from_me") == "false"
+      # 1:1 chat → no participant on the <rmr>.
+      assert attr(rmr, "participant") == nil
+
+      inject(ctx, mediaretry_notification(msg.id, media_key, :SUCCESS, "/v/new/path"))
+
+      assert {:ok, %Amarula.Content.Media{direct_path: "/v/new/path", media_key: ^media_key}} =
+               Task.await(task)
+    end
+
+    test "surfaces <error code=2> as {:error, :not_on_phone}", ctx do
+      media_key = :crypto.strong_rand_bytes(32)
+      msg = media_msg(media_key)
+
+      task = Task.async(fn -> Amarula.retry_media(ctx.pid, msg) end)
+      _receipt = recv_frame()
+
+      error_notif = %Node{
+        tag: "notification",
+        attrs: %{"id" => msg.id, "type" => "mediaretry", "from" => @jid},
+        content: [%Node{tag: "error", attrs: %{"code" => "2"}, content: nil}]
+      }
+
+      inject(ctx, error_notif)
+      assert {:error, :not_on_phone} = Task.await(task)
+    end
+
+    test "a non-media message is rejected in-process, never touching the socket", ctx do
+      text = %Amarula.Msg{
+        channel: Amarula.Address.pn("10000000001"),
+        type: :text,
+        content: "hi",
+        raw: %Proto.Message{}
+      }
+
+      assert {:error, :not_media} = Amarula.retry_media(ctx.pid, text)
+      refute_receive {:frame_out, _}, 100
+    end
+  end
+
+  # A minimal 1:1 media %Msg{} to retry, keyed by `media_key`.
+  defp media_msg(media_key) do
+    %Amarula.Msg{
+      id: "MEDIARETRY1",
+      channel: Amarula.Address.pn("10000000001"),
+      from: Amarula.Address.pn("10000000001"),
+      to: Amarula.Address.pn("10000000002"),
+      from_me: false,
+      type: :media,
+      content: %Amarula.Content.Media{
+        kind: :image,
+        media_key: media_key,
+        direct_path: "/old/path"
+      },
+      raw: %Proto.Message{}
+    }
+  end
+
+  # A <notification type="mediaretry"> carrying a GCM-encrypted MediaRetryNotification,
+  # exactly as the phone answers our server-error receipt.
+  defp mediaretry_notification(msg_id, media_key, result, direct_path) do
+    iv = :crypto.strong_rand_bytes(12)
+
+    payload =
+      Proto.MediaRetryNotification.encode(%Proto.MediaRetryNotification{
+        stanzaId: msg_id,
+        result: result,
+        directPath: direct_path
+      })
+
+    {:ok, enc_p} = Crypto.aes_encrypt_gcm(payload, Media.retry_key(media_key), iv, msg_id)
+
+    %Node{
+      tag: "notification",
+      attrs: %{"id" => msg_id, "type" => "mediaretry", "from" => @jid},
+      content: [
+        %Node{
+          tag: "encrypt",
+          attrs: %{},
+          content: [
+            %Node{tag: "enc_p", attrs: %{}, content: enc_p},
+            %Node{tag: "enc_iv", attrs: %{}, content: iv}
+          ]
+        }
+      ]
     }
   end
 end

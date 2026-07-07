@@ -2,6 +2,9 @@ defmodule Amarula.Protocol.Messages.MediaTest do
   use ExUnit.Case, async: false
 
   alias Amarula.Protocol.Messages.Media
+  alias Amarula.Protocol.Binary.{Node, NodeUtils}
+  alias Amarula.Protocol.Crypto.Crypto
+  alias Amarula.Protocol.Proto
 
   test "encrypt/decrypt round-trips and verifies the MAC" do
     data = :crypto.strong_rand_bytes(5000)
@@ -161,6 +164,96 @@ defmodule Amarula.Protocol.Messages.MediaTest do
 
       assert {:ok, %{direct_path: "/mms/image/abc", url: "https://cdn/abc"}} =
                Media.upload(stub_conn(reply), <<1, 2, 3>>, :crypto.strong_rand_bytes(32), :image)
+    end
+  end
+
+  describe "media retry (server-error receipt / mediaretry notification)" do
+    test "build_retry_receipt encrypts a ServerErrorReceipt that decrypts back (round-trip)" do
+      media_key = :crypto.strong_rand_bytes(32)
+      msg_id = "ABCD1234"
+
+      node =
+        Media.build_retry_receipt(
+          msg_id,
+          "me@s.whatsapp.net",
+          "peer@s.whatsapp.net",
+          false,
+          nil,
+          media_key
+        )
+
+      assert node.tag == "receipt"
+      assert Map.new(node.attrs)["type"] == "server-error"
+      assert Map.new(node.attrs)["to"] == "me@s.whatsapp.net"
+
+      encrypt = NodeUtils.get_binary_node_child(node, "encrypt")
+      enc_p = NodeUtils.get_binary_node_child(encrypt, "enc_p").content
+      iv = NodeUtils.get_binary_node_child(encrypt, "enc_iv").content
+
+      # The phone decrypts it with the same retry key + msg_id AAD → ServerErrorReceipt.
+      {:ok, plain} = Crypto.aes_decrypt_gcm(enc_p, Media.retry_key(media_key), iv, msg_id)
+      assert %Proto.ServerErrorReceipt{stanzaId: ^msg_id} = Proto.ServerErrorReceipt.decode(plain)
+    end
+
+    test "build_retry_receipt sets participant on <rmr> for a group" do
+      node =
+        Media.build_retry_receipt(
+          "m",
+          "me@s.whatsapp.net",
+          "g@g.us",
+          false,
+          "sender@s.whatsapp.net",
+          :crypto.strong_rand_bytes(32)
+        )
+
+      rmr = NodeUtils.get_binary_node_child(node, "rmr")
+      assert Map.new(rmr.attrs)["jid"] == "g@g.us"
+      assert Map.new(rmr.attrs)["participant"] == "sender@s.whatsapp.net"
+    end
+
+    test "decode_retry_notification decrypts a SUCCESS reply to the new directPath" do
+      media_key = :crypto.strong_rand_bytes(32)
+      msg_id = "XYZ"
+      iv = :crypto.strong_rand_bytes(12)
+
+      payload =
+        Proto.MediaRetryNotification.encode(%Proto.MediaRetryNotification{
+          stanzaId: msg_id,
+          result: :SUCCESS,
+          directPath: "/v/new/path"
+        })
+
+      {:ok, enc_p} = Crypto.aes_encrypt_gcm(payload, Media.retry_key(media_key), iv, msg_id)
+
+      # Inbound (decoded) nodes carry MAP attrs, unlike the ordered-list attrs we
+      # build for outbound stanzas.
+      node = %Node{
+        tag: "notification",
+        attrs: %{"id" => msg_id, "type" => "mediaretry"},
+        content: [
+          %Node{
+            tag: "encrypt",
+            attrs: %{},
+            content: [
+              %Node{tag: "enc_p", attrs: %{}, content: enc_p},
+              %Node{tag: "enc_iv", attrs: %{}, content: iv}
+            ]
+          }
+        ]
+      }
+
+      assert {:ok, "/v/new/path"} = Media.decode_retry_notification(node, media_key)
+    end
+
+    test "decode_retry_notification returns :not_on_phone on <error code=2>" do
+      node = %Node{
+        tag: "notification",
+        attrs: %{"id" => "m", "type" => "mediaretry"},
+        content: [%Node{tag: "error", attrs: %{"code" => "2"}, content: nil}]
+      }
+
+      assert {:error, :not_on_phone} =
+               Media.decode_retry_notification(node, :crypto.strong_rand_bytes(32))
     end
   end
 end

@@ -1078,6 +1078,54 @@ defmodule Amarula do
 
   def download_media(%Amarula.Content.Media{} = m), do: Media.download(m, m.kind)
 
+  @doc """
+  Ask the phone to re-upload a media message whose CDN blob has expired.
+
+  WhatsApp's media URLs are short-lived; once the phone rotates a message off the
+  CDN, `download_media/1` fails with `{:error, {:http, 404}}`. This sends a
+  server-error receipt for `msg` and waits for the phone to re-upload from its own
+  copy, returning a **refreshed** `%Amarula.Content.Media{}` (new `direct_path`)
+  you can hand straight to `download_media/1`:
+
+      case Amarula.download_media(msg) do
+        {:error, {:http, 404}} ->
+          {:ok, media} = Amarula.retry_media(conn, msg)
+          Amarula.download_media(media)
+
+        ok ->
+          ok
+      end
+
+  Unlike `download_media/1`, this **needs the live `conn`** — the receipt and its
+  notification reply ride the socket. Returns `{:error, :not_media}` for a
+  non-media (or keyless) message, `{:error, :not_on_phone}` if the phone no longer
+  has it, `{:error, :timeout}` if it never answers, or `{:error, :not_connected}`.
+  """
+  @spec retry_media(conn(), Amarula.Msg.t()) ::
+          {:ok, Amarula.Content.Media.t()} | {:error, term()}
+  def retry_media(
+        conn,
+        %Amarula.Msg{type: :media, content: %Amarula.Content.Media{media_key: key} = m} = msg
+      )
+      when is_binary(key) do
+    {chat_jid, participant} = retry_target(msg)
+    req = {:request_media_retry, msg.id, chat_jid, msg.from_me, participant, key}
+
+    case GenServer.call(conn, req, @send_call_timeout) do
+      {:ok, direct_path} -> {:ok, %{m | direct_path: direct_path}}
+      {:error, _} = err -> err
+    end
+  end
+
+  def retry_media(_conn, %Amarula.Msg{}), do: {:error, :not_media}
+
+  # Chat jid + (groups only) the message author — the pair the `<rmr>` uses to tell
+  # the phone which message to re-upload.
+  defp retry_target(%Amarula.Msg{channel: channel, from: from}) do
+    participant = if Amarula.Address.group?(channel), do: Amarula.Address.to_jid!(from)
+    {Amarula.Address.to_jid!(channel), participant}
+  end
+
   # Send an already-built %Proto.Message{} to `jid`. The shared tail of the
   # message-building send helpers (contact/location/reaction/edit/revoke), which
   # construct a message and relay it as a {:send_message, ...} call.

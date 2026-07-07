@@ -82,6 +82,40 @@ defmodule Amarula.Protocol.AppState.SyncTest do
                  validate_macs: false
                )
     end
+
+    test "a patch whose key is unavailable decodes to nothing and is not rejected", %{keys: keys} do
+      # get_key returns nil → every record is skipped, so there are no changes and no
+      # collection MAC to authenticate. Must NOT be treated as a MAC failure.
+      patch = pin_patch(keys, 1, "regular")
+
+      assert {:ok, [], _state} =
+               Sync.decode_collection([patch], Patch.new_state(), fn _ -> nil end, "regular")
+    end
+
+    test "an empty patch list yields no changes and the unchanged state", %{get_key: gk} do
+      state = Patch.new_state()
+      assert {:ok, [], ^state} = Sync.decode_collection([], state, gk, "regular")
+    end
+
+    test "a multi-patch collection threads state and validates each patch", %{
+      keys: keys,
+      get_key: gk
+    } do
+      # Two SETs on the same chat (pin true → false) at versions 1 and 2; the second
+      # patch's snapshot MAC covers the cumulative LTHash.
+      set = fn pinned, v ->
+        av = %Proto.SyncActionValue{pinAction: %Proto.SyncActionValue.PinAction{pinned: pinned}}
+        build_patch(["pin_v1", "5511999999999@s.whatsapp.net"], av, keys, v, "regular")
+      end
+
+      {:ok, changes, new_state} =
+        Sync.decode_collection([set.(true, 1), set.(false, 2)], Patch.new_state(), gk, "regular")
+
+      assert new_state.version == 2
+
+      assert [{:chat, %Amarula.Chat{pinned: true}}, {:chat, %Amarula.Chat{pinned: false}}] =
+               changes
+    end
   end
 
   defp pin_patch(keys, version, name) do

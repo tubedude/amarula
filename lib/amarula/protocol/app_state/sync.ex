@@ -151,19 +151,26 @@ defmodule Amarula.Protocol.AppState.Sync do
     end
   end
 
-  # The app-state-sync key for a patch: the patch's own keyId, else the first
-  # record's (all records in a patch share one key).
-  defp patch_key(%Proto.SyncdPatch{keyId: %{id: id}}, get_key) when is_binary(id) and id != "",
-    do: get_key.(Base.encode64(id))
+  # The app-state-sync key for a patch: the patch's own keyId, falling back to the
+  # first record's when the patch keyId is absent OR doesn't resolve (all records in
+  # a patch share one key). The fallback keeps the collection MACs covering a patch
+  # that decoded to real mutations even if its own keyId didn't resolve.
+  defp patch_key(%Proto.SyncdPatch{keyId: %{id: id}} = patch, get_key)
+       when is_binary(id) and id != "" do
+    get_key.(Base.encode64(id)) || patch_key_from_records(patch, get_key)
+  end
 
-  defp patch_key(%Proto.SyncdPatch{mutations: [mutation | _]}, get_key) do
+  defp patch_key(%Proto.SyncdPatch{} = patch, get_key),
+    do: patch_key_from_records(patch, get_key)
+
+  defp patch_key_from_records(%Proto.SyncdPatch{mutations: [mutation | _]}, get_key) do
     case record_key_id(mutation) do
       id when is_binary(id) -> get_key.(Base.encode64(id))
       _ -> nil
     end
   end
 
-  defp patch_key(_patch, _get_key), do: nil
+  defp patch_key_from_records(_patch, _get_key), do: nil
 
   defp record_key_id(%Proto.SyncdMutation{record: %{keyId: %{id: id}}}), do: id
   defp record_key_id(%Proto.SyncdRecord{keyId: %{id: id}}), do: id

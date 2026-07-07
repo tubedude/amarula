@@ -149,8 +149,15 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
     {:ok, plaintext, SessionRecord.set_session(record, session)}
   end
 
+  # All sessions tried and failed. If any failed because the ratchet key it needs
+  # is gone (`:key_unavailable` — the counter was already consumed), re-raise that
+  # structured signal so the receive path can ack the redelivery instead of
+  # retrying; otherwise it's a genuine no-matching-session failure.
   defp decrypt_with_sessions(_data, [], _store, errs) do
-    raise "No matching sessions found for message: #{inspect(errs)}"
+    case Enum.find(errs, &match?(%DecryptError{reason: :key_unavailable}, &1)) do
+      %DecryptError{} = unavailable -> raise unavailable
+      nil -> raise "No matching sessions found for message: #{inspect(errs)}"
+    end
   end
 
   defp decrypt_with_sessions(data, [session | rest], store, errs) do
@@ -181,8 +188,13 @@ defmodule Amarula.Protocol.Signal.SessionCipher do
 
     message_key =
       case Map.fetch(chain.message_keys, message.counter) do
-        {:ok, mk} -> mk
-        :error -> raise DecryptError, message: "Key used already or never filled"
+        {:ok, mk} ->
+          mk
+
+        :error ->
+          raise DecryptError,
+            reason: :key_unavailable,
+            message: "Key used already or never filled"
       end
 
     chain = %{chain | message_keys: Map.delete(chain.message_keys, message.counter)}

@@ -158,6 +158,63 @@ defmodule Amarula.Protocol.Signal.SessionCustodianTest do
     test "record on an empty custodian returns {:ok, nil}", ctx do
       assert {:ok, nil} = SessionCustodian.record(ctx.instance_id, ctx.conn, @addr)
     end
+  end
+
+  describe "install_if_absent (migration target)" do
+    test "installs the record when the address has no live session", ctx do
+      assert :ok =
+               SessionCustodian.install_if_absent(
+                 ctx.instance_id,
+                 ctx.conn,
+                 @addr,
+                 %{sessions: %{migrated: 1}}
+               )
+
+      assert {:ok, %{sessions: %{migrated: 1}}} =
+               SessionCustodian.record(ctx.instance_id, ctx.conn, @addr)
+    end
+
+    test "keeps the existing live session and discards the migrated record", ctx do
+      # Establish a real, open session (a pkmsg gives an open ratchet).
+      assert {:ok, _, _} =
+               SessionCustodian.decrypt(
+                 ctx.instance_id,
+                 ctx.conn,
+                 @addr,
+                 :pkmsg,
+                 h(@vectors["msg1"]["body"]),
+                 store()
+               )
+
+      {:ok, live} = SessionCustodian.record(ctx.instance_id, ctx.conn, @addr)
+
+      # A migration trying to overwrite it is refused — the live ratchet wins.
+      assert {:skipped, :session_exists} =
+               SessionCustodian.install_if_absent(
+                 ctx.instance_id,
+                 ctx.conn,
+                 @addr,
+                 %{sessions: %{migrated: 1}}
+               )
+
+      assert {:ok, ^live} = SessionCustodian.record(ctx.instance_id, ctx.conn, @addr)
+    end
+  end
+
+  describe "group ops trust boundary" do
+    alias Amarula.Protocol.Signal.Group.SenderKeyName
+
+    test "a malformed skmsg surfaces as {:error, _}, not a custodian crash", ctx do
+      name = SenderKeyName.from_jids("123@g.us", "456:0@s.whatsapp.net")
+
+      assert {:error, _} =
+               SessionCustodian.group_decrypt(ctx.instance_id, ctx.conn, name, <<0, 1, 2, 3>>)
+
+      # The custodian stays alive for the next caller (a raw crash would :exit it,
+      # and with it every queued caller — including Connection).
+      assert {:ok, pid} = SessionCustodian.for_sender_key(ctx.instance_id, ctx.conn, name)
+      assert Process.alive?(pid)
+    end
 
     test "serves the record from the write-through cache, not re-reading storage", ctx do
       # Establish + cache a session via a pkmsg.

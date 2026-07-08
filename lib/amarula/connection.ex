@@ -2504,11 +2504,21 @@ defmodule Amarula.Connection do
   end
 
   # Move each of pn_user's device sessions onto the LID address THROUGH the
-  # custodians (the per-record lock), so migration can't race an encrypt/decrypt.
-  # Write the LID target before deleting the PN source (a crash between leaves the
-  # PN record for a later re-migration). Returns the count moved.
+  # custodians (the per-record lock). Cross-record and non-atomic, so it is written
+  # to be safe under a concurrent send that injects a LID session mid-migration:
+  #   1. read the PN record,
+  #   2. install it on the LID address ONLY IF no live session is already there
+  #      (install_if_absent) — a concurrently-injected LID session WINS; we never
+  #      clobber a live ratchet with the migrated record,
+  #   3. drop the PN source only after (2) succeeded — :ok or already-present both
+  #      mean the LID side is settled — and only count the pair when the delete
+  #      itself landed. A failure at any step leaves the PN record for a later
+  #      re-migration (idempotent: step 2 then finds the LID session and skips).
+  # (The PN side has no concurrent mutator here — inbound PN decrypts run in this
+  # same Connection process, and sends resolve to the LID address.) Returns moved.
   defp migrate_pn_records(state, pn_user, lid_user, keys) do
     conn = conn(state)
+    iid = state.instance_id
     pn_prefix = pn_user <> "."
 
     keys
@@ -2517,14 +2527,11 @@ defmodule Amarula.Connection do
       device = String.replace_prefix(pn_addr, pn_prefix, "")
       lid_addr = "#{lid_user}_1.#{device}"
 
-      iid = state.instance_id
-
       with {:ok, record} when not is_nil(record) <-
              SessionCustodian.record(iid, conn, pn_addr),
-           :ok <- SessionCustodian.replace(iid, conn, lid_addr, record) do
-        # Only drop the PN source once the LID write LANDED; a failed LID write
-        # leaves the PN record intact for a later re-migration.
-        SessionCustodian.replace(iid, conn, pn_addr, nil)
+           installed when installed in [:ok, {:skipped, :session_exists}] <-
+             SessionCustodian.install_if_absent(iid, conn, lid_addr, record),
+           :ok <- SessionCustodian.replace(iid, conn, pn_addr, nil) do
         moved + 1
       else
         _ -> moved

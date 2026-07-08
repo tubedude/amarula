@@ -191,6 +191,20 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   def replace(instance_id, conn, addr, record),
     do: call_session(instance_id, conn, addr, {:replace, record})
 
+  @doc """
+  Install `record` under 1:1 `addr` **only if no open session exists there**.
+  `:ok` (installed), `{:skipped, :session_exists}` (a live session was already
+  present — kept, `record` discarded), or `{:error, _}`.
+
+  The PN→LID migration target: unlike `replace/4`, this never overwrites a live
+  ratchet, so a session a concurrent send just injected on the LID address wins
+  instead of being clobbered by the migrated PN record.
+  """
+  @spec install_if_absent(reference(), Conn.t(), String.t(), map()) ::
+          :ok | {:skipped, :session_exists} | {:error, term()}
+  def install_if_absent(instance_id, conn, addr, record),
+    do: call_session(instance_id, conn, addr, {:install_if_absent, record})
+
   @doc "Group: encrypt `plaintext` with our sender key for `name` (skmsg)."
   @spec group_encrypt(reference(), Conn.t(), SenderKeyName.t(), binary()) ::
           {:ok, binary()} | {:error, term()}
@@ -316,6 +330,25 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   end
 
   @impl GenServer
+  def handle_call({:install_if_absent, record}, _from, state) do
+    {existing, state} = cached_record(state)
+
+    {reply, state} =
+      if existing && SessionRecord.get_open_session(existing) != nil do
+        # A live session is already here (e.g. a concurrent send just injected one) —
+        # keep it; discard the migrated record rather than regress the ratchet.
+        {{:skipped, :session_exists}, state}
+      else
+        case store_and_cache(state, record) do
+          {:ok, state} -> {:ok, state}
+          {:error, _} = err -> {err, state}
+        end
+      end
+
+    {:reply, reply, state, state.idle_ms}
+  end
+
+  @impl GenServer
   def handle_call(:record, _from, state) do
     {record, state} = cached_record(state)
     {:reply, {:ok, record}, state, state.idle_ms}
@@ -323,8 +356,14 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
 
   @impl GenServer
   def handle_call({:replace, nil}, _from, %{conn: conn, key: key} = state) do
-    delete_record(conn, key)
-    {:reply, :ok, %{state | cached: nil}, state.idle_ms}
+    # Only report :ok (and drop the cache) if the delete LANDED — else the caller
+    # (an identity wipe / migration) would treat a failed delete as done, and after
+    # an idle-shed the next incarnation would re-read the record from storage and
+    # resurrect it. Same write-through contract as store_and_cache/2.
+    case delete_record(conn, key) do
+      :ok -> {:reply, :ok, %{state | cached: nil}, state.idle_ms}
+      {:error, reason} -> {:reply, {:error, {:storage_delete_failed, reason}}, state, state.idle_ms}
+    end
   end
 
   @impl GenServer
@@ -337,37 +376,36 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
 
   @impl GenServer
   def handle_call({:group_encrypt, plaintext}, _from, %{conn: conn, key: name} = state) do
-    {:reply, GroupCipher.encrypt(SenderKeyStore.build(conn), name, plaintext), state, state.idle_ms}
+    reply = rescue_group(fn -> GroupCipher.encrypt(SenderKeyStore.build(conn), name, plaintext) end)
+    {:reply, reply, state, state.idle_ms}
   end
 
   @impl GenServer
   def handle_call({:group_decrypt, content}, _from, %{conn: conn, key: name} = state) do
-    {:reply, GroupCipher.decrypt(SenderKeyStore.build(conn), name, content), state, state.idle_ms}
+    reply = rescue_group(fn -> GroupCipher.decrypt(SenderKeyStore.build(conn), name, content) end)
+    {:reply, reply, state, state.idle_ms}
   end
 
   @impl GenServer
   def handle_call({:create_skdm, group_id, me_id}, _from, %{conn: conn} = state) do
-    sk_store = SenderKeyStore.build(conn)
-    builder = GroupSessionBuilder.new(sk_store)
-
     reply =
-      GroupSessionBuilder.create_sender_key_distribution_message(
-        builder,
-        sk_store,
-        group_id,
-        me_id
-      )
+      rescue_group(fn ->
+        sk_store = SenderKeyStore.build(conn)
+        builder = GroupSessionBuilder.new(sk_store)
+        GroupSessionBuilder.create_sender_key_distribution_message(builder, sk_store, group_id, me_id)
+      end)
 
     {:reply, reply, state, state.idle_ms}
   end
 
   @impl GenServer
   def handle_call({:process_skdm, skdm, author}, _from, %{conn: conn} = state) do
-    sk_store = SenderKeyStore.build(conn)
-    builder = GroupSessionBuilder.new(sk_store)
-
     reply =
-      GroupSessionBuilder.process_sender_key_distribution_message(builder, sk_store, skdm, author)
+      rescue_group(fn ->
+        sk_store = SenderKeyStore.build(conn)
+        builder = GroupSessionBuilder.new(sk_store)
+        GroupSessionBuilder.process_sender_key_distribution_message(builder, sk_store, skdm, author)
+      end)
 
     {:reply, reply, state, state.idle_ms}
   end
@@ -429,5 +467,18 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
 
   defp delete_record(%Conn{storage: scope, profile: profile}, key) do
     Storage.delete(scope, profile, :session, key)
+  end
+
+  # The group path's trust boundary, mirroring mutate/2 for 1:1. The group
+  # cipher/builder deliberately let malformed protobuf raise (untrusted network
+  # input — a peer's skmsg / inbound SKDM). Converting that raise to {:error, e}
+  # fails only this op; a raw crash would :exit every queued caller — including
+  # Connection, the socket owner — turning one malformed group message into a
+  # remote kill of the connection. The decrypt/send callers already branch on the
+  # {:ok, _} | {:error, _} tuple.
+  defp rescue_group(fun) do
+    fun.()
+  rescue
+    e -> {:error, e}
   end
 end

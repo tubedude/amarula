@@ -24,7 +24,7 @@ defmodule Amarula.Protocol.Signal.SessionInjector do
   require Logger
 
   alias Amarula.Protocol.Binary.NodeUtils
-  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionBuilder, SessionRecord, SessionStore}
+  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionCustodian, SessionStore}
 
   @doc """
   Inject every session in the IQ `result` node. `creds` supplies our identity
@@ -33,21 +33,22 @@ defmodule Amarula.Protocol.Signal.SessionInjector do
 
   Returns the number of sessions injected.
   """
-  @spec inject(map(), map(), Amarula.Conn.t()) :: non_neg_integer()
-  def inject(result, creds, conn) do
+  @spec inject(map(), map(), Amarula.Conn.t(), reference(), :always | :if_absent) ::
+          non_neg_integer()
+  def inject(result, creds, conn, instance_id, mode) do
     store = SessionStore.build(creds)
     list = NodeUtils.get_binary_node_child(result, "list")
     users = if list, do: NodeUtils.get_binary_node_children(list, "user"), else: []
 
     Enum.reduce(users, 0, fn user, count ->
-      case inject_user(user, store, conn) do
+      case inject_user(user, store, conn, instance_id, mode) do
         :ok -> count + 1
-        :skip -> count
+        _ -> count
       end
     end)
   end
 
-  defp inject_user(user, store, conn) do
+  defp inject_user(user, store, conn, instance_id, mode) do
     jid = NodeUtils.get_attr(user, "jid")
 
     cond do
@@ -61,15 +62,23 @@ defmodule Amarula.Protocol.Signal.SessionInjector do
       true ->
         device = parse_bundle(user)
         # LID-priority: store under the recipient's LID address when mapped, so
-        # the send path (which also resolves LID) finds the injected session.
+        # the send path (which also resolves LID) finds the injected session. The
+        # write goes through the record's custodian (the per-record lock).
         addr = LidMappingFileStore.signal_address(conn, jid)
 
-        record = SessionStore.load_session(conn, addr) || SessionRecord.new()
-        record = SessionBuilder.init_outgoing(record, device, store)
-        SessionStore.store_session(conn, addr, record)
+        with {:ok, custodian} <- SessionCustodian.for_address(instance_id, conn, addr),
+             :ok <- SessionCustodian.inject(custodian, device, store, mode) do
+          Logger.debug("Injected session for #{jid} (#{addr})")
+          :ok
+        else
+          {:skipped, :session_exists} ->
+            Logger.debug("Session for #{jid} (#{addr}) already present — inject skipped")
+            :skipped
 
-        Logger.debug("Injected session for #{jid} (#{addr})")
-        :ok
+          other ->
+            Logger.warning("Inject failed for #{jid} (#{addr}): #{inspect(other)}")
+            other
+        end
     end
   end
 

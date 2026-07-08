@@ -4,22 +4,23 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   routing in `src/Utils/decode-wa-message.ts` (`decryptMessageNode`).
 
   For each `<enc>` child it dispatches by `type`:
-    * `pkmsg` / `msg` → 1:1 Signal session cipher (`SessionCipher`)
+    * `pkmsg` / `msg` → 1:1 Signal session, decrypted through the record's
+      `SessionCustodian` (the per-record lock, so an overlapping send-side encrypt
+      can't clobber the ratchet)
     * `plaintext`     → passthrough
-    * `skmsg`         → group sender-key (not handled here yet; left to caller)
+    * `skmsg`         → group sender-key
 
   The decrypted bytes are unpadded (random-max-16) and decoded as a
-  `Proto.Message`, unwrapping `deviceSentMessage`.
-
-  Sessions are loaded/stored via `SessionStore` keyed by the sender's signal
-  address. This module is pure aside from the session file I/O.
+  `Proto.Message`, unwrapping `deviceSentMessage`. This module owns the per-message
+  work (routing, unpad, proto decode); the load → cipher → store of a record lives
+  in its custodian.
   """
 
   require Logger
 
   alias Amarula.Protocol.Binary.NodeUtils
   alias Amarula.Protocol.Proto
-  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionCipher, SessionStore}
+  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionCustodian}
 
   alias Amarula.Protocol.Signal.Group.{
     GroupCipher,
@@ -39,11 +40,13 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   libsignal's `session_cipher` does via `removePreKey`. `opts` requires:
     * `:store` — the cipher store from `SessionStore.build/1`
     * `:conn` — the `Amarula.Conn` scoping session persistence
+    * `:instance_id` — to resolve each record's `SessionCustodian`
   """
   @spec decrypt_node(map(), keyword()) :: {:ok, [struct()], [integer()], [term()]}
   def decrypt_node(node, opts) do
     store = Keyword.fetch!(opts, :store)
     conn = Keyword.fetch!(opts, :conn)
+    instance_id = Keyword.fetch!(opts, :instance_id)
     sk_store = SenderKeyStore.build(conn)
 
     from = NodeUtils.get_attr(node, "from")
@@ -59,7 +62,8 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
       author: author,
       store: store,
       sk_store: sk_store,
-      conn: conn
+      conn: conn,
+      instance_id: instance_id
     }
 
     {messages, used_pre_key_ids, errors} =
@@ -74,16 +78,7 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   defp reduce_enc(enc, {msgs, used_ids, errs}, ctx) do
     type = NodeUtils.get_attr(enc, "type")
 
-    case decrypt_enc(
-           type,
-           enc.content,
-           ctx.addr,
-           ctx.from,
-           ctx.author,
-           ctx.store,
-           ctx.sk_store,
-           ctx.conn
-         ) do
+    case decrypt_enc(type, enc.content, ctx) do
       {:ok, msg, pre_key_id} ->
         maybe_process_skdm(msg, ctx.author, ctx.sk_store)
         {[msg | msgs], prepend_if(pre_key_id, used_ids), errs}
@@ -100,37 +95,14 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   defp prepend_if(nil, list), do: list
   defp prepend_if(value, list), do: [value | list]
 
-  defp decrypt_enc(_type, content, _addr, _from, _author, _store, _sk_store, _conn)
-       when not is_binary(content),
-       do: {:error, :no_content}
+  defp decrypt_enc(_type, content, _ctx) when not is_binary(content), do: {:error, :no_content}
 
-  defp decrypt_enc("pkmsg", content, addr, _from, _author, store, _sk_store, conn) do
-    record = SessionStore.load_session(conn, addr)
+  # 1:1 Signal: route the load → cipher → store through the record's custodian
+  # (the per-record lock), so an overlapping send-side encrypt can't clobber it.
+  defp decrypt_enc("pkmsg", content, ctx), do: decrypt_1to1(:pkmsg, content, ctx)
+  defp decrypt_enc("msg", content, ctx), do: decrypt_1to1(:msg, content, ctx)
 
-    with {:ok, plaintext, record, pre_key_id} <-
-           run_cipher(fn ->
-             SessionCipher.decrypt_pre_key_whisper_message(record, content, store)
-           end) do
-      SessionStore.store_session(conn, addr, record)
-
-      with {:ok, msg} <- decode_padded(plaintext), do: {:ok, msg, pre_key_id}
-    end
-  end
-
-  defp decrypt_enc("msg", content, addr, _from, _author, store, _sk_store, conn) do
-    with record when not is_nil(record) <- SessionStore.load_session(conn, addr),
-         {:ok, plaintext, record} <-
-           run_cipher(fn -> SessionCipher.decrypt_whisper_message(record, content, store) end) do
-      SessionStore.store_session(conn, addr, record)
-
-      with {:ok, msg} <- decode_padded(plaintext), do: {:ok, msg, nil}
-    else
-      nil -> {:error, :no_session}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp decrypt_enc("skmsg", content, _addr, from, author, _store, sk_store, _conn) do
+  defp decrypt_enc("skmsg", content, %{from: from, author: author, sk_store: sk_store}) do
     sender_key_name = SenderKeyName.from_jids(from, author)
 
     with {:ok, plaintext} <- GroupCipher.decrypt(sk_store, sender_key_name, content),
@@ -139,20 +111,18 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
     end
   end
 
-  defp decrypt_enc("plaintext", content, _addr, _from, _author, _store, _sk_store, _conn) do
+  defp decrypt_enc("plaintext", content, _ctx) do
     with {:ok, msg} <- decode_proto(content), do: {:ok, msg, nil}
   end
 
-  defp decrypt_enc(type, _content, _addr, _from, _author, _store, _sk_store, _conn) do
-    {:error, {:unsupported_enc_type, type}}
-  end
+  defp decrypt_enc(type, _content, _ctx), do: {:error, {:unsupported_enc_type, type}}
 
-  # The Signal cipher signals failure by raising (libsignal-shaped); convert to a
-  # tuple at this one boundary so a bad <enc> becomes an error entry, not a crash.
-  defp run_cipher(fun) do
-    fun.()
-  rescue
-    e -> {:error, e}
+  defp decrypt_1to1(type, content, %{instance_id: iid, conn: conn, addr: addr, store: store}) do
+    with {:ok, custodian} <- SessionCustodian.for_address(iid, conn, addr),
+         {:ok, plaintext, pre_key_id} <- SessionCustodian.decrypt(custodian, type, content, store),
+         {:ok, msg} <- decode_padded(plaintext) do
+      {:ok, msg, pre_key_id}
+    end
   end
 
   defp decode_padded(plaintext) do

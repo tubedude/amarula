@@ -4,6 +4,7 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
   alias Amarula.Protocol.Messages.MessageDecryptor
   alias Amarula.Protocol.Proto
   alias Amarula.Protocol.Signal.SessionStore
+  alias Amarula.Protocol.Socket.ConnectionSupervisor
   alias Amarula.Protocol.Binary.Node
 
   # Fixtures: amarula creds + a real libsignal-encrypted proto.Message wrapped as
@@ -15,12 +16,21 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
   setup do
     dir = Path.join(System.tmp_dir!(), "amarula_md_#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(dir) end)
-    {:ok, dir: dir, conn: Amarula.TestConn.new(dir)}
+    instance_id = make_ref()
+
+    # 1:1 decrypt routes through the record's custodian, which lives under this tree.
+    {:ok, _custodian_sup} =
+      DynamicSupervisor.start_link(
+        strategy: :one_for_one,
+        name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)
+      )
+
+    {:ok, dir: dir, conn: Amarula.TestConn.new(dir), instance_id: instance_id}
   end
 
   defp h(hex), do: Base.decode16!(hex, case: :lower)
 
-  test "decrypts a message node's pkmsg enc into a proto.Message", %{conn: conn} do
+  test "decrypts a message node's pkmsg enc into a proto.Message", %{conn: conn, instance_id: iid} do
     store = SessionStore.build(@creds)
 
     enc = %Node{
@@ -36,7 +46,7 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
     }
 
     {:ok, [msg], _used_pre_key_ids, []} =
-      MessageDecryptor.decrypt_node(node, store: store, conn: conn)
+      MessageDecryptor.decrypt_node(node, store: store, conn: conn, instance_id: iid)
 
     assert msg.conversation == @vector["expectedText"]
 
@@ -44,7 +54,7 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
     assert SessionStore.load_session(conn, "15550001234.0") != nil
   end
 
-  test "ignores enc children that fail to decrypt", %{conn: conn} do
+  test "ignores enc children that fail to decrypt", %{conn: conn, instance_id: iid} do
     store = SessionStore.build(@creds)
 
     enc = %Node{tag: "enc", attrs: %{"type" => "msg"}, content: <<0x33, 0, 0>>}
@@ -58,13 +68,13 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
     # No session exists for a bare msg → nothing decrypted, no crash. The error
     # is surfaced (4th element) so the caller can choose how to ack.
     assert {:ok, [], [], [_error]} =
-             MessageDecryptor.decrypt_node(node,
-               store: store,
-               conn: conn
-             )
+             MessageDecryptor.decrypt_node(node, store: store, conn: conn, instance_id: iid)
   end
 
-  test "a plaintext enc with undecodable bytes becomes an error entry, no raise", %{conn: conn} do
+  test "a plaintext enc with undecodable bytes becomes an error entry, no raise", %{
+    conn: conn,
+    instance_id: iid
+  } do
     store = SessionStore.build(@creds)
 
     # Not a valid protobuf wire encoding → Proto.Message.decode/1 raises, which
@@ -78,10 +88,13 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
     }
 
     assert {:ok, [], [], [_error]} =
-             MessageDecryptor.decrypt_node(node, store: store, conn: conn)
+             MessageDecryptor.decrypt_node(node, store: store, conn: conn, instance_id: iid)
   end
 
-  test "partial failure: the good plaintext enc decodes, the bad one is an error", %{conn: conn} do
+  test "partial failure: the good plaintext enc decodes, the bad one is an error", %{
+    conn: conn,
+    instance_id: iid
+  } do
     store = SessionStore.build(@creds)
 
     good_bytes = IO.iodata_to_binary(Proto.Message.encode(%Proto.Message{conversation: "hi"}))
@@ -96,7 +109,7 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
     }
 
     assert {:ok, [msg], [], [_error]} =
-             MessageDecryptor.decrypt_node(node, store: store, conn: conn)
+             MessageDecryptor.decrypt_node(node, store: store, conn: conn, instance_id: iid)
 
     assert msg.conversation == "hi"
   end

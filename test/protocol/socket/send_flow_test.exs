@@ -183,6 +183,12 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     instance_id = make_ref()
     registry = ConnectionSupervisor.registry_name(instance_id)
 
+    {:ok, _custodian_sup} =
+      DynamicSupervisor.start_link(
+        strategy: :one_for_one,
+        name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)
+      )
+
     {:ok, sup} =
       DynamicSupervisor.start_link(
         strategy: :one_for_one,
@@ -313,6 +319,33 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     if NodeUtils.get_attr(user, "reason") == "identity",
       do: user,
       else: recv_identity_refresh()
+  end
+
+  # Deadlock canary — permanent guard for the custodian design. A send to a peer
+  # parks the sender in a blocking query_iq to Connection; meanwhile an inbound
+  # message from the SAME peer must decrypt. Because decrypt goes through the peer's
+  # custodian (a leaf that waits on no one) — NOT the parked sender — it completes.
+  # If decrypt were ever routed through the sender, Connection→sender + sender→
+  # Connection would cycle and this would hang.
+  test "an inbound decrypt completes while a send to the same peer is parked", ctx do
+    # Start a send; the sender fires a USync query and parks awaiting our reply,
+    # which we deliberately never send.
+    _task = send_text_async(ctx, @jid, "parked send")
+    usync_iq = recv_frame()
+    assert usync_iq.tag == "iq"
+    assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
+
+    # An (undecryptable) inbound message from the same peer → handle_message decrypts
+    # it via the peer's custodian and emits a retry receipt. That frame appearing is
+    # the proof the receive path did not deadlock behind the parked sender.
+    enc = Node.create("enc", %{"type" => "msg", "v" => "2"}, <<1, 2, 3, 4>>)
+    msg = Node.create("message", %{"from" => @jid, "id" => "CANARY", "t" => "1700000000"}, [enc])
+    inject(ctx, msg)
+
+    receipt = recv_frame()
+    assert receipt.tag == "receipt"
+    assert attr(receipt, "type") == "retry"
+    assert attr(receipt, "id") == "CANARY"
   end
 
   test "resolves devices, fetches a bundle, then relays a participants stanza", ctx do

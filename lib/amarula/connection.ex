@@ -2058,7 +2058,7 @@ defmodule Amarula.Connection do
   defp maybe_inject_retry_keys(state, node) do
     case NodeUtils.get_binary_node_child(node, "keys") do
       %Node{} ->
-        SessionInjector.inject(node, state.auth_creds, conn(state))
+        SessionInjector.inject(node, state.auth_creds, conn(state), state.instance_id, :always)
         state
 
       _ ->
@@ -3404,7 +3404,8 @@ defmodule Amarula.Connection do
     {:ok, messages, used_pre_key_ids, errors} =
       MessageDecryptor.decrypt_node(node,
         store: store,
-        conn: conn(state)
+        conn: conn(state),
+        instance_id: state.instance_id
       )
 
     state = remove_used_pre_keys(state, used_pre_key_ids)
@@ -4256,7 +4257,9 @@ defmodule Amarula.Connection do
   # bundles; the injector LID-resolves the addresses so they overwrite/seed the
   # LID-keyed sessions the send path uses. Best-effort: failures are logged only.
   defp handle_tracked_iq(:assert_lid_sessions, {:ok, node}, state) do
-    injected = SessionInjector.inject(node, state.auth_creds, conn(state))
+    injected =
+      SessionInjector.inject(node, state.auth_creds, conn(state), state.instance_id, :always)
+
     Logger.debug("Force-refreshed #{injected} LID session(s)")
     state
   end

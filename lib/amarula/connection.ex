@@ -64,8 +64,8 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Crypto.Constants
   alias Amarula.Protocol.Proto
 
-  alias Amarula.Protocol.Signal.{PreKeys, SessionInjector, SessionStore, DeviceListCache}
-  alias Amarula.Protocol.Signal.LidMappingFileStore
+  alias Amarula.Protocol.Signal.{PreKeys, SessionCustodian, SessionInjector, SessionStore}
+  alias Amarula.Protocol.Signal.{DeviceListCache, LidMappingFileStore}
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
   alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing, Notifications, Receive}
@@ -2406,7 +2406,7 @@ defmodule Amarula.Connection do
       # Wipe up front so a concurrent send can't encrypt to the old identity in the
       # window before the refreshed bundle lands. No session → a new contact,
       # nothing to refresh.
-      case wipe_identity_sessions(conn(state), from) do
+      case wipe_identity_sessions(state, from) do
         n when n > 0 ->
           Logger.debug("encrypt(identity) from #{from}: wiped #{n} stale session(s), refreshing")
           force_refresh_sessions(state, [from])
@@ -2421,13 +2421,30 @@ defmodule Amarula.Connection do
   # Delete all of `from`'s 1:1 sessions (every device). Returns the count deleted, or
   # 0 when we can't resolve the signal-user or enumerate the store. LID-aware, so it
   # matches wherever the session actually lives after a PN→LID migration.
-  defp wipe_identity_sessions(conn, from) do
+  defp wipe_identity_sessions(state, from) do
+    conn = conn(state)
+
     with signal_user when is_binary(signal_user) <- LidMappingFileStore.signal_user(conn, from),
          {:ok, keys} <- SessionStore.list_session_keys(conn) do
-      SessionStore.delete_user_sessions(conn, signal_user, keys)
+      prefix = signal_user <> "."
+
+      # Delete each device's session THROUGH its custodian, so an in-flight encrypt
+      # on that address serializes against the wipe and can't resurrect it.
+      keys
+      |> Enum.filter(&String.starts_with?(&1, prefix))
+      |> Enum.reduce(0, &wipe_one_session(&1, state, conn, &2))
     else
       _ -> 0
     end
+  end
+
+  defp wipe_one_session(addr, state, conn, deleted) do
+    case SessionCustodian.for_address(state.instance_id, conn, addr) do
+      {:ok, custodian} -> SessionCustodian.replace(custodian, nil)
+      _ -> :ok
+    end
+
+    deleted + 1
   end
 
   # Before decrypting, if the sender is PN-addressed but we know their LID, move
@@ -2481,11 +2498,37 @@ defmodule Amarula.Connection do
     else
       state = %{state | migrated_pn_sessions: MapSet.put(state.migrated_pn_sessions, pn_user)}
 
-      case SessionStore.migrate_pn_to_lid(conn(state), pn_user, lid_user, keys) do
+      case migrate_pn_records(state, pn_user, lid_user, keys) do
         0 -> {state, :none}
         _ -> {state, :migrated}
       end
     end
+  end
+
+  # Move each of pn_user's device sessions onto the LID address THROUGH the
+  # custodians (the per-record lock), so migration can't race an encrypt/decrypt.
+  # Write the LID target before deleting the PN source (a crash between leaves the
+  # PN record for a later re-migration). Returns the count moved.
+  defp migrate_pn_records(state, pn_user, lid_user, keys) do
+    conn = conn(state)
+    pn_prefix = pn_user <> "."
+
+    keys
+    |> Enum.filter(&String.starts_with?(&1, pn_prefix))
+    |> Enum.reduce(0, fn pn_addr, moved ->
+      device = String.replace_prefix(pn_addr, pn_prefix, "")
+      lid_addr = "#{lid_user}_1.#{device}"
+
+      with {:ok, pn_cust} <- SessionCustodian.for_address(state.instance_id, conn, pn_addr),
+           {:ok, record} when not is_nil(record) <- SessionCustodian.record(pn_cust),
+           {:ok, lid_cust} <- SessionCustodian.for_address(state.instance_id, conn, lid_addr) do
+        SessionCustodian.replace(lid_cust, record)
+        SessionCustodian.replace(pn_cust, nil)
+        moved + 1
+      else
+        _ -> moved
+      end
+    end)
   end
 
   # Migrate one newly-mapped {lid, pn} pair (over the batch's pre-listed `keys`),

@@ -16,8 +16,6 @@ defmodule Amarula.Protocol.Signal.SessionStore do
   prefixing where needed.
   """
 
-  require Logger
-
   alias Amarula.Conn
   alias Amarula.Protocol.Signal.SessionRecord
   alias Amarula.Storage
@@ -84,83 +82,11 @@ defmodule Amarula.Protocol.Signal.SessionStore do
   List every stored 1:1 session address on `conn`.
 
   `{:error, reason}` when the storage adapter can't enumerate keys (e.g. a custom
-  adapter that doesn't implement `list_keys/3`). Callers pass the result into
-  `migrate_pn_to_lid/4` so a batch of migrations enumerates storage once.
+  adapter that doesn't implement `list_keys/3`). The Connection passes the result
+  into the custodian-driven migration/wipe so a batch enumerates storage once.
   """
   @spec list_session_keys(Conn.t()) :: {:ok, [String.t()]} | {:error, term()}
   def list_session_keys(%Conn{storage: scope, profile: profile}) do
     Storage.list_keys(scope, profile, :session)
-  end
-
-  @doc """
-  Re-key every 1:1 session from a PN identity onto its LID identity, given the
-  already-listed session `keys` (see `list_session_keys/1`).
-
-  When we learn a contact's phone-number identity (`pn_user`, e.g. `"5511…"`) and
-  their LID (`lid_user`) are the same account, the live Signal ratchet — keyed under
-  the PN signal-address `"<pn_user>.<device>"` — must move to the LID signal-address
-  `"<lid_user>_1.<device>"` (the `_1` is the `@lid` domain-type suffix that
-  `LidMappingFileStore.plain_signal_address/1` emits). Otherwise a message addressed
-  under the other identity looks under an empty key and fails to decrypt.
-
-  Re-keys in place: each PN session is copied onto the LID address (the PN record
-  wins over any pre-existing LID session — the PN ratchet is the live one), then the
-  PN entry is deleted. No prekey fetch, no renegotiation.
-  Returns the number of sessions moved — `0` when the contact had no PN session
-  (e.g. first contact after LID adoption), which the caller can treat as "still
-  needs a fresh bundle".
-  """
-  @spec migrate_pn_to_lid(Conn.t(), String.t(), String.t(), [String.t()]) :: non_neg_integer()
-  def migrate_pn_to_lid(%Conn{} = conn, pn_user, lid_user, keys) do
-    pn_prefix = pn_user <> "."
-
-    keys
-    |> Enum.filter(&String.starts_with?(&1, pn_prefix))
-    |> Enum.reduce(0, &move_session(&1, conn, pn_prefix, lid_user, &2))
-  end
-
-  @doc """
-  Delete every 1:1 session for `signal_user` (all its per-device addresses), given
-  the caller's pre-listed session `keys` (see `list_session_keys/1`). Returns the
-  number deleted. Used to drop a peer's stale sessions on an identity change before
-  re-fetching their key bundle, so nothing encrypts to the old identity in the gap.
-  """
-  @spec delete_user_sessions(Conn.t(), String.t(), [String.t()]) :: non_neg_integer()
-  def delete_user_sessions(%Conn{storage: scope, profile: profile}, signal_user, keys) do
-    prefix = signal_user <> "."
-    matching = Enum.filter(keys, &String.starts_with?(&1, prefix))
-    Enum.each(matching, &Storage.delete(scope, profile, :session, &1))
-    length(matching)
-  end
-
-  # Move one PN session onto its LID address ("<lid_user>_1.<device>"), deleting the
-  # PN entry only once the LID copy is durably written — a failed write keeps the PN
-  # entry (a later re-migration re-copies the same record) rather than losing the
-  # live ratchet. Returns the running count, unchanged when nothing was moved.
-  defp move_session(
-         pn_addr,
-         %Conn{storage: scope, profile: profile} = conn,
-         pn_prefix,
-         lid_user,
-         moved
-       ) do
-    device = String.replace_prefix(pn_addr, pn_prefix, "")
-    lid_addr = "#{lid_user}_1.#{device}"
-
-    with record when not is_nil(record) <- load_session(conn, pn_addr),
-         :ok <- store_session(conn, lid_addr, record) do
-      Storage.delete(scope, profile, :session, pn_addr)
-      moved + 1
-    else
-      nil ->
-        moved
-
-      {:error, reason} ->
-        Logger.warning(
-          "PN→LID session move failed to write the LID record (#{inspect(reason)}) — keeping the PN entry"
-        )
-
-        moved
-    end
   end
 end

@@ -126,7 +126,6 @@ lib/amarula/protocol/
   small set of Glue modules (`SessionStore`, `SessionInjector`, `DeviceListCache`,
   `LidMapping*Store`, `group/SenderKeyStore`) is the only bridge to
   `Amarula.Conn`/`Amarula.Storage`. The rule: **Core must never depend on the app.**
-  See [`docs/CRYPTO_BOUNDARY.md`](docs/CRYPTO_BOUNDARY.md).
 
 **Storage** (`lib/amarula/storage*`): pluggable `Amarula.Storage` behaviour scoped
 by `{profile, namespace, key}`; `File` + `DETS` adapters. Holds creds, sessions,

@@ -13,7 +13,7 @@ backend and the policy. This doc points at the seams and the gotchas.
 
 ---
 
-## 1. Credential storage
+## 1. Credential Storage
 
 Everything Amarula must remember across a restart — auth creds, 1:1 Signal
 sessions, group sender keys, LID↔PN mappings, the device-list cache, app-state —
@@ -21,7 +21,7 @@ flows through one seam: the `Amarula.Storage` behaviour, scoped by
 `{profile, namespace, key}`. **Lose this and you re-pair from a QR.** So in prod
 it must be durable, backed up, and concurrency-safe.
 
-### Pick an adapter
+### Pick an Adapter
 
 Pass `:storage` on the config (`Amarula.new/1`). Two adapters ship:
 
@@ -70,7 +70,7 @@ box dying," write a DB/object-store adapter — implement the four required call
   funs; it's treated as a cache miss. Don't rely on that for trust; keep the store
   private.
 
-### One profile = one credential set
+### One Profile = One Credential Set
 
 `:profile` names the account's stored creds. The next run with the same profile
 reconnects without a QR. Keep `profile ↔ credentials` strictly 1:1 — the library
@@ -78,7 +78,7 @@ trusts this and does not validate it.
 
 ---
 
-## 2. The profile registry
+## 2. The Profile Registry
 
 Amarula enforces **one live connection per profile**. Two WebSockets on one
 credential set corrupt the shared Signal ratchet — this is a correctness
@@ -106,7 +106,7 @@ The consumer distributes the credentials and picks the registry; Amarula enforce
 one-per-profile against whatever reach that registry has. **The library never
 decides clustering.**
 
-### Distributed gotcha
+### Distributed Gotcha
 
 A cluster registry built on `:global` is only *best-effort* at uniqueness. If the
 cluster splits in two (a network partition), each half can register the same
@@ -134,13 +134,13 @@ things tidy within a healthy cluster. You use both — the lease for safety, the
 
 ---
 
-## 3. Message storage
+## 3. Message Storage
 
 **Amarula does not persist messages. That is your job.** An inbound message is
 delivered **once** as `{:amarula, :messages_upsert, %{from, id, messages:
 [%Amarula.Msg{}]}}` to your `parent_pid`, then forgotten. No replay, no inbox.
 
-### What to store
+### What to Store
 
 Store the **consumer struct**, not the raw protobuf. Each `%Amarula.Msg{}` carries
 the friendly view:
@@ -158,7 +158,7 @@ the friendly view:
 `msg.raw` is the full `%Proto.Message{}` escape hatch — keep it only if you need a
 field Amarula doesn't surface; it's large.
 
-### Reading the body — text and media
+### Reading the Body — Text and Media
 
 `msg.content` shape depends on `msg.type`. Match on the type:
 
@@ -204,7 +204,7 @@ What to do with the bytes is your decision, and it drives **what you store**:
 So: text → store the string. Media → download to storage you control, store the
 pointer (and the `kind`), not the raw bytes in your row.
 
-### Best practices
+### Best Practices
 
 - **Dedup by `id`.** On a single connection you do **not** echo your own sends, so
   no self-dedup needed. The one case that needs cross-connection dedup by `id`:
@@ -214,13 +214,13 @@ pointer (and the `kind`), not the raw bytes in your row.
 - **Media is lazy.** A `:media` message's `content` is a descriptor; call
   `Amarula.download_media/1` to fetch bytes. Store the descriptor if you want to
   download later; bytes aren't kept by the library.
-- **Edits/revokes/reactions point at an earlier `id`** via a `MessageKey` in
-  `content`. To apply them you need the original stored — another reason to keep an
-  `id`-keyed store.
+- **Edits/revokes/reactions point at an earlier `id`** via `content.key`, a
+  `{jid, msg_id}` tuple. To apply them you need the original stored — another
+  reason to keep an `id`-keyed store.
 - **Persist on receipt, synchronously enough not to lose on crash.** The event
   fires once; if your handler crashes before writing, the message is gone.
 
-### History sync
+### History Sync
 
 On first pair, WhatsApp pushes a history-sync blob (recent chats/contacts/messages).
 It arrives as its **own** `:history_sync` event, **not** as `:messages_upsert` — so
@@ -229,7 +229,7 @@ handle both: seed your store from `:history_sync`, then rely on live
 
 ---
 
-## Quick checklist
+## Quick Checklist
 
 - [ ] Durable, backed-up `:storage` adapter (not the dev `./amarula_data` File default).
 - [ ] `profile ↔ credentials` 1:1, profiles validated if tenant-derived.
@@ -238,7 +238,7 @@ handle both: seed your store from `:history_sync`, then rely on live
 - [ ] A message store you own, keyed by `id`, persisted on `:messages_upsert`.
 - [ ] Reply via `msg.channel`; dedup by `id` only across connections.
 
-## See also
+## See Also
 
 - [`INFRASTRUCTURE.md`](INFRASTRUCTURE.md) — supervision tree, send/ack semantics,
   the two registries.

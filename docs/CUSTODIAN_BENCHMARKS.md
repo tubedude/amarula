@@ -1,129 +1,54 @@
-# SessionCustodian concurrency benchmarks
+# SessionCustodian Concurrency Benchmarks
 
-`Amarula.Protocol.Signal.SessionCustodian` (see `docs/INFRASTRUCTURE.md`) adds a
-process, a registry, and a locking discipline in front of every Signal session
-record. That's real complexity, and complexity is a claim that should be
-checked, not assumed. This document reports a benchmark exercise measuring
-session correctness with the per-record lock removed — methodology, results,
-and, just as importantly, the limits of what was actually measured.
+`Amarula.Protocol.Signal.SessionCustodian` puts a process, a registry, and a locking discipline in front of every Signal session record. That is a non-trivial amount of complexity. This document benchmarks session correctness with that per-record lock removed, detailing the methodology, results, and the limits of the test.
 
-Headline result: a lock-free version of the same code loses roughly 3 in 4
-concurrent send/receive rounds under realistic timing, most of them silently.
-Full breakdown below.
+**Headline result:** A lock-free version of this code loses roughly 3 in 4 concurrent send/receive rounds under realistic timing, with most failures occurring silently.
 
-## The problem
+## The Problem
 
-A 1:1 session's ratchet is one blob, `load → mutate → store`, mutated by two
-different processes — `ConversationSender` on send (encrypt) and `Connection`
-on receive (decrypt) — with nothing serializing them. A concurrent send +
-receive to the same contact can interleave that read-modify-write and silently
-lose one side's advance (a forked ratchet).
+A 1:1 session's Double Ratchet state is updated via a `load → mutate → store` cycle. Two different processes mutate this state: `ConversationSender` (encrypting outbound) and `Connection` (decrypting inbound). Without serialization, a concurrent send and receive to the same contact can interleave, silently dropping one side's state advancement (forking the ratchet).
 
-## Methodology
+## Methodology & Results
 
-`scripts/bench_race_necessity.exs` drives that exact race with real Signal
-Protocol crypto — an actual X3DH session, real `SessionCipher.encrypt`/
-`decrypt`, real ciphertext, not a synthetic counter — through both a guarded
-(`SessionCustodian`) and an unguarded path, so the same run checks both the
-problem and the fix. Corruption detection is independent of Amarula's own
-bookkeeping: a synthetic counterpart tracks its own session state entirely
-outside the race and, each round, tries to decrypt what "Us" actually emitted
-with its real, untouched chain state. A lost update shows up as a genuine MAC
-verification failure — the Double Ratchet math is the referee, not an
-assertion about which internal field should have changed.
+The script `scripts/bench_race_necessity.exs` forces this exact race using real Signal Protocol crypto, testing both a guarded (`SessionCustodian`) and an unguarded path.
 
-`test/protocol/signal/session_race_test.exs` covers the same underlying
-non-atomicity as a lighter unit test — a synthetic counter instead of real
-crypto, no guarded condition. Still in the suite, still passing.
+Corruption detection happens independently of Amarula's normal bookkeeping. A synthetic counterpart tracks its own session state entirely outside the race and attempts to decrypt what was actually emitted on the wire. A lost update surfaces as a genuine MAC verification failure, letting the math act as the referee.
 
-## Methodology and results
+*(`test/protocol/signal/session_race_test.exs` covers this same non-atomicity issue as a lighter unit test using a synthetic counter instead of real crypto.)*
 
-Five conditions, all against the real `SessionCustodian.encrypt/decrypt` (for
-the guarded case) or the same underlying `SessionStore`/`SessionCipher` calls
-directly (for the unguarded cases, mirroring what code looked like before the
-custodian existed). 100 rounds unless noted; each round races one outbound
-encrypt against one real inbound decrypt on the same session record.
+We tested five conditions (100 rounds each unless noted), racing one outbound encrypt against one inbound decrypt on the same session record:
 
 | Condition | What it isolates | Result |
 |---|---|---|
-| **Z. Sequential, no lock** | Control: does the unguarded code path work at all, absent a race? | **100/100 correct** |
-| **A. Unguarded, synchronized dispatch** | Worst case: both operations launched in lockstep | **0/100 correct** (100% failure) |
-| **A2. Unguarded, random 0–10ms dispatch jitter** | Realistic case: dispatch timing not artificially forced | **23/100 correct** (~77% failure, mostly silent) |
-| **B. Unguarded, forced overlap (5ms delay)** | Deterministic worst case, window forced wide open | **0/20 correct** (100% failure) |
-| **C. Guarded, through `SessionCustodian`** | Does the actual fix hold, under any of the above timing? | **100/100 correct**, in every run, at every timing |
+| **Z. Sequential, no lock** | Control: verifies the unguarded code works absent a race. | **100/100 correct** |
+| **A. Unguarded, synchronized dispatch** | Worst case: operations launched in perfect lockstep. | **0/100 correct** |
+| **A2. Unguarded, random 0–10ms jitter** | Realistic case: non-synchronized timing. | **23/100 correct** (~77% failure, mostly silent) |
+| **B. Unguarded, forced overlap (5ms delay)** | Deterministic worst case: window forced wide open. | **0/20 correct** |
+| **C. Guarded, via `SessionCustodian`** | Validates the fix under any timing condition. | **100/100 correct** |
 
-Condition Z rules out the concern that the harness itself was just broken —
-the unguarded code path is fine in isolation; failure requires the race
-specifically. Condition A2 is the most important correction made mid-exercise:
-an earlier version of this benchmark launched both sides in near-perfect
-lockstep, which overstated inevitability. With realistic, non-synchronized
-timing the failure rate drops from a manufactured 100% to a measured ~75–80%
-— still severe, but a real, honest number rather than a forced one. Condition
-C is unaffected by any of this: the lock makes the timing question moot
-rather than just less likely to bite.
+**Storage adapter impact:** the visible symptom of this race depends heavily on the storage adapter. `Storage.File` often fails loudly (`{:error, :enoent}`) because two writers collide on a temp filename. `Storage.DETS.put`, however, is a bare `:dets.insert/2` with no collision mechanism — under DETS, this race results in 100% silent corruption. Even with the File adapter in condition A2, both modes occurred (9 loud, 68 silent).
 
-**One further finding, found by accident and worth keeping**: the *visible
-symptom* of the same race depends on the storage adapter. `Storage.File`
-happened to fail most of these rounds loudly (`{:error, :enoent}`, from two
-writers racing on the same temp filename) — but `Storage.DETS.put` is a bare
-`:dets.insert/2` with no such collision, so the identical race would very
-plausibly manifest there as **100% silent** corruption: no error anywhere,
-just quietly wrong session state. (`session_race_test.exs` uses DETS for
-exactly this reason — the File-adapter collision is a separate bug, not the
-lost-update this benchmark isolates.) Condition A2's own breakdown shows both
-failure modes occurring naturally even under `Storage.File` (9 loud, 68
-silent) — so this isn't purely an
-adapter-specific curiosity, it shows up without forcing it.
+## Scope & Limitations
 
-## What this does NOT prove — read before citing this doc
+This is a targeted check, not a generalized concurrency audit. Keep the following in mind:
 
-This is a narrow, targeted check, not a general concurrency audit:
+- **Scope.** Only the 1:1 send-vs-receive race is tested. Group sender-keys, identity wipes, and PN↔LID migrations were excluded.
+- **Contention.** The test simulates exactly two concurrent writers. It does not measure 3+-way contention.
+- **Timing.** The 0–10ms jitter is an estimate, not a production measurement. A different jitter profile would yield a different failure rate, but the qualitative finding (failures are severe and mostly silent) remains valid.
+- **Isolation.** The benchmark deliberately bypasses `Connection` to hit `SessionCustodian` directly. A real `Connection` serializes its own inbound decrypts, which would make it hard to tell if the custodian's lock or the single-process mailbox was actually doing the work.
 
-- **Only the exact 1:1 send-vs-receive race is tested.** Group sender-keys,
-  PN↔LID migration, identity wipe, and multi-address contention were not
-  exercised by this benchmark at all.
-- **Only two concurrent writers.** Real bursty traffic could have more; this
-  doesn't say anything about 3+-way contention (though the mechanism —
-  unserialized read-modify-write — doesn't get safer with more writers).
-- **The jitter window (0–10ms) is a guess, not a measurement of real
-  production timing.** A different jitter distribution would show a different
-  failure rate; the qualitative finding (severe, not negligible, mostly
-  silent) is the load-bearing part, not the specific 77%.
-- **Isolated from `Connection`.** The benchmark talks to `SessionCustodian`
-  directly rather than through a real `Connection`, deliberately — a real
-  `Connection` would incidentally serialize its own inbound decrypts anyway
-  (it processes its mailbox inline, one frame at a time), which would confound
-  whether the *custodian's* lock is doing the protecting or `Connection`'s own
-  single-process nature is. See the flood-receive benchmark
-  (`scripts/bench_flood_receive.exs`) and its own scope notes for that
-  separate finding.
+## Conclusion
 
-## Findings
+The lock-free code fails roughly 75% of the time under realistic concurrent timing, usually causing undetectable corruption. Since concurrent sending and receiving is routine, this isn't an edge case. The per-record lock fixes a very real vulnerability.
 
-The lock-free version's failure rate under realistic (not artificially
-forced) concurrent timing measures at roughly 3-in-4, and most of those
-failures are silent, undetectable corruption rather than a loud error a
-caller could react to. Concurrent send + receive to the same contact is
-routine, not rare, in normal usage, so this isn't a theoretical edge case —
-it's the difference between 23% and 100% correctness on a race that happens
-constantly.
+The methodology itself needed a correction mid-exercise, and that correction is part of the result, not a footnote: an early version of this benchmark launched both sides in lockstep and overstated certainty (a manufactured 100% failure rate rather than the measured ~77%). That was caught by directly testing whether the harness could produce a false result — a sequential control run (no race at all) and a randomized-jitter run (no forced synchrony) — rather than accepting the first clean-looking number.
 
-The methodology itself needed a correction mid-exercise, and that correction
-is part of the result, not a footnote: an early version of this benchmark
-launched both sides in lockstep and overstated certainty (a manufactured
-100% failure rate rather than the measured ~77%). That was caught by
-directly testing whether the harness could produce a false result — a
-sequential control run (no race at all) and a randomized-jitter run (no
-forced synchrony) — rather than accepting the first clean-looking number.
-
-## Reproducing this
+## Reproducing the Benchmarks
 
 ```
-mix run scripts/bench_race_necessity.exs   # this document's evidence
-mix run scripts/bench_flood_receive.exs    # real-crypto throughput/backlog under load
-mix run scripts/bench_registry_memory.exs  # at-rest process/memory topology cost
+mix run scripts/bench_race_necessity.exs   # This document's evidence
+mix run scripts/bench_flood_receive.exs    # Real-crypto throughput/backlog under load
+mix run scripts/bench_registry_memory.exs  # At-rest process/memory topology cost
 ```
 
-All three are real code against the compiled `amarula` app — no mocks, and
-each script's own moduledoc states its scope limits directly, mirroring the
-pattern in this document.
+All three scripts execute real code against the compiled `amarula` app without using mocks.

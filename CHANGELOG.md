@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   If it isn't running when you connect, Amarula raises with a message telling you
   to add `Amarula.Supervisor`, instead of a `:noproc` exit.
+- **The `:contacts_update` avatar event carries more.** A `picture` notification now
+  surfaces `picture_id` (to fetch the new avatar) and `author` (who changed it, on
+  group avatars) alongside the existing `id`/`img_url`.
 
 ### Removed
 
@@ -74,6 +77,15 @@ Two integrity fixes surfaced by reviewing the whatsmeow implementation.
   catching a decrypt/unpad bug. A mismatch returns `{:error, :bad_file_hash}`; a
   descriptor without the hash is skipped. (The MAC already covers ciphertext
   integrity, so the redundant `file_enc_sha256` check isn't performed.)
+- **Group delivery/read receipts are no longer dropped.** An aggregated group
+  receipt (no top-level `id`, one `<participants key=<msg_id>>` child per message)
+  parsed as an empty-id `:receipt_update`; it now fans out to one `:receipt_update`
+  per (message, participant), so per-member delivery/read state actually surfaces.
+- **Own linked-device changes refresh the device cache.** An `account_sync`
+  notification with a `<devices>` child (a device linked/unlinked from another
+  session) was ignored, leaving our own device list stale until the next full USync —
+  so a newly-linked device could be omitted from a send's encrypt recipients. We now
+  drop our own cached device list on that notification.
 
 ## [0.4.4] - 2026-07-04
 

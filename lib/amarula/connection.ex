@@ -1967,9 +1967,12 @@ defmodule Amarula.Connection do
     state = send_message_ack(state, node)
 
     case Receipt.parse(node) do
-      {:ok, receipt} ->
-        Logger.debug("Receipt #{receipt.status} for #{inspect(receipt.message_ids)}")
-        emit_to_subscribers(state, :receipt_update, receipt)
+      {:ok, receipts} ->
+        Enum.each(receipts, fn receipt ->
+          Logger.debug("Receipt #{receipt.status} for #{inspect(receipt.message_ids)}")
+          emit_to_subscribers(state, :receipt_update, receipt)
+        end)
+
         state
 
       {:error, _} ->
@@ -2182,6 +2185,19 @@ defmodule Amarula.Connection do
         emit_to_subscribers(state, :blocklist_update, items)
         state
 
+      :own_devices ->
+        # Our own linked-device set changed (a device added/removed elsewhere).
+        # Drop our own cached device list so the next send re-USyncs it — otherwise
+        # a newly-linked device would be missing from the encrypt recipients.
+        me = me(state)
+
+        own =
+          [me[:id], me[:lid]] |> Enum.reject(&is_nil/1) |> Enum.map(&JID.jid_normalized_user/1)
+
+        Logger.debug("account_sync: own device set changed — dropping own device cache")
+        Enum.each(own, &DeviceListCache.delete(conn(state), &1))
+        state
+
       :ignore ->
         state
     end
@@ -2206,9 +2222,9 @@ defmodule Amarula.Connection do
   # picture — a contact/group avatar changed; surface it as a contact update so a
   # consumer can refresh the image (Baileys emits contacts.update imgUrl).
   defp dispatch_notification(state, "picture", node) do
-    {from, img_url} = Notifications.picture(node)
-    Logger.debug("picture #{img_url} for #{from}")
-    emit_to_subscribers(state, :contacts_update, [%{id: from, img_url: img_url}])
+    update = Notifications.picture(node)
+    Logger.debug("picture #{update.img_url} for #{update.id}")
+    emit_to_subscribers(state, :contacts_update, [update])
     state
   end
 

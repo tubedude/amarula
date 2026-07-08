@@ -74,7 +74,7 @@ defmodule Amarula.Protocol.Signal.SessionCustodianTest do
     end
 
     test "a cipher failure surfaces as an error tuple, not a custodian crash", ctx do
-      # Garbage pkmsg → the cipher raises → with_cipher converts to {:error, _};
+      # Garbage pkmsg → the cipher raises → the op converts it to {:error, _};
       # the custodian stays alive for the next caller.
       assert {:error, _} = SessionCustodian.decrypt(ctx.custodian, :pkmsg, <<0, 1, 2>>, store())
       assert Process.alive?(ctx.custodian)
@@ -120,6 +120,26 @@ defmodule Amarula.Protocol.Signal.SessionCustodianTest do
 
     test "record on an empty custodian returns {:ok, nil}", ctx do
       assert {:ok, nil} = SessionCustodian.record(ctx.custodian)
+    end
+
+    test "serves the record from the write-through cache, not re-reading storage", ctx do
+      # Establish + cache a session via a pkmsg.
+      assert {:ok, _, _} =
+               SessionCustodian.decrypt(
+                 ctx.custodian,
+                 :pkmsg,
+                 h(@vectors["msg1"]["body"]),
+                 store()
+               )
+
+      {:ok, cached} = SessionCustodian.record(ctx.custodian)
+      refute is_nil(cached)
+
+      # Mutate storage out from under the custodian (only possible in a test — in
+      # production the custodian is the sole writer). It keeps serving the cache,
+      # proving `record` reads memory, not disk.
+      :ok = SessionStore.store_session(ctx.conn, @key, %{sessions: %{}})
+      assert {:ok, ^cached} = SessionCustodian.record(ctx.custodian)
     end
   end
 

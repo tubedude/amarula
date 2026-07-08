@@ -41,8 +41,11 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   only the static `%Amarula.Conn{}` (profile + storage scope); every op takes the
   freshly-built `store` from the caller.
 
-  This slice is **write-through** — each op hits storage. An in-memory record cache
-  is a deliberate later step, gated on every mutator provably routing through here.
+  The 1:1 session record is held in memory as a **write-through cache** — loaded
+  once, kept coherent because the custodian is its sole writer, and persisted on
+  every mutation. Never write-back: an idle-stop or crash must not lose a ratchet
+  advance, so storage is always current. (Group sender-key ops aren't cached — the
+  group cipher does its own storage I/O.)
   """
 
   use GenServer, restart: :temporary
@@ -208,37 +211,24 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   # --- server ---
 
   @impl GenServer
-  def init(state), do: {:ok, state, state.idle_ms}
+  # `cached` holds the 1:1 session record in memory (write-through): loaded once on
+  # first access, kept coherent because the custodian is the record's sole writer.
+  # `:unloaded` distinguishes "not read yet" from a loaded-nil (no record).
+  def init(state), do: {:ok, Map.put(state, :cached, :unloaded), state.idle_ms}
 
   @impl GenServer
   def handle_call({:encrypt, plaintext, store}, _from, state) do
-    {:reply, do_encrypt(state, plaintext, store), state, state.idle_ms}
-  end
+    {record, state} = cached_record(state)
 
-  @impl GenServer
-  def handle_call({:decrypt, type, content, store}, _from, %{conn: conn, key: key} = state) do
-    reply =
-      case {type, SessionStore.load_session(conn, key)} do
-        # A pkmsg can establish a session, so a nil record is valid input.
-        {:pkmsg, record} ->
-          with_cipher(fn ->
-            {:ok, plaintext, record, pre_key_id} =
-              SessionCipher.decrypt_pre_key_whisper_message(record, content, store)
+    {reply, state} =
+      case record do
+        nil ->
+          {{:error, :no_session}, state}
 
-            SessionStore.store_session(conn, key, record)
-            {:ok, plaintext, pre_key_id}
-          end)
-
-        {:msg, nil} ->
-          {:error, :no_session}
-
-        {:msg, record} ->
-          with_cipher(fn ->
-            {:ok, plaintext, record} =
-              SessionCipher.decrypt_whisper_message(record, content, store)
-
-            SessionStore.store_session(conn, key, record)
-            {:ok, plaintext, nil}
+        record ->
+          mutate(state, fn ->
+            {:ok, type, ciphertext, record} = SessionCipher.encrypt(record, plaintext, store)
+            {record, {:ok, type, ciphertext}}
           end)
       end
 
@@ -246,42 +236,65 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   end
 
   @impl GenServer
-  def handle_call({:inject, device, store, mode}, _from, %{conn: conn, key: key} = state) do
-    reply =
-      with_cipher(fn ->
-        record = SessionStore.load_session(conn, key) || SessionRecord.new()
+  def handle_call({:decrypt, type, content, store}, _from, state) do
+    {record, state} = cached_record(state)
 
-        if mode == :if_absent and SessionRecord.get_open_session(record) != nil do
-          {:skipped, :session_exists}
-        else
-          SessionStore.store_session(
-            conn,
-            key,
-            SessionBuilder.init_outgoing(record, device, store)
-          )
+    {reply, state} =
+      case {type, record} do
+        # A pkmsg can establish a session, so a nil record is valid input.
+        {:pkmsg, record} ->
+          mutate(state, fn ->
+            {:ok, plaintext, record, pre_key_id} =
+              SessionCipher.decrypt_pre_key_whisper_message(record, content, store)
 
-          :ok
-        end
-      end)
+            {record, {:ok, plaintext, pre_key_id}}
+          end)
+
+        {:msg, nil} ->
+          {{:error, :no_session}, state}
+
+        {:msg, record} ->
+          mutate(state, fn ->
+            {:ok, plaintext, record} =
+              SessionCipher.decrypt_whisper_message(record, content, store)
+
+            {record, {:ok, plaintext, nil}}
+          end)
+      end
 
     {:reply, reply, state, state.idle_ms}
   end
 
   @impl GenServer
-  def handle_call(:record, _from, %{conn: conn, key: key} = state) do
-    {:reply, {:ok, SessionStore.load_session(conn, key)}, state, state.idle_ms}
+  def handle_call({:inject, device, store, mode}, _from, state) do
+    {record, state} = cached_record(state)
+    record = record || SessionRecord.new()
+
+    {reply, state} =
+      if mode == :if_absent and SessionRecord.get_open_session(record) != nil do
+        {{:skipped, :session_exists}, state}
+      else
+        mutate(state, fn -> {SessionBuilder.init_outgoing(record, device, store), :ok} end)
+      end
+
+    {:reply, reply, state, state.idle_ms}
+  end
+
+  @impl GenServer
+  def handle_call(:record, _from, state) do
+    {record, state} = cached_record(state)
+    {:reply, {:ok, record}, state, state.idle_ms}
   end
 
   @impl GenServer
   def handle_call({:replace, nil}, _from, %{conn: conn, key: key} = state) do
     delete_record(conn, key)
-    {:reply, :ok, state, state.idle_ms}
+    {:reply, :ok, %{state | cached: nil}, state.idle_ms}
   end
 
   @impl GenServer
-  def handle_call({:replace, record}, _from, %{conn: conn, key: key} = state) do
-    SessionStore.store_session(conn, key, record)
-    {:reply, :ok, state, state.idle_ms}
+  def handle_call({:replace, record}, _from, state) do
+    {:reply, :ok, store_and_cache(state, record), state.idle_ms}
   end
 
   @impl GenServer
@@ -329,28 +342,38 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
 
   # --- internals ---
 
-  defp do_encrypt(%{conn: conn, key: key}, plaintext, store) do
-    case SessionStore.load_session(conn, key) do
-      nil ->
-        {:error, :no_session}
+  # The record from the in-memory cache, loading it once on first access.
+  defp cached_record(%{cached: :unloaded, conn: conn, key: key} = state) do
+    record = SessionStore.load_session(conn, key)
+    {record, %{state | cached: record}}
+  end
 
-      record ->
-        with_cipher(fn ->
-          {:ok, type, ciphertext, record} = SessionCipher.encrypt(record, plaintext, store)
-          SessionStore.store_session(conn, key, record)
-          {:ok, type, ciphertext}
-        end)
+  defp cached_record(%{cached: record} = state), do: {record, state}
+
+  # Run a cipher `fun` that returns `{new_record, reply}` (or raises). On success,
+  # persist the new record write-through and refresh the cache. A cipher raise
+  # (incl. the trial-decrypt's re-raised DecryptError the receive path inspects) is
+  # caught into `{:error, exception}` so it fails only this op — a crash would
+  # `:exit` every queued caller — and leaves the cache/storage untouched.
+  defp mutate(state, fun) do
+    result =
+      try do
+        {:ok, fun.()}
+      rescue
+        e -> {:error, e}
+      end
+
+    case result do
+      {:ok, {new_record, reply}} -> {reply, store_and_cache(state, new_record)}
+      {:error, e} -> {{:error, e}, state}
     end
   end
 
-  # The cipher/builder raise on failure (and the trial-decrypt re-raises a
-  # structured DecryptError the receive path inspects). Convert to an error tuple
-  # HERE so a cipher failure fails only this one op, never crashes the custodian —
-  # a crash would `:exit` every queued caller.
-  defp with_cipher(fun) do
-    fun.()
-  rescue
-    e -> {:error, e}
+  # Write-through: prune, persist, and cache the pruned record so cache == storage.
+  defp store_and_cache(%{conn: conn, key: key} = state, record) do
+    pruned = SessionRecord.remove_old_sessions(record)
+    SessionStore.store_session(conn, key, pruned)
+    %{state | cached: pruned}
   end
 
   defp delete_record(%Conn{storage: scope, profile: profile}, key) do

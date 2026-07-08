@@ -42,6 +42,12 @@ defmodule Amarula.Storage.Adapter do
   > *synchronously*; an adapter that called back into one of those processes could
   > deadlock (the custodian waits on the adapter, the adapter waits on the custodian).
   > Keep adapters a dependency leaf: pure I/O against your backend, nothing more.
+  >
+  > Callbacks must also stay **fast** — well under a second. A `SessionCustodian`
+  > holds a record's per-record lock while calling `get`/`put`/`delete`
+  > synchronously; a stall there blocks every queued op on that record, and a stall
+  > past ~15s exits the caller (the socket owner). A network-backed adapter needs a
+  > tight timeout and a local fallback, not an unbounded blocking call.
   """
 
   defmacro __using__(_opts) do

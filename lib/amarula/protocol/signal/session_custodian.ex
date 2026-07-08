@@ -248,7 +248,13 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
             Process.sleep(1)
             resolve_call(resolve, request, tries - 1)
 
-          :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] ->
+          # Retries exhausted, or a terminal death we don't retry: a brutal :killed
+          # or a {:shutdown, term} during tree teardown. Return a clean error so the
+          # caller (Connection, the socket owner) survives instead of :exit-ing.
+          :exit, {reason, _} when reason in [:noproc, :normal, :shutdown, :killed] ->
+            {:error, :custodian_down}
+
+          :exit, {{:shutdown, _}, _} ->
             {:error, :custodian_down}
         end
 
@@ -418,7 +424,12 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   # --- internals ---
 
   # The record from the in-memory cache, loading it once on first access.
-  defp cached_record(%{cached: :unloaded, conn: conn, key: key} = state) do
+  # `is_binary(key)`: 1:1 session ops key by the string signal-address. A group
+  # sender-key custodian's key is a `%SenderKeyName{}` struct — routing a 1:1 op to
+  # one is a misuse that would otherwise misfile a session record under a struct
+  # key; the guard makes it a loud FunctionClauseError instead. (Group ops never
+  # reach here — they go through SenderKeyStore, not the session cache.)
+  defp cached_record(%{cached: :unloaded, conn: conn, key: key} = state) when is_binary(key) do
     record = SessionStore.load_session(conn, key)
     {record, %{state | cached: record}}
   end
@@ -456,7 +467,8 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
 
   # Write-through: persist, then cache exactly what was stored so cache == storage.
   # `store_session` prunes closed sessions past the cap; cache the pruned form.
-  defp store_and_cache(%{conn: conn, key: key} = state, record) do
+  # `is_binary(key)` for the same reason as cached_record/1 — a 1:1-only path.
+  defp store_and_cache(%{conn: conn, key: key} = state, record) when is_binary(key) do
     pruned = SessionRecord.remove_old_sessions(record)
 
     case SessionStore.store_session(conn, key, pruned) do

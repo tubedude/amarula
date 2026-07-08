@@ -2486,10 +2486,11 @@ defmodule Amarula.Connection do
   # :already}: `:none` means the user had no PN session to move (caller may want a
   # fresh bundle instead).
   #
-  # NB: this writes session records from the Connection process. A ConversationSender
-  # mid-encrypt for the same recipient writes from ITS process, so the two can race —
-  # but inbound decrypt already writes sessions from Connection, so this only widens
-  # an existing window rather than opening a new one.
+  # Both the PN and LID records are mutated through their SessionCustodians, so a
+  # concurrent send/decrypt on either can't clobber the migration mid-flight. The
+  # residual hazard is the cross-record sequencing (read PN, then write LID) — see
+  # migrate_pn_records, which uses install_if_absent so a session a concurrent send
+  # injected on the LID address wins instead of being overwritten.
   defp migrate_pn_user(state, pn_user, lid_user, keys) do
     if MapSet.member?(state.migrated_pn_sessions, pn_user) do
       {state, :already}

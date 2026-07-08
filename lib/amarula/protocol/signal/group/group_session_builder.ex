@@ -11,11 +11,14 @@ defmodule Amarula.Protocol.Signal.Group.GroupSessionBuilder do
     SenderKeyRecord,
     SenderKeyState,
     SenderKeyDistributionMessage,
+    SenderKeyStore,
     KeyHelper
   }
 
+  # The builder holds the sender-key store map (SenderKeyStore.build/1's result —
+  # the load/store closures), NOT a module: the ops call `store.load_sender_key.(…)`.
   @type t :: %__MODULE__{
-          sender_key_store: module()
+          sender_key_store: SenderKeyStore.t()
         }
 
   defstruct sender_key_store: nil
@@ -23,7 +26,7 @@ defmodule Amarula.Protocol.Signal.Group.GroupSessionBuilder do
   @doc """
   Creates a new GroupSessionBuilder.
   """
-  @spec new(module()) :: t()
+  @spec new(SenderKeyStore.t()) :: t()
   def new(sender_key_store) do
     %__MODULE__{sender_key_store: sender_key_store}
   end

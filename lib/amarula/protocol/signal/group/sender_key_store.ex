@@ -14,6 +14,13 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyStore do
   alias Amarula.Protocol.Signal.Group.SenderKeyRecord
   alias Amarula.Storage
 
+  @typedoc "The store map `build/1` returns — the load/store closures bound to a `conn`."
+  @type t :: %{
+          load_sender_key: (SenderKeyName.t() ->
+                              {:ok, SenderKeyRecord.t()} | {:error, :not_found}),
+          store_sender_key: (SenderKeyName.t(), SenderKeyRecord.t() -> :ok | {:error, term()})
+        }
+
   @doc """
   Build a store map bound to `conn`.
 
@@ -21,11 +28,7 @@ defmodule Amarula.Protocol.Signal.Group.SenderKeyStore do
       {:ok, record} = store.load_sender_key(sk_name)
       :ok = store.store_sender_key(sk_name, updated_record)
   """
-  @spec build(Conn.t()) :: %{
-          load_sender_key: (SenderKeyName.t() ->
-                              {:ok, SenderKeyRecord.t()} | {:error, :not_found}),
-          store_sender_key: (SenderKeyName.t(), SenderKeyRecord.t() -> :ok | {:error, term()})
-        }
+  @spec build(Conn.t()) :: t()
   def build(%Conn{} = conn) do
     %{
       load_sender_key: fn sk_name -> load_sender_key(conn, sk_name) end,

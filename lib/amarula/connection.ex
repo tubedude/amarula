@@ -2439,12 +2439,10 @@ defmodule Amarula.Connection do
   end
 
   defp wipe_one_session(addr, state, conn, deleted) do
-    case SessionCustodian.for_address(state.instance_id, conn, addr) do
-      {:ok, custodian} -> SessionCustodian.replace(custodian, nil)
-      _ -> :ok
+    case SessionCustodian.replace(state.instance_id, conn, addr, nil) do
+      :ok -> deleted + 1
+      _ -> deleted
     end
-
-    deleted + 1
   end
 
   # Before decrypting, if the sender is PN-addressed but we know their LID, move
@@ -2519,11 +2517,14 @@ defmodule Amarula.Connection do
       device = String.replace_prefix(pn_addr, pn_prefix, "")
       lid_addr = "#{lid_user}_1.#{device}"
 
-      with {:ok, pn_cust} <- SessionCustodian.for_address(state.instance_id, conn, pn_addr),
-           {:ok, record} when not is_nil(record) <- SessionCustodian.record(pn_cust),
-           {:ok, lid_cust} <- SessionCustodian.for_address(state.instance_id, conn, lid_addr) do
-        SessionCustodian.replace(lid_cust, record)
-        SessionCustodian.replace(pn_cust, nil)
+      iid = state.instance_id
+
+      with {:ok, record} when not is_nil(record) <-
+             SessionCustodian.record(iid, conn, pn_addr),
+           :ok <- SessionCustodian.replace(iid, conn, lid_addr, record) do
+        # Only drop the PN source once the LID write LANDED; a failed LID write
+        # leaves the PN record intact for a later re-migration.
+        SessionCustodian.replace(iid, conn, pn_addr, nil)
         moved + 1
       else
         _ -> moved

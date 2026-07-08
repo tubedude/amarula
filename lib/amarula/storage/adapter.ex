@@ -32,6 +32,16 @@ defmodule Amarula.Storage.Adapter do
   The value `new/1` returns is the opaque per-connection state threaded back to
   every other callback — this is what lets one adapter module serve many
   independent connections (different accounts) without a global.
+
+  > #### The adapter must not call back into Amarula {: .warning}
+  >
+  > `get/3`, `put/4` and `delete/3` may touch only the adapter's own backing store
+  > (disk, ETS, a network client). They must **never** call into an Amarula process
+  > — a `Connection`, a `ConversationSender`, or a `SessionCustodian`. The crypto
+  > records are serialized by a per-record `SessionCustodian` that reaches storage
+  > *synchronously*; an adapter that called back into one of those processes could
+  > deadlock (the custodian waits on the adapter, the adapter waits on the custodian).
+  > Keep adapters a dependency leaf: pure I/O against your backend, nothing more.
   """
 
   defmacro __using__(_opts) do

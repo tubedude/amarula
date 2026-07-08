@@ -66,11 +66,11 @@ defmodule Amarula.Protocol.Signal.SessionInjector do
         # write goes through the record's custodian (the per-record lock).
         addr = LidMappingFileStore.signal_address(conn, jid)
 
-        with {:ok, custodian} <- SessionCustodian.for_address(instance_id, conn, addr),
-             :ok <- SessionCustodian.inject(custodian, device, store, mode) do
-          Logger.debug("Injected session for #{jid} (#{addr})")
-          :ok
-        else
+        case SessionCustodian.inject(instance_id, conn, addr, device, store, mode) do
+          :ok ->
+            Logger.debug("Injected session for #{jid} (#{addr})")
+            :ok
+
           {:skipped, :session_exists} ->
             Logger.debug("Session for #{jid} (#{addr}) already present — inject skipped")
             :skipped

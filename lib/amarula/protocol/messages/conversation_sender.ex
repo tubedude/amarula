@@ -602,11 +602,16 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
     # Our sender key for the group is one record → route the SKDM build + skmsg
     # encrypt through its custodian (the per-record lock).
-    {:ok, custodian} = SessionCustodian.for_sender_key(ctx.instance_id, ctx.conn, sender_name)
-    {:ok, skdm} = SessionCustodian.create_skdm(custodian, ctx.target_jid, me_id)
+    {:ok, skdm} =
+      SessionCustodian.create_skdm(ctx.instance_id, ctx.conn, sender_name, ctx.target_jid, me_id)
 
     {:ok, skmsg} =
-      SessionCustodian.group_encrypt(custodian, sender_name, MessageEncoder.encode(message))
+      SessionCustodian.group_encrypt(
+        ctx.instance_id,
+        ctx.conn,
+        sender_name,
+        MessageEncoder.encode(message)
+      )
 
     # The SKDM-only message, encrypted per device (the dm path). It carries no
     # text — members read the body from the group skmsg; this pkmsg only delivers
@@ -704,8 +709,9 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     # Route the load → encrypt → store through the record's custodian (the lock).
     # The matches keep the send's let-it-crash: a missing session / cipher failure
     # is a MatchError that fails the send pipe, exactly as the raise did before.
-    {:ok, custodian} = SessionCustodian.for_address(ctx.instance_id, ctx.conn, addr)
-    {:ok, enc_type, ciphertext} = SessionCustodian.encrypt(custodian, plaintext, store)
+    {:ok, enc_type, ciphertext} =
+      SessionCustodian.encrypt(ctx.instance_id, ctx.conn, addr, plaintext, store)
+
     {device_jid, enc_type, ciphertext}
   end
 

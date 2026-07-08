@@ -101,13 +101,15 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
 
     case Registry.lookup(registry, key) do
       [{pid, _}] -> {:ok, pid}
-      [] -> start_custodian(instance_id, conn, key, {:via, Registry, {registry, key}})
+      # state.key is the SenderKeyName itself (the group ops need it), not the
+      # registry tuple — a 1:1 op invoked here would then misfile under a struct key.
+      [] -> start_custodian(instance_id, conn, sender_key_name, {:via, Registry, {registry, key}})
     end
   end
 
   # A lost start race (:already_started) is success — reuse the live custodian.
-  defp start_custodian(instance_id, conn, addr, via) do
-    spec = {__MODULE__, conn: conn, key: addr, name: via, idle_ms: idle_ms(conn)}
+  defp start_custodian(instance_id, conn, key, via) do
+    spec = {__MODULE__, conn: conn, key: key, name: via, idle_ms: idle_ms(conn)}
     supervisor = ConnectionSupervisor.name(instance_id, :custodian_supervisor)
 
     case DynamicSupervisor.start_child(supervisor, spec) do
@@ -135,78 +137,111 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   defp idle_ms(%{config: %{custodian_idle_ms: ms}}) when is_integer(ms) and ms >= 0, do: ms
   defp idle_ms(_conn), do: @idle_timeout_ms
 
-  @doc """
-  Encrypt `plaintext` against this record, advancing the sending chain.
-  `{:ok, :pkmsg | :msg, ciphertext}` or `{:error, :no_session | Exception.t()}`.
-  """
-  @spec encrypt(t(), binary(), store()) ::
-          {:ok, :pkmsg | :msg, binary()} | {:error, :no_session | Exception.t()}
-  def encrypt(custodian, plaintext, store) do
-    GenServer.call(custodian, {:encrypt, plaintext, store}, @call_timeout)
-  end
+  # --- ops ---
+  #
+  # Each op resolves the record's custodian and calls it, so the caller never holds
+  # a pid across the idle-shed window. `resolve_call/3` retries through find-or-start
+  # if the custodian died between resolve and call — a bare call to a mid-:stop pid
+  # would exit the CALLER, and on the receive path that caller is `Connection`, the
+  # socket owner. The leaf property makes the retry safe: a fresh custodian re-reads
+  # storage, which is current (write-through). We retry a few times with a 1ms yield
+  # because `Registry` evicts a dead pid asynchronously — until it processes the
+  # `:DOWN`, `for_address` keeps handing back the SAME dead pid, so an instant retry
+  # would just re-hit it; the yield lets the eviction land, then a fresh start wins.
 
   @doc """
-  Decrypt a `:pkmsg` (establishes a session if needed) or `:msg` against this
-  record, advancing a receiving chain. `{:ok, plaintext, used_pre_key_id | nil}` or
-  `{:error, reason}` (the reason preserves the cipher exception — the receive path
-  inspects it for the consumed-key duplicate signal).
+  Encrypt `plaintext` against 1:1 session `addr`, advancing the sending chain.
+  `{:ok, :pkmsg | :msg, ciphertext}` or `{:error, reason}`.
   """
-  @spec decrypt(t(), :pkmsg | :msg, binary(), store()) ::
+  @spec encrypt(reference(), Conn.t(), String.t(), binary(), store()) ::
+          {:ok, :pkmsg | :msg, binary()} | {:error, term()}
+  def encrypt(instance_id, conn, addr, plaintext, store),
+    do: call_session(instance_id, conn, addr, {:encrypt, plaintext, store})
+
+  @doc """
+  Decrypt a `:pkmsg`/`:msg` against 1:1 session `addr`. `{:ok, plaintext,
+  used_pre_key_id | nil}` or `{:error, reason}` (the reason preserves the cipher
+  exception — the receive path inspects it for the consumed-key duplicate signal).
+  """
+  @spec decrypt(reference(), Conn.t(), String.t(), :pkmsg | :msg, binary(), store()) ::
           {:ok, binary(), non_neg_integer() | nil} | {:error, term()}
-  def decrypt(custodian, type, content, store) when type in [:pkmsg, :msg] do
-    GenServer.call(custodian, {:decrypt, type, content, store}, @call_timeout)
-  end
+  def decrypt(instance_id, conn, addr, type, content, store) when type in [:pkmsg, :msg],
+    do: call_session(instance_id, conn, addr, {:decrypt, type, content, store})
 
   @doc """
-  Build an outgoing session from a parsed prekey-bundle `device`. `mode`:
-
-    * `:if_absent` — skip when the record already has an open session (the
-      first-contact re-check: a concurrent inbound pkmsg may have created one).
-    * `:always` — (re-)initialise unconditionally (retry `<keys>` / identity refresh).
-
-  Returns `:ok`, `{:skipped, :session_exists}`, or `{:error, Exception.t()}`.
+  Build an outgoing session for `addr` from a parsed prekey-bundle `device`.
+  `:if_absent` skips when a session already exists (first-contact recheck);
+  `:always` re-initialises. `:ok`, `{:skipped, :session_exists}`, or `{:error, _}`.
   """
-  @spec inject(t(), map(), store(), :always | :if_absent) ::
-          :ok | {:skipped, :session_exists} | {:error, Exception.t()}
-  def inject(custodian, device, store, mode) when mode in [:always, :if_absent] do
-    GenServer.call(custodian, {:inject, device, store, mode}, @call_timeout)
-  end
+  @spec inject(reference(), Conn.t(), String.t(), map(), store(), :always | :if_absent) ::
+          :ok | {:skipped, :session_exists} | {:error, term()}
+  def inject(instance_id, conn, addr, device, store, mode) when mode in [:always, :if_absent],
+    do: call_session(instance_id, conn, addr, {:inject, device, store, mode})
 
-  @doc "Read the raw record (`{:ok, record | nil}`) — the migration source read."
-  @spec record(t()) :: {:ok, map() | nil}
-  def record(custodian), do: GenServer.call(custodian, :record, @call_timeout)
+  @doc "Read 1:1 record `addr` (`{:ok, record | nil}` | `{:error, _}`) — migration source read."
+  @spec record(reference(), Conn.t(), String.t()) :: {:ok, map() | nil} | {:error, term()}
+  def record(instance_id, conn, addr),
+    do: call_session(instance_id, conn, addr, :record)
 
   @doc """
-  Replace the record: write `record`, or **delete** it when `record` is `nil`. Used
-  by the PN→LID migration (write the LID target, then `nil` the PN source) and the
-  identity-change wipe (`nil`).
+  Replace 1:1 record `addr`: write `record`, or **delete** when `record` is `nil`.
+  `:ok` or `{:error, reason}`. Used by the PN→LID migration and the identity wipe.
   """
-  @spec replace(t(), map() | nil) :: :ok
-  def replace(custodian, record), do: GenServer.call(custodian, {:replace, record}, @call_timeout)
+  @spec replace(reference(), Conn.t(), String.t(), map() | nil) :: :ok | {:error, term()}
+  def replace(instance_id, conn, addr, record),
+    do: call_session(instance_id, conn, addr, {:replace, record})
 
-  # Group sender-key ops (for a `for_sender_key/3` custodian). Each runs the group
-  # cipher/builder with a direct-storage closure inside one handle_call, so the
-  # sender-key record's access is serialized through this one process.
+  @doc "Group: encrypt `plaintext` with our sender key for `name` (skmsg)."
+  @spec group_encrypt(reference(), Conn.t(), SenderKeyName.t(), binary()) ::
+          {:ok, binary()} | {:error, term()}
+  def group_encrypt(instance_id, conn, name, plaintext),
+    do: call_sender_key(instance_id, conn, name, {:group_encrypt, plaintext})
 
-  @doc "Group: encrypt `plaintext` with our sender key (skmsg)."
-  @spec group_encrypt(t(), SenderKeyName.t(), binary()) :: {:ok, binary()} | {:error, term()}
-  def group_encrypt(custodian, sender_key_name, plaintext),
-    do: GenServer.call(custodian, {:group_encrypt, sender_key_name, plaintext}, @call_timeout)
+  @doc "Group: decrypt a peer's skmsg with their sender key `name`."
+  @spec group_decrypt(reference(), Conn.t(), SenderKeyName.t(), binary()) ::
+          {:ok, binary()} | {:error, term()}
+  def group_decrypt(instance_id, conn, name, content),
+    do: call_sender_key(instance_id, conn, name, {:group_decrypt, content})
 
-  @doc "Group: decrypt a peer's skmsg with their sender key."
-  @spec group_decrypt(t(), SenderKeyName.t(), binary()) :: {:ok, binary()} | {:error, term()}
-  def group_decrypt(custodian, sender_key_name, content),
-    do: GenServer.call(custodian, {:group_decrypt, sender_key_name, content}, @call_timeout)
+  @doc "Group: build our sender-key-distribution message for `group_id` (custodian `name`)."
+  @spec create_skdm(reference(), Conn.t(), SenderKeyName.t(), String.t(), String.t()) ::
+          {:ok, struct()} | {:error, term()}
+  def create_skdm(instance_id, conn, name, group_id, me_id),
+    do: call_sender_key(instance_id, conn, name, {:create_skdm, group_id, me_id})
 
-  @doc "Group: build our sender-key-distribution message for `group_id`."
-  @spec create_skdm(t(), String.t(), String.t()) :: {:ok, struct()} | {:error, term()}
-  def create_skdm(custodian, group_id, me_id),
-    do: GenServer.call(custodian, {:create_skdm, group_id, me_id}, @call_timeout)
+  @doc "Group: process a peer's inbound SKDM (custodian `name`), storing their sender key."
+  @spec process_skdm(reference(), Conn.t(), SenderKeyName.t(), struct(), String.t()) ::
+          :ok | {:error, term()}
+  def process_skdm(instance_id, conn, name, skdm, author),
+    do: call_sender_key(instance_id, conn, name, {:process_skdm, skdm, author})
 
-  @doc "Group: process a peer's inbound SKDM, storing their sender key."
-  @spec process_skdm(t(), struct(), String.t()) :: :ok | {:error, term()}
-  def process_skdm(custodian, skdm, author),
-    do: GenServer.call(custodian, {:process_skdm, skdm, author}, @call_timeout)
+  defp call_session(instance_id, conn, addr, request),
+    do: resolve_call(fn -> for_address(instance_id, conn, addr) end, request)
+
+  defp call_sender_key(instance_id, conn, name, request),
+    do: resolve_call(fn -> for_sender_key(instance_id, conn, name) end, request)
+
+  @resolve_tries 5
+
+  defp resolve_call(resolve, request, tries \\ @resolve_tries) do
+    case resolve.() do
+      {:ok, pid} ->
+        try do
+          GenServer.call(pid, request, @call_timeout)
+        catch
+          :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] and tries > 1 ->
+            # Let Registry evict the dead pid before re-resolving, else we re-hit it.
+            Process.sleep(1)
+            resolve_call(resolve, request, tries - 1)
+
+          :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] ->
+            {:error, :custodian_down}
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
 
   # --- server ---
 
@@ -294,17 +329,19 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
 
   @impl GenServer
   def handle_call({:replace, record}, _from, state) do
-    {:reply, :ok, store_and_cache(state, record), state.idle_ms}
+    case store_and_cache(state, record) do
+      {:ok, state} -> {:reply, :ok, state, state.idle_ms}
+      {:error, reason} -> {:reply, {:error, reason}, state, state.idle_ms}
+    end
   end
 
   @impl GenServer
-  def handle_call({:group_encrypt, name, plaintext}, _from, %{conn: conn} = state) do
-    {:reply, GroupCipher.encrypt(SenderKeyStore.build(conn), name, plaintext), state,
-     state.idle_ms}
+  def handle_call({:group_encrypt, plaintext}, _from, %{conn: conn, key: name} = state) do
+    {:reply, GroupCipher.encrypt(SenderKeyStore.build(conn), name, plaintext), state, state.idle_ms}
   end
 
   @impl GenServer
-  def handle_call({:group_decrypt, name, content}, _from, %{conn: conn} = state) do
+  def handle_call({:group_decrypt, content}, _from, %{conn: conn, key: name} = state) do
     {:reply, GroupCipher.decrypt(SenderKeyStore.build(conn), name, content), state, state.idle_ms}
   end
 
@@ -364,16 +401,30 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
       end
 
     case result do
-      {:ok, {new_record, reply}} -> {reply, store_and_cache(state, new_record)}
-      {:error, e} -> {{:error, e}, state}
+      # The cipher advanced the record; only surface success (and cache it) if the
+      # write LANDED. A failed write returns the error with the cache/storage
+      # UNCHANGED — the advance is discarded (no message consumed it: an outbound
+      # send fails, an inbound decrypt returns an error → redelivery retries).
+      {:ok, {new_record, reply}} ->
+        case store_and_cache(state, new_record) do
+          {:ok, state} -> {reply, state}
+          {:error, _} = err -> {err, state}
+        end
+
+      {:error, e} ->
+        {{:error, e}, state}
     end
   end
 
-  # Write-through: prune, persist, and cache the pruned record so cache == storage.
+  # Write-through: persist, then cache exactly what was stored so cache == storage.
+  # `store_session` prunes closed sessions past the cap; cache the pruned form.
   defp store_and_cache(%{conn: conn, key: key} = state, record) do
     pruned = SessionRecord.remove_old_sessions(record)
-    SessionStore.store_session(conn, key, pruned)
-    %{state | cached: pruned}
+
+    case SessionStore.store_session(conn, key, pruned) do
+      :ok -> {:ok, %{state | cached: pruned}}
+      {:error, reason} -> {:error, {:storage_write_failed, reason}}
+    end
   end
 
   defp delete_record(%Conn{storage: scope, profile: profile}, key) do

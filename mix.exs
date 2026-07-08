@@ -78,9 +78,48 @@ defmodule Amarula.MixProject do
         "LICENSE",
         "NOTICE"
       ],
-      source_url: "https://github.com/tubedude/amarula"
+      source_url: "https://github.com/tubedude/amarula",
+      before_closing_body_tag: &before_closing_body_tag/1
     ]
   end
+
+  # Renders ```mermaid fenced blocks in the extras (e.g. docs/INFRASTRUCTURE.md's
+  # supervision tree) as diagrams. ExDoc has no built-in Mermaid support; this is
+  # the documented recipe (see deps/ex_doc/README.md, "Rendering Mermaid graphs")
+  # — a CDN script that finds `pre code.mermaid` after the page loads and swaps
+  # in a rendered SVG.
+  defp before_closing_body_tag(:html) do
+    """
+    <script defer src="https://cdn.jsdelivr.net/npm/mermaid@10.2.3/dist/mermaid.min.js"></script>
+    <script>
+      let initialized = false;
+      window.addEventListener("exdoc:loaded", () => {
+        if (!initialized) {
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: document.body.className.includes("dark") ? "dark" : "default"
+          });
+          initialized = true;
+        }
+        let id = 0;
+        for (const codeEl of document.querySelectorAll("pre code.mermaid")) {
+          const preEl = codeEl.parentElement;
+          const graphDefinition = codeEl.textContent;
+          const graphEl = document.createElement("div");
+          const graphId = "mermaid-graph-" + id++;
+          mermaid.render(graphId, graphDefinition).then(({svg, bindFunctions}) => {
+            graphEl.innerHTML = svg;
+            bindFunctions?.(graphEl);
+            preEl.insertAdjacentElement("afterend", graphEl);
+            preEl.remove();
+          });
+        }
+      });
+    </script>
+    """
+  end
+
+  defp before_closing_body_tag(_), do: ""
 
   # `mix check` runs the test suite, so default it to the :test env.
   def cli do

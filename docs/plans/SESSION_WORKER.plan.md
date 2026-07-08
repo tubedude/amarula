@@ -1,4 +1,13 @@
 > **Historical design plan** — point-in-time; may not match current code. The living architecture reference is [docs/INFRASTRUCTURE.md](../INFRASTRUCTURE.md).
+>
+> **This specific proposal (an all-async `SessionWorker` evolved from
+> `ConversationSender`) is not what got built.** The implemented design is
+> `Amarula.Protocol.Signal.SessionCustodian` — a separate per-record process
+> (not a repurposed sender), synchronous `GenServer.call` from both send and
+> receive rather than all-cast. See `docs/INFRASTRUCTURE.md` for the current
+> design and [`docs/CUSTODIAN_BENCHMARKS.md`](../CUSTODIAN_BENCHMARKS.md) for the
+> post-implementation concurrency benchmarks measuring whether the problem this
+> plan describes (still accurate) actually required that solution.
 
 # Plan: per-peer SessionWorker — close the ratchet fork (all-async)
 

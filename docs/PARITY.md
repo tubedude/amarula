@@ -1,15 +1,18 @@
 # Upstream references
 
-Amarula's protocol logic was ported from [Baileys](https://github.com/WhiskeySockets/Baileys)
-and is kept honest by validating against **two** independent implementations:
+Amarula's protocol logic was ported from [Baileys](https://github.com/WhiskeySockets/Baileys).
+Two different upstream references keep that port honest, for two different reasons
+— don't conflate them:
 
 - **[Baileys](https://github.com/WhiskeySockets/Baileys)** (TypeScript) — the port
-  lineage. We track a *specific* Baileys revision so we can `git diff` it against
-  newer Baileys and find changes worth porting.
-- **[whatsmeow](https://github.com/tulir/whatsmeow)** (Go, by tulir) — an
-  independent implementation we cross-check against for correctness. It's often the
-  more rigorously reverse-engineered of the two, and a bug found in one is usually a
-  latent bug in the other.
+  lineage, not an independent check. We track a *specific* Baileys revision so we
+  can `git diff` it against newer Baileys and find upstream changes worth porting.
+  A bug in Baileys itself would happily reproduce here too — this only catches
+  drift from our own source, not a shared mistake.
+- **[whatsmeow](https://github.com/tulir/whatsmeow)** (Go, by tulir) — the actual
+  independent implementation, and the only one of the two that can catch a bug
+  Baileys and Amarula share. It's often the more rigorously reverse-engineered of
+  the two.
 
 This doc is the single source of truth for the pinned Baileys revision (there is no
 `Amarula.Baileys` module — Amarula has graduated from being a single-upstream port,
@@ -20,8 +23,13 @@ so the tracking lives here) and the runbook for re-syncing.
 | field | value |
 |-------|-------|
 | Baileys version | `7.0.0-rc13` |
-| commit | `eb595a5a8f0fd6b753ee97e3b2d77612fafa501d` |
-| date | 2026-06-10 |
+| commit | `8053b086ecc97ec3f78299561de11959bab05d39` |
+| date | 2026-05-21 |
+
+(Verified directly against `refs/tags/v7.0.0-rc13` on the real Baileys repo —
+the commit the tag actually resolves to, not the tag object's own SHA. A
+previous version of this table listed a hash that doesn't exist in Baileys'
+history at all.)
 
 ## Two versions — don't conflate them
 
@@ -35,12 +43,24 @@ Either can change without the other.
 
 ## Checking upstream for changes to port
 
-From the Baileys checkout (the repo root, one level up from `amarula/`):
+From the Baileys checkout (the repo root, one level up from `amarula/`).
+
+**Prerequisite — the checkout must track branches, not just a tag.** A
+tag-only clone (`fetch = +refs/tags/vX:refs/tags/vX` in `.git/config`, no
+`refs/heads/*` refspec) will never populate `origin/master`, no matter how
+many times you fetch — the commands below fail outright against one. Confirm
+with `git for-each-ref refs/remotes/`; if it's empty, re-point the fetch
+refspec to `+refs/heads/*:refs/remotes/origin/*` (or re-clone normally)
+before continuing.
+
+**Also confirm the pin itself resolves** (`git cat-file -t $PINNED`) before
+trusting the diff — a stale or hand-typed hash here silently breaks this
+whole workflow without an obvious error until the `git log`/`git diff` below.
 
 ```bash
 # Fetch the latest upstream and see what landed since our pinned commit.
 git fetch origin
-PINNED=eb595a5a8f0fd6b753ee97e3b2d77612fafa501d   # the commit pinned above
+PINNED=8053b086ecc97ec3f78299561de11959bab05d39   # the commit pinned above
 
 # Commits we haven't reviewed yet:
 git log --oneline $PINNED..origin/master

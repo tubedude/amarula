@@ -10,22 +10,34 @@ with this file, this file wins.
 A connection is one independent supervision tree. Many accounts can run side by
 side, fully isolated: one account crashing never touches another.
 
-```
-Amarula.InstanceRegistry               (app-level; names every connection tree's
-                                         processes by its instance_id ref)
-Amarula.ConnectionsSupervisor          (library-owned DynamicSupervisor)
-└── ConnectionSupervisor               (:rest_for_one — one per connection)
-    ├── Connection                     (GenServer — the one process per connection;
-    │                                    also owns the retry-cache ETS table)
-    └── Sender Supervisor              (DynamicSupervisor)
-        └── ConversationSender …       (one per recipient JID, lazily started)
+```mermaid
+graph TD
+    IR[["Amarula.InstanceRegistry<br/>(app-level, one per node)"]]
+    ConnsSup["Amarula.ConnectionsSupervisor<br/>(library-owned DynamicSupervisor)"]
+    TreeSup["ConnectionSupervisor<br/>(:rest_for_one, one per connection)"]
+    CustSup["Custodian Supervisor<br/>(DynamicSupervisor)"]
+    Cust["SessionCustodian …<br/>one per Signal record"]
+    Conn["Connection<br/>(GenServer + retry-cache ETS)"]
+    SendSup["Sender Supervisor<br/>(DynamicSupervisor)"]
+    Sender["ConversationSender …<br/>one per recipient JID"]
+
+    ConnsSup --> TreeSup
+    TreeSup -->|1st| CustSup --> Cust
+    TreeSup -->|2nd| Conn
+    TreeSup -->|3rd| SendSup --> Sender
+    IR -.->|names tree + siblings + custodians + senders| TreeSup
 ```
 
-The tree has no Registry of its own: the tree supervisor, the sibling roles, and
-each `ConversationSender` are named in the app-level `Amarula.InstanceRegistry`,
-keyed by the connection's `instance_id` ref (and `{instance_id, recipient_jid}`
-for senders) — so no atom is minted per connection and two connections never
-collide on a name.
+(The `1st`/`2nd`/`3rd` labels are the `:rest_for_one` order — custodians sit
+before `Connection` deliberately; see [Session custody](#session-custody) for
+why.)
+
+The tree has no Registry of its own: the tree supervisor, the sibling roles, every
+`ConversationSender`, and every `SessionCustodian` are named in the app-level
+`Amarula.InstanceRegistry`, keyed by the connection's `instance_id` ref
+(`{instance_id, recipient_jid}` for senders; `{instance_id, {:session, addr}}` /
+`{instance_id, {:sender_key, name}}` for custodians) — so no atom is minted per
+connection and two connections never collide on a name.
 
 `Connection` is the heart: one process per connection that owns the WebSocket, the
 Noise cipher, IQ correlation, login/handshake, credential persistence, the
@@ -101,6 +113,12 @@ poisoned cached entry can never outlive (and crash-loop) the restart it triggers
 One GenServer per recipient JID, started lazily, holding no durable state. Covered
 in detail under [Sending](#sending).
 
+### SessionCustodian
+
+One GenServer per Signal crypto record — a 1:1 session or a group sender-key —
+started lazily, holding a write-through cache of that one record. Covered in
+detail under [Session custody](#session-custody).
+
 ### Storage
 
 Not a process. Storage is a config concern — a scope carried on the `Conn` struct —
@@ -114,20 +132,26 @@ There are two distinct registries; keep them straight.
 ### Instance registry — intra-tree wiring
 
 `Amarula.InstanceRegistry` is one app-level `Registry` (started by `Amarula.Supervisor`) that names the infrastructure of *every* connection tree,
-keyed by the connection's `instance_id`. It is not a child of any tree. It does two
-jobs:
+keyed by the connection's `instance_id`. It is not a child of any tree. It does
+three jobs:
 
 1. **Names the tree + siblings.** The tree supervisor registers under
-   `{:supervisor, instance_id}`, and `Connection` / the sender supervisor under
-   `{instance_id, role}`, so the tree is addressable and siblings find each other by
-   role across restarts — without global atom names, and (unlike the old design)
-   without minting a hashed atom per connection.
+   `{:supervisor, instance_id}`, and `Connection` / the sender supervisor /
+   the custodian supervisor under `{instance_id, role}`, so the tree is
+   addressable and siblings find each other by role across restarts —
+   without global atom names, and (unlike the old design) without minting a
+   hashed atom per connection.
 2. **Maps `{instance_id, recipient_jid} → sender pid`.** This is the load-bearing
    reason it exists. The recipient key space is unbounded and user-controlled —
    every phone number you message becomes a key. Static atom names can't work here:
    atoms are never garbage-collected, so an unbounded atom table would eventually
    crash the VM. A Registry keyed by the JID term find-or-starts a sender per
    recipient and auto-unregisters it on the sender's death, with no atom growth.
+3. **Maps `{instance_id, {:session, addr}}` / `{instance_id, {:sender_key, name}}`
+   → custodian pid.** Same shape and same reason as job 2 — a contact's or
+   group's key space is just as unbounded, so custodians find-or-start and
+   auto-unregister the same way senders do. See
+   [Session custody](#session-custody).
 
 `instance_id` is a `make_ref()` minted per `start_instance/2`. It namespaces a
 connection's entries in the shared registry so trees never collide. It is ephemeral
@@ -185,6 +209,61 @@ registrations, reconciled on heal — so a production setup usually pairs this w
 an external lease (a DB row or Redis key) the orchestrator holds per profile. The
 seam composes with that rather than replacing it.
 
+## Session custody
+
+A 1:1 Signal session (and, uniformly, a group sender-key) is persisted as **one**
+opaque blob — no field-level merge. It is mutated from two different processes:
+`ConversationSender` on send (`encrypt`) and `Connection` on receive (`decrypt`,
+inline in `MessageDecryptor`). Two processes, one shared record, no lock between
+them is exactly a lost-update race — a concurrent send + receive to the same
+contact can interleave the `load → mutate → store` and silently fork the ratchet.
+`Amarula.Protocol.Signal.SessionCustodian` closes that: every read-modify-write of
+a given record funnels through the **one** custodian process for that record, so
+send and receive can no longer clobber each other. See
+[`docs/CUSTODIAN_BENCHMARKS.md`](CUSTODIAN_BENCHMARKS.md) for concurrency
+benchmarks measuring what happens with that lock removed (a lock-free version
+fails 3-in-4 concurrent rounds under realistic timing, mostly silently).
+
+**The leaf invariant — why this doesn't deadlock.** A custodian touches only
+`Amarula.Storage` and the pure cipher/builder code — it calls *nobody*: no IQ, no
+socket, no callback into `Connection` or a sender. That's the whole point:
+`ConversationSender` already blocks on `Connection` (USync / prekey-bundle / relay
+calls), so a `Connection → sender` blocking call would deadlock. `Connection →
+custodian` and `sender → custodian` are safe *because the custodian waits on no
+one* — it always makes progress and replies. This is also why the custodian
+supervisor sits **first** in the tree's `:rest_for_one` order (before `Connection`,
+not after) — a `Connection` restart must not wipe custodians out from under an
+in-flight sender, and a custodian, being a leaf, never needs `Connection` to make
+progress in the first place.
+
+**Write-through cache, never write-back.** A 1:1 record is loaded once and kept in
+memory as long as the custodian lives, persisted on *every* mutation before the
+reply is sent — never write-back. An idle-stop or crash must not lose a ratchet
+advance, so storage is always current; a write failure discards the advance and
+returns an error rather than caching a state storage never actually holds. (Group
+sender-key ops aren't cached this way — the group cipher does its own storage I/O.)
+
+**Lifecycle** mirrors `ConversationSender`'s: lazy find-or-start (`Registry.lookup`,
+else `DynamicSupervisor.start_child`, with `{:error, {:already_started, pid}}`
+treated as success so a lost start race still converges on one custodian),
+`restart: :temporary`, and an idle-shed timer (default 30s, overridable via
+`config[:custodian_idle_ms]` — longer than the sender's 1s default, since a
+crypto record is more expensive to cold-restart than an empty sender). Callers
+never hold a custodian pid across that idle-shed window: every op resolves the
+record's custodian and calls it in one step, retrying find-or-start (up to 5
+times) if the custodian died between resolve and call — a bare call into a
+mid-`:stop` pid would otherwise `:exit` the caller, and on the receive path that
+caller is `Connection`, the socket owner.
+
+**First-contact straddles the lock, deliberately.** A prekey-bundle fetch needs the
+socket, so it can't run inside the custodian's critical section (that would break
+the leaf invariant). Session *creation* therefore splits: the caller fetches the
+bundle outside the lock, then hands it to the custodian's `inject` op, which
+re-checks whether an inbound `pkmsg` already established a session while the
+fetch was in flight (`:if_absent` mode) before installing it — so a race between
+"we're about to start a session" and "they already started one" can't clobber a
+live ratchet.
+
 ## Sending
 
 `Amarula.send_text/3` → `Connection` → the recipient's `ConversationSender`. The
@@ -193,22 +272,24 @@ sender runs a linear `ctx → ctx` pipe:
 ```
 resolve_devices    (device cache, else USync)
   → ensure_sessions  (stored sessions, else prekey-bundle fetch)
-    → encrypt        (per device; plain vs DSM; advances the ratchet)
+    → encrypt        (per device; plain vs DSM; through the record's
+                       SessionCustodian — see [Session custody](#session-custody))
       → relay        (build the frame, send the <participants> stanza)
 ```
 
-**Why a process per recipient — it is a lock, not a cache.** The sender holds no
-state of its own, not even the ratchet. `encrypt` is a `load → advance → store`
-against the **shared** Signal session in Storage, and that read-modify-write is not
-atomic: two concurrent sends to one recipient could both load the same record,
-advance from the same point, and store — a lost update that **forks the ratchet**
-and corrupts the session. The per-recipient process serializes that read-modify-write
-(its mailbox is the lock), giving the exact granularity needed — serial *within* a
-recipient, parallel *across* recipients. A bare `Task` per send would lose the
-mutual exclusion (forked ratchets); a single shared process would lose the
-cross-recipient parallelism. Because it holds nothing, the sender is cheap to lose
-and respawn, and gets current credentials handed to it per send (creds change after
-login, so a cached snapshot would encrypt stale).
+**Why a process per recipient.** The sender holds no state of its own, not even the
+ratchet — sessions and keys live in Storage, and the `load → advance → store`
+against a session record happens inside that record's `SessionCustodian`, not
+here (that's what closes the ratchet-fork race — see [Session
+custody](#session-custody)). The sender's own per-recipient serialization protects
+something narrower but still real: it keeps one recipient's whole *pipeline* —
+device resolution, session ensure, per-device encrypt, relay — from interleaving
+with itself, so two concurrent calls to the same recipient can't race on
+device-list state or emit an out-of-order `<participants>` stanza. Serial *within*
+a recipient's pipeline, parallel *across* recipients, same granularity as before —
+what it's protecting just changed. Because it holds nothing, the sender is cheap to
+lose and respawn, and gets current credentials handed to it per send (creds change
+after login, so a cached snapshot would encrypt stale).
 
 ### ConversationSender lifecycle
 
@@ -221,11 +302,12 @@ One sender per recipient JID, `restart: :temporary`.
   `{:error, {:already_started, pid}}` branch keeps it race-safe (in practice only
   `Connection` calls `deliver`, so starts for one recipient are already
   serialized).
-- **Life.** It serializes that recipient's sends — one pipe at a time, so the
-  ratchet's load-modify-store can't interleave (the lock described above).
-  Different recipients run in parallel. It holds no durable state: sessions and
-  keys live in Storage, and the consumer's `from` is parked in `Connection`. Cheap
-  to lose, cheap to respawn.
+- **Life.** It serializes that recipient's sends — one pipe at a time, so device
+  resolution/session-ensure/relay for that recipient can't interleave with itself
+  (the narrower lock described above; the ratchet's own load-modify-store is the
+  `SessionCustodian`'s job, not the sender's). Different recipients run in
+  parallel. It holds no durable state: sessions and keys live in Storage, and the
+  consumer's `from` is parked in `Connection`. Cheap to lose, cheap to respawn.
 - **Death.** Three ways, all of which auto-unregister the registry key:
   1. *Idle* — each send re-arms an idle timer (`idle_ms`, default 1s, overridable
      via `config[:sender_idle_ms]`); after that long with no further send →
@@ -318,9 +400,12 @@ handed to `Connection.process_server_node/2`. Dispatch is split in two:
 2. **`Connection` dispatches** on that tag to the matching handler, which performs
    the side effects.
 
-For a `:message`, the handler decrypts via `MessageDecryptor`, builds each
-decrypted payload into an `%Amarula.Msg{}` (a consumer struct — `type` + `content`,
-never the raw proto), drops Signal sender-key plumbing (`type == :sender_key`,
+For a `:message`, the handler decrypts via `MessageDecryptor` — which, for a 1:1 or
+group-sender-key payload, funnels the actual cipher step through that record's
+`SessionCustodian` (see [Session custody](#session-custody)) rather than mutating
+Storage directly — builds each decrypted payload into an `%Amarula.Msg{}` (a
+consumer struct — `type` + `content`, never the raw proto), drops Signal
+sender-key plumbing (`type == :sender_key`,
 which is group-session-key bookkeeping, not a user message), and emits the rest as
 a `:messages_upsert` event to `parent_pid`. It then sends the delivery receipt the
 server expects — and, for a message carrying a history-sync notification, an extra
@@ -345,9 +430,18 @@ their own events (`:receipt_update`, `:group_update`, …). Consumer events all 
   correctly. A `:normal` idle-stop fails nothing. The monitor is dropped when the
   recipient's last parked send resolves, so it doesn't leak. See
   `docs/plans/SENDER_CRASH_FIX.plan.md`.
+- **Custodian dies mid-call.** A bare `GenServer.call` into a custodian that died
+  between resolve and call would `:exit` the *caller* — on the receive path
+  that's `Connection`, the socket owner, so this can't be allowed to propagate.
+  Every custodian op resolves-and-calls in one step and retries find-or-start
+  (up to 5 times) on exactly that failure, returning `{:error, :custodian_down}`
+  only if all retries are exhausted. The leaf invariant makes the retry safe: a
+  fresh custodian re-reads storage, which write-through keeps current. See
+  [Session custody](#session-custody).
 - **Connection crash** → the whole instance tree restarts and reconnects as a unit.
   Because the tree isn't linked to the consumer, this never propagates an exit
-  signal to the caller.
+  signal to the caller. Custodians, sitting before `Connection` in the
+  `:rest_for_one` order, are untouched by this restart.
 
 ## See also
 
@@ -356,4 +450,8 @@ their own events (`:receipt_update`, `:group_update`, …). Consumer events all 
   helpers.
 - `Amarula.Protocol.Socket.Router` — the full inbound routing table.
 - `Amarula.Protocol.Messages.ConversationSender` — moduledoc (lifecycle).
+- `Amarula.Protocol.Signal.SessionCustodian` — moduledoc (the leaf invariant,
+  write-through cache).
+- [`docs/CUSTODIAN_BENCHMARKS.md`](CUSTODIAN_BENCHMARKS.md) — concurrency
+  benchmarks for the per-record lock.
 - `docs/plans/` — point-in-time design plans; may be stale. This doc is current.

@@ -1,14 +1,17 @@
 defmodule Amarula.Protocol.Signal.SessionCustodian do
   @moduledoc """
-  The single serialization point for **one** Signal session record.
+  The single serialization point for **one** Signal crypto record — a 1:1 session
+  (`for_address/3`) or a group sender-key (`for_sender_key/3`).
 
-  A peer's session record holds both directions of the Double Ratchet and is
-  persisted as one opaque blob (a whole-record overwrite, no field-level merge). It
-  is mutated from two different processes — the per-recipient `ConversationSender`
-  (encrypt, on send) and the `Connection` (decrypt/migrate/wipe, on receive). Two
-  non-atomic `load → modify → store` cycles on the same blob can lose an update. A
-  custodian is a per-record lock: every read-modify-write of that record funnels
-  through this one process, so send and receive can no longer clobber each other.
+  A record is persisted as one opaque blob (a whole-record overwrite, no field-level
+  merge). A 1:1 session is mutated from two different processes — the per-recipient
+  `ConversationSender` (encrypt, on send) and the `Connection` (decrypt/migrate/wipe,
+  on receive) — so two non-atomic `load → modify → store` cycles on the same blob can
+  lose an update. A custodian is a per-record lock: every read-modify-write of that
+  record funnels through this one process, so send and receive can no longer clobber
+  each other. (Group sender-key records have a single writer today; routing them
+  through a custodian too keeps one uniform rule — no process touches a record except
+  its custodian — and pre-empts a future second writer.)
 
   ## The leaf invariant (what makes this deadlock-free)
 
@@ -46,6 +49,14 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
 
   alias Amarula.Conn
   alias Amarula.Protocol.Signal.{SessionBuilder, SessionCipher, SessionRecord, SessionStore}
+
+  alias Amarula.Protocol.Signal.Group.{
+    GroupCipher,
+    GroupSessionBuilder,
+    SenderKeyName,
+    SenderKeyStore
+  }
+
   alias Amarula.Protocol.Socket.ConnectionSupervisor
   alias Amarula.Storage
 
@@ -71,6 +82,23 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
     case Registry.lookup(registry, key) do
       [{pid, _}] -> {:ok, pid}
       [] -> start_custodian(instance_id, conn, addr, {:via, Registry, {registry, key}})
+    end
+  end
+
+  @doc """
+  Find — or lazily start — the custodian for a group **sender-key** record, keyed
+  under `{instance_id, {:sender_key, <name>}}`. Same per-record lock as `for_address/3`,
+  for the group cipher instead of the 1:1 session.
+  """
+  @spec for_sender_key(reference(), Conn.t(), SenderKeyName.t()) ::
+          {:ok, pid()} | {:error, term()}
+  def for_sender_key(instance_id, conn, sender_key_name) do
+    registry = ConnectionSupervisor.registry_name(instance_id)
+    key = {instance_id, {:sender_key, SenderKeyName.to_string_repr(sender_key_name)}}
+
+    case Registry.lookup(registry, key) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> start_custodian(instance_id, conn, key, {:via, Registry, {registry, key}})
     end
   end
 
@@ -153,6 +181,30 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   @spec replace(t(), map() | nil) :: :ok
   def replace(custodian, record), do: GenServer.call(custodian, {:replace, record}, @call_timeout)
 
+  # Group sender-key ops (for a `for_sender_key/3` custodian). Each runs the group
+  # cipher/builder with a direct-storage closure inside one handle_call, so the
+  # sender-key record's access is serialized through this one process.
+
+  @doc "Group: encrypt `plaintext` with our sender key (skmsg)."
+  @spec group_encrypt(t(), SenderKeyName.t(), binary()) :: {:ok, binary()} | {:error, term()}
+  def group_encrypt(custodian, sender_key_name, plaintext),
+    do: GenServer.call(custodian, {:group_encrypt, sender_key_name, plaintext}, @call_timeout)
+
+  @doc "Group: decrypt a peer's skmsg with their sender key."
+  @spec group_decrypt(t(), SenderKeyName.t(), binary()) :: {:ok, binary()} | {:error, term()}
+  def group_decrypt(custodian, sender_key_name, content),
+    do: GenServer.call(custodian, {:group_decrypt, sender_key_name, content}, @call_timeout)
+
+  @doc "Group: build our sender-key-distribution message for `group_id`."
+  @spec create_skdm(t(), String.t(), String.t()) :: {:ok, struct()} | {:error, term()}
+  def create_skdm(custodian, group_id, me_id),
+    do: GenServer.call(custodian, {:create_skdm, group_id, me_id}, @call_timeout)
+
+  @doc "Group: process a peer's inbound SKDM, storing their sender key."
+  @spec process_skdm(t(), struct(), String.t()) :: :ok | {:error, term()}
+  def process_skdm(custodian, skdm, author),
+    do: GenServer.call(custodian, {:process_skdm, skdm, author}, @call_timeout)
+
   # --- server ---
 
   @impl GenServer
@@ -230,6 +282,44 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   def handle_call({:replace, record}, _from, %{conn: conn, key: key} = state) do
     SessionStore.store_session(conn, key, record)
     {:reply, :ok, state, state.idle_ms}
+  end
+
+  @impl GenServer
+  def handle_call({:group_encrypt, name, plaintext}, _from, %{conn: conn} = state) do
+    {:reply, GroupCipher.encrypt(SenderKeyStore.build(conn), name, plaintext), state,
+     state.idle_ms}
+  end
+
+  @impl GenServer
+  def handle_call({:group_decrypt, name, content}, _from, %{conn: conn} = state) do
+    {:reply, GroupCipher.decrypt(SenderKeyStore.build(conn), name, content), state, state.idle_ms}
+  end
+
+  @impl GenServer
+  def handle_call({:create_skdm, group_id, me_id}, _from, %{conn: conn} = state) do
+    sk_store = SenderKeyStore.build(conn)
+    builder = GroupSessionBuilder.new(sk_store)
+
+    reply =
+      GroupSessionBuilder.create_sender_key_distribution_message(
+        builder,
+        sk_store,
+        group_id,
+        me_id
+      )
+
+    {:reply, reply, state, state.idle_ms}
+  end
+
+  @impl GenServer
+  def handle_call({:process_skdm, skdm, author}, _from, %{conn: conn} = state) do
+    sk_store = SenderKeyStore.build(conn)
+    builder = GroupSessionBuilder.new(sk_store)
+
+    reply =
+      GroupSessionBuilder.process_sender_key_distribution_message(builder, sk_store, skdm, author)
+
+    {:reply, reply, state, state.idle_ms}
   end
 
   # Idle long enough → shed the process. Write-through means there's nothing to

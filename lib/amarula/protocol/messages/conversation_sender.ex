@@ -105,12 +105,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     SessionStore
   }
 
-  alias Amarula.Protocol.Signal.Group.{
-    GroupCipher,
-    GroupSessionBuilder,
-    SenderKeyName,
-    SenderKeyStore
-  }
+  alias Amarula.Protocol.Signal.Group.SenderKeyName
 
   alias Amarula.Connection
   alias Amarula.Protocol.USync
@@ -602,20 +597,16 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   # device as a per-device pkmsg so they can decrypt the skmsg. First send to a
   # group distributes keys to everyone; we redistribute on every send for now.
   defp encrypt(%{kind: :group, message: message} = ctx) do
-    sk_store = SenderKeyStore.build(ctx.conn)
     me_id = sender_identity(ctx)
     sender_name = SenderKeyName.from_jids(ctx.target_jid, me_id)
 
-    {:ok, skdm} =
-      GroupSessionBuilder.create_sender_key_distribution_message(
-        GroupSessionBuilder.new(sk_store),
-        sk_store,
-        ctx.target_jid,
-        me_id
-      )
+    # Our sender key for the group is one record → route the SKDM build + skmsg
+    # encrypt through its custodian (the per-record lock).
+    {:ok, custodian} = SessionCustodian.for_sender_key(ctx.instance_id, ctx.conn, sender_name)
+    {:ok, skdm} = SessionCustodian.create_skdm(custodian, ctx.target_jid, me_id)
 
     {:ok, skmsg} =
-      GroupCipher.encrypt(sk_store, sender_name, MessageEncoder.encode(message))
+      SessionCustodian.group_encrypt(custodian, sender_name, MessageEncoder.encode(message))
 
     # The SKDM-only message, encrypted per device (the dm path). It carries no
     # text — members read the body from the group skmsg; this pkmsg only delivers

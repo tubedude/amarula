@@ -22,12 +22,7 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   alias Amarula.Protocol.Proto
   alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionCustodian}
 
-  alias Amarula.Protocol.Signal.Group.{
-    GroupCipher,
-    GroupSessionBuilder,
-    SenderKeyName,
-    SenderKeyStore
-  }
+  alias Amarula.Protocol.Signal.Group.SenderKeyName
 
   @doc """
   Decrypt all decryptable `<enc>` children of `node`.
@@ -47,7 +42,6 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
     store = Keyword.fetch!(opts, :store)
     conn = Keyword.fetch!(opts, :conn)
     instance_id = Keyword.fetch!(opts, :instance_id)
-    sk_store = SenderKeyStore.build(conn)
 
     from = NodeUtils.get_attr(node, "from")
     participant = NodeUtils.get_attr(node, "participant")
@@ -61,7 +55,6 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
       from: from,
       author: author,
       store: store,
-      sk_store: sk_store,
       conn: conn,
       instance_id: instance_id
     }
@@ -80,7 +73,7 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
 
     case decrypt_enc(type, enc.content, ctx) do
       {:ok, msg, pre_key_id} ->
-        maybe_process_skdm(msg, ctx.author, ctx.sk_store)
+        maybe_process_skdm(msg, ctx)
         {[msg | msgs], prepend_if(pre_key_id, used_ids), errs}
 
       {:error, reason} ->
@@ -102,10 +95,11 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   defp decrypt_enc("pkmsg", content, ctx), do: decrypt_1to1(:pkmsg, content, ctx)
   defp decrypt_enc("msg", content, ctx), do: decrypt_1to1(:msg, content, ctx)
 
-  defp decrypt_enc("skmsg", content, %{from: from, author: author, sk_store: sk_store}) do
+  defp decrypt_enc("skmsg", content, %{from: from, author: author, conn: conn, instance_id: iid}) do
     sender_key_name = SenderKeyName.from_jids(from, author)
 
-    with {:ok, plaintext} <- GroupCipher.decrypt(sk_store, sender_key_name, content),
+    with {:ok, custodian} <- SessionCustodian.for_sender_key(iid, conn, sender_key_name),
+         {:ok, plaintext} <- SessionCustodian.group_decrypt(custodian, sender_key_name, content),
          {:ok, msg} <- decode_padded(plaintext) do
       {:ok, msg, nil}
     end
@@ -160,25 +154,21 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
     end
   end
 
-  # Process senderKeyDistributionMessage inside a just-decrypted group message.
-  defp maybe_process_skdm(msg, author, sk_store) do
+  # Process senderKeyDistributionMessage inside a just-decrypted group message —
+  # through the sender's sender-key custodian (the per-record lock).
+  defp maybe_process_skdm(msg, %{author: author, conn: conn, instance_id: iid}) do
     skdm = Map.get(msg, :senderKeyDistributionMessage)
 
     if skdm && skdm.groupId do
-      builder = GroupSessionBuilder.new(sk_store)
+      sender_key_name = SenderKeyName.from_jids(skdm.groupId, author)
 
-      case GroupSessionBuilder.process_sender_key_distribution_message(
-             builder,
-             sk_store,
-             skdm,
-             author
-           ) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
+      with {:ok, custodian} <- SessionCustodian.for_sender_key(iid, conn, sender_key_name),
+           :ok <- SessionCustodian.process_skdm(custodian, skdm, author) do
+        :ok
+      else
+        error ->
           Logger.warning(
-            "Failed to process sender key distribution (author=#{author}): #{inspect(reason)}"
+            "Failed to process sender key distribution (author=#{author}): #{inspect(error)}"
           )
       end
     end

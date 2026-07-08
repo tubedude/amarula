@@ -59,6 +59,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   both the `pkmsg` and the wrapped `msg` forms) and sends the same delivery receipt
   the success path does — draining the server's offline queue — instead of nacking
   `500` and firing a spurious retry receipt (the redelivery/poison loop).
+- **A peer's identity change now actually refreshes the session.** On an
+  `encrypt`/`identity` notification for a peer we hold a session with, Amarula wipes
+  the stale session up front and re-fetches their key bundle — so nothing encrypts to
+  the old identity in the gap. (The prior guard compared a jid against a
+  signal-address key, so the refresh never fired.)
+- **Group delivery/read receipts are no longer dropped.** An aggregated group
+  receipt (no top-level `id`, one `<participants key=<msg_id>>` child per message)
+  parsed as an empty-id `:receipt_update`; it now fans out to one `:receipt_update`
+  per (message, participant), so per-member delivery/read state actually surfaces.
+- **Own linked-device changes refresh the device cache.** An `account_sync`
+  notification with a `<devices>` child (a device linked/unlinked from another
+  session) was ignored, leaving our own device list stale until the next full USync —
+  so a newly-linked device could be omitted from a send's encrypt recipients. We now
+  drop our own cached device list on that notification.
 
 ## [0.4.5] - 2026-07-07
 
@@ -77,15 +91,6 @@ Two integrity fixes surfaced by reviewing the whatsmeow implementation.
   catching a decrypt/unpad bug. A mismatch returns `{:error, :bad_file_hash}`; a
   descriptor without the hash is skipped. (The MAC already covers ciphertext
   integrity, so the redundant `file_enc_sha256` check isn't performed.)
-- **Group delivery/read receipts are no longer dropped.** An aggregated group
-  receipt (no top-level `id`, one `<participants key=<msg_id>>` child per message)
-  parsed as an empty-id `:receipt_update`; it now fans out to one `:receipt_update`
-  per (message, participant), so per-member delivery/read state actually surfaces.
-- **Own linked-device changes refresh the device cache.** An `account_sync`
-  notification with a `<devices>` child (a device linked/unlinked from another
-  session) was ignored, leaving our own device list stale until the next full USync —
-  so a newly-linked device could be omitted from a send's encrypt recipients. We now
-  drop our own cached device list on that notification.
 
 ## [0.4.4] - 2026-07-04
 

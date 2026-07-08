@@ -2391,26 +2391,42 @@ defmodule Amarula.Connection do
     end
   end
 
-  # A peer's identity changed. Baileys (handleIdentityChange): only force-refresh
-  # if we ALREADY have a session with them (a new contact needs none), and skip
-  # during offline batch processing (it'd refresh stale state). Otherwise re-fetch
-  # their key bundle so our session matches their new identity.
+  # A peer's identity changed. Only act if we ALREADY have a session with them (a
+  # new contact needs none), and skip during offline batch processing (it'd refresh
+  # stale state). Otherwise wipe the stale session(s) and re-fetch their key bundle
+  # so our session matches their new identity — and nothing encrypts to the old one
+  # in the gap.
   defp maybe_refresh_identity(state, node, from) do
     offline? = NodeUtils.get_attr(node, "offline") not in [nil, ""]
-    has_session? = SessionStore.load_session(conn(state), from) != nil
 
-    cond do
-      not has_session? ->
-        Logger.debug("encrypt(identity) from #{from}: no existing session — skipping refresh")
-        state
+    if offline? do
+      Logger.debug("encrypt(identity) from #{from}: offline batch — deferring refresh")
+      state
+    else
+      # Wipe up front so a concurrent send can't encrypt to the old identity in the
+      # window before the refreshed bundle lands. No session → a new contact,
+      # nothing to refresh.
+      case wipe_identity_sessions(conn(state), from) do
+        n when n > 0 ->
+          Logger.debug("encrypt(identity) from #{from}: wiped #{n} stale session(s), refreshing")
+          force_refresh_sessions(state, [from])
 
-      offline? ->
-        Logger.debug("encrypt(identity) from #{from}: offline batch — deferring refresh")
-        state
+        _ ->
+          Logger.debug("encrypt(identity) from #{from}: no existing session — skipping refresh")
+          state
+      end
+    end
+  end
 
-      true ->
-        Logger.debug("encrypt(identity) from #{from}: refreshing session")
-        force_refresh_sessions(state, [from])
+  # Delete all of `from`'s 1:1 sessions (every device). Returns the count deleted, or
+  # 0 when we can't resolve the signal-user or enumerate the store. LID-aware, so it
+  # matches wherever the session actually lives after a PN→LID migration.
+  defp wipe_identity_sessions(conn, from) do
+    with signal_user when is_binary(signal_user) <- LidMappingFileStore.signal_user(conn, from),
+         {:ok, keys} <- SessionStore.list_session_keys(conn) do
+      SessionStore.delete_user_sessions(conn, signal_user, keys)
+    else
+      _ -> 0
     end
   end
 

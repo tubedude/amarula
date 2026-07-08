@@ -119,6 +119,20 @@ defmodule Amarula.Protocol.Signal.SessionStore do
     |> Enum.reduce(0, &move_session(&1, conn, pn_prefix, lid_user, &2))
   end
 
+  @doc """
+  Delete every 1:1 session for `signal_user` (all its per-device addresses), given
+  the caller's pre-listed session `keys` (see `list_session_keys/1`). Returns the
+  number deleted. Used to drop a peer's stale sessions on an identity change before
+  re-fetching their key bundle, so nothing encrypts to the old identity in the gap.
+  """
+  @spec delete_user_sessions(Conn.t(), String.t(), [String.t()]) :: non_neg_integer()
+  def delete_user_sessions(%Conn{storage: scope, profile: profile}, signal_user, keys) do
+    prefix = signal_user <> "."
+    matching = Enum.filter(keys, &String.starts_with?(&1, prefix))
+    Enum.each(matching, &Storage.delete(scope, profile, :session, &1))
+    length(matching)
+  end
+
   # Move one PN session onto its LID address ("<lid_user>_1.<device>"), deleting the
   # PN entry only once the LID copy is durably written — a failed write keeps the PN
   # entry (a later re-migration re-copies the same record) rather than losing the

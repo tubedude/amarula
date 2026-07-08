@@ -479,6 +479,44 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       refute_receive {:frame_out, _}, 150
     end
 
+    test "encrypt from a peer (identity change) wipes the session, then force-refreshes", ctx do
+      conn = ctx.conn
+      SessionStore.store_session(conn, "10000000001.0", %{sessions: %{stale: true}})
+
+      node =
+        Node.create("notification", %{"type" => "encrypt", "from" => @jid, "id" => "N-ID"}, [
+          Node.create("identity", %{}, <<1, 2, 3>>)
+        ])
+
+      inject(ctx, node)
+      _ack = recv_frame()
+
+      iq = recv_frame()
+      assert iq.tag == "iq"
+      assert attr(iq, "xmlns") == "encrypt"
+
+      user =
+        iq |> NodeUtils.get_binary_node_child("key") |> NodeUtils.get_binary_node_child("user")
+
+      assert attr(user, "jid") == @jid
+
+      # The stale session was wiped up front, before the refresh IQ went out.
+      assert SessionStore.load_session(conn, "10000000001.0") == nil
+    end
+
+    test "encrypt from a peer we have no session with: no refresh", ctx do
+      node =
+        Node.create("notification", %{"type" => "encrypt", "from" => @jid, "id" => "N-ID2"}, [
+          Node.create("identity", %{}, <<1, 2, 3>>)
+        ])
+
+      inject(ctx, node)
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      refute_receive {:frame_out, _}, 150
+    end
+
     test "devices: drops the cached device list so the next send re-USyncs", ctx do
       # Prime the device cache (the first send USyncs both users).
       _msg_id = complete_send(ctx, "prime the cache")

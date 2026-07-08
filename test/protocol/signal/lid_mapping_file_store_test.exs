@@ -92,4 +92,24 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStoreTest do
       assert Store.pn_for_lid(conn, @lid) == "10000000001"
     end
   end
+
+  describe "signal_user/2" do
+    test "an unmapped PN → its bare user (device suffix dropped)", %{conn: conn} do
+      assert Store.signal_user(conn, @pn) == "10000000001"
+      assert Store.signal_user(conn, "10000000001:5@s.whatsapp.net") == "10000000001"
+    end
+
+    test "a mapped PN → the LID signal-user (with the @lid `_1` domain suffix)", %{conn: conn} do
+      Store.store_mappings(conn, [{@lid, @pn}])
+      assert Store.signal_user(conn, @pn) == "20000000001_1"
+    end
+
+    test "a LID → its signal-user directly", %{conn: conn} do
+      assert Store.signal_user(conn, @lid) == "20000000001_1"
+    end
+
+    test "an undecodable jid → nil", %{conn: conn} do
+      assert Store.signal_user(conn, "not-a-jid") == nil
+    end
+  end
 end

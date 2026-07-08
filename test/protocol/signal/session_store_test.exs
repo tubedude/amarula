@@ -143,6 +143,38 @@ defmodule Amarula.Protocol.Signal.SessionStoreTest do
     end
   end
 
+  describe "delete_user_sessions/3" do
+    defp delete_user(conn, signal_user) do
+      {:ok, keys} = SessionStore.list_session_keys(conn)
+      SessionStore.delete_user_sessions(conn, signal_user, keys)
+    end
+
+    test "deletes every device session for the user and returns the count", %{conn: conn} do
+      :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{d: 0}})
+      :ok = SessionStore.store_session(conn, "199999.2", %{sessions: %{d: 2}})
+      :ok = SessionStore.store_session(conn, "188888.0", %{sessions: %{other: true}})
+
+      assert 2 == delete_user(conn, "199999")
+
+      assert SessionStore.load_session(conn, "199999.0") == nil
+      assert SessionStore.load_session(conn, "199999.2") == nil
+      # a different user is untouched
+      assert SessionStore.load_session(conn, "188888.0") == %{sessions: %{other: true}}
+    end
+
+    test "returns 0 when the user has no session", %{conn: conn} do
+      assert 0 == delete_user(conn, "199999")
+    end
+
+    test "the '.' boundary spares a longer id sharing the prefix", %{conn: conn} do
+      :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{d: 0}})
+      :ok = SessionStore.store_session(conn, "1999990.0", %{sessions: %{bystander: true}})
+
+      assert 1 == delete_user(conn, "199999")
+      assert SessionStore.load_session(conn, "1999990.0") == %{sessions: %{bystander: true}}
+    end
+  end
+
   describe "list_session_keys/1" do
     test "returns every stored session address", %{conn: conn} do
       :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{a: 1}})

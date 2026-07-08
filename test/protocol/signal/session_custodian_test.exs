@@ -2,6 +2,7 @@ defmodule Amarula.Protocol.Signal.SessionCustodianTest do
   use ExUnit.Case, async: true
 
   alias Amarula.Protocol.Signal.{SessionCustodian, SessionStore}
+  alias Amarula.Protocol.Socket.ConnectionSupervisor
 
   # Same libsignal vectors session_cipher_test uses: the responder's keys + two
   # PreKeyWhisperMessages we must decrypt. Lets us drive the custodian's decrypt
@@ -103,29 +104,53 @@ defmodule Amarula.Protocol.Signal.SessionCustodianTest do
     end
   end
 
-  describe "record ops (get/take/put/delete)" do
-    test "put then get returns the record without removing it", ctx do
-      assert :ok = SessionCustodian.put_record(ctx.custodian, %{sessions: %{x: 1}})
-      assert {:ok, %{sessions: %{x: 1}}} = SessionCustodian.get_record(ctx.custodian)
+  describe "record custody (record/replace)" do
+    test "replace writes; record reads it back without removing", ctx do
+      assert :ok = SessionCustodian.replace(ctx.custodian, %{sessions: %{x: 1}})
+      assert {:ok, %{sessions: %{x: 1}}} = SessionCustodian.record(ctx.custodian)
       # still there
-      assert {:ok, %{sessions: %{x: 1}}} = SessionCustodian.get_record(ctx.custodian)
+      assert {:ok, %{sessions: %{x: 1}}} = SessionCustodian.record(ctx.custodian)
     end
 
-    test "take returns the record and removes it", ctx do
-      :ok = SessionCustodian.put_record(ctx.custodian, %{sessions: %{y: 2}})
-
-      assert {:ok, %{sessions: %{y: 2}}} = SessionCustodian.take_record(ctx.custodian)
-      assert {:ok, nil} = SessionCustodian.get_record(ctx.custodian)
+    test "replace(nil) deletes the record", ctx do
+      :ok = SessionCustodian.replace(ctx.custodian, %{sessions: %{z: 3}})
+      assert :ok = SessionCustodian.replace(ctx.custodian, nil)
+      assert {:ok, nil} = SessionCustodian.record(ctx.custodian)
     end
 
-    test "take on an empty record returns {:ok, nil}", ctx do
-      assert {:ok, nil} = SessionCustodian.take_record(ctx.custodian)
+    test "record on an empty custodian returns {:ok, nil}", ctx do
+      assert {:ok, nil} = SessionCustodian.record(ctx.custodian)
+    end
+  end
+
+  describe "for_address/3 (find-or-start)" do
+    setup do
+      instance_id = make_ref()
+
+      {:ok, sup} =
+        DynamicSupervisor.start_link(
+          strategy: :one_for_one,
+          name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)
+        )
+
+      on_exit(fn -> if Process.alive?(sup), do: Process.exit(sup, :normal) end)
+      {:ok, instance_id: instance_id}
     end
 
-    test "delete removes the record", ctx do
-      :ok = SessionCustodian.put_record(ctx.custodian, %{sessions: %{z: 3}})
-      assert :ok = SessionCustodian.delete(ctx.custodian)
-      assert {:ok, nil} = SessionCustodian.get_record(ctx.custodian)
+    test "every caller for a record converges on one custodian; records get distinct ones",
+         %{instance_id: iid, conn: conn} do
+      assert {:ok, pid} = SessionCustodian.for_address(iid, conn, "aaa.0")
+      # a second lookup for the same record returns the SAME process (the lock)
+      assert {:ok, ^pid} = SessionCustodian.for_address(iid, conn, "aaa.0")
+      # a different record gets its own custodian
+      assert {:ok, other} = SessionCustodian.for_address(iid, conn, "bbb.0")
+      assert other != pid
+    end
+
+    test "sheds itself after idling", %{conn: conn} do
+      {:ok, pid} = SessionCustodian.start_link(conn: conn, key: "idle.0", idle_ms: 40)
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 500
     end
   end
 end

@@ -42,26 +42,67 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
   is a deliberate later step, gated on every mutator provably routing through here.
   """
 
-  use GenServer
+  use GenServer, restart: :temporary
 
   alias Amarula.Conn
   alias Amarula.Protocol.Signal.{SessionBuilder, SessionCipher, SessionRecord, SessionStore}
+  alias Amarula.Protocol.Socket.ConnectionSupervisor
   alias Amarula.Storage
 
   @call_timeout 15_000
+  @idle_timeout_ms 30_000
 
   @type t :: GenServer.server()
   @type store :: map()
 
   # --- client API ---
 
-  @doc "Start a custodian for one record `key` on `conn`. (Phase 1 adds find-or-start.)"
+  @doc """
+  Find — or lazily start — the custodian for record `addr` on `conn`, registered in
+  the app-level registry under `{instance_id, {:session, addr}}` so every caller
+  (Connection and any sender) converges on the ONE custodian for that record. An
+  unregistered custodian would serialize nothing.
+  """
+  @spec for_address(reference(), Conn.t(), String.t()) :: {:ok, pid()} | {:error, term()}
+  def for_address(instance_id, conn, addr) do
+    registry = ConnectionSupervisor.registry_name(instance_id)
+    key = {instance_id, {:session, addr}}
+
+    case Registry.lookup(registry, key) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> start_custodian(instance_id, conn, addr, {:via, Registry, {registry, key}})
+    end
+  end
+
+  # A lost start race (:already_started) is success — reuse the live custodian.
+  defp start_custodian(instance_id, conn, addr, via) do
+    spec = {__MODULE__, conn: conn, key: addr, name: via, idle_ms: idle_ms(conn)}
+    supervisor = ConnectionSupervisor.name(instance_id, :custodian_supervisor)
+
+    case DynamicSupervisor.start_child(supervisor, spec) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+      :ignore -> {:error, :custodian_start_ignored}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    conn = Keyword.fetch!(opts, :conn)
-    key = Keyword.fetch!(opts, :key)
-    GenServer.start_link(__MODULE__, %{conn: conn, key: key}, Keyword.take(opts, [:name]))
+    state = %{
+      conn: Keyword.fetch!(opts, :conn),
+      key: Keyword.fetch!(opts, :key),
+      idle_ms: Keyword.get(opts, :idle_ms, @idle_timeout_ms)
+    }
+
+    GenServer.start_link(__MODULE__, state, Keyword.take(opts, [:name]))
   end
+
+  # Idle linger before the process is shed; overridable per connection via
+  # `config[:custodian_idle_ms]`. An idle-stop or crash loses nothing (write-through).
+  defp idle_ms(%{config: %{custodian_idle_ms: ms}}) when is_integer(ms) and ms >= 0, do: ms
+  defp idle_ms(_conn), do: @idle_timeout_ms
 
   @doc """
   Encrypt `plaintext` against this record, advancing the sending chain.
@@ -100,43 +141,26 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
     GenServer.call(custodian, {:inject, device, store, mode}, @call_timeout)
   end
 
-  @doc "`inject/4` then `encrypt/3` in one critical section (the atomic first-contact step)."
-  @spec inject_then_encrypt(t(), map(), binary(), store(), :always | :if_absent) ::
-          {:ok, :pkmsg | :msg, binary()} | {:error, term()}
-  def inject_then_encrypt(custodian, device, plaintext, store, mode)
-      when mode in [:always, :if_absent] do
-    GenServer.call(
-      custodian,
-      {:inject_then_encrypt, device, plaintext, store, mode},
-      @call_timeout
-    )
-  end
+  @doc "Read the raw record (`{:ok, record | nil}`) — the migration source read."
+  @spec record(t()) :: {:ok, map() | nil}
+  def record(custodian), do: GenServer.call(custodian, :record, @call_timeout)
 
-  @doc "Read the record without removing it (`{:ok, record | nil}`)."
-  @spec get_record(t()) :: {:ok, map() | nil}
-  def get_record(custodian), do: GenServer.call(custodian, :get_record, @call_timeout)
-
-  @doc "Read and delete the record in one step (`{:ok, record | nil}`) — migration source side."
-  @spec take_record(t()) :: {:ok, map() | nil}
-  def take_record(custodian), do: GenServer.call(custodian, :take_record, @call_timeout)
-
-  @doc "Blind-write a record — migration target side."
-  @spec put_record(t(), map()) :: :ok
-  def put_record(custodian, record),
-    do: GenServer.call(custodian, {:put_record, record}, @call_timeout)
-
-  @doc "Delete the record — identity-change wipe."
-  @spec delete(t()) :: :ok
-  def delete(custodian), do: GenServer.call(custodian, :delete, @call_timeout)
+  @doc """
+  Replace the record: write `record`, or **delete** it when `record` is `nil`. Used
+  by the PN→LID migration (write the LID target, then `nil` the PN source) and the
+  identity-change wipe (`nil`).
+  """
+  @spec replace(t(), map() | nil) :: :ok
+  def replace(custodian, record), do: GenServer.call(custodian, {:replace, record}, @call_timeout)
 
   # --- server ---
 
   @impl GenServer
-  def init(state), do: {:ok, state}
+  def init(state), do: {:ok, state, state.idle_ms}
 
   @impl GenServer
   def handle_call({:encrypt, plaintext, store}, _from, state) do
-    {:reply, do_encrypt(state, plaintext, store), state}
+    {:reply, do_encrypt(state, plaintext, store), state, state.idle_ms}
   end
 
   @impl GenServer
@@ -166,7 +190,7 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
           end)
       end
 
-    {:reply, reply, state}
+    {:reply, reply, state, state.idle_ms}
   end
 
   @impl GenServer
@@ -188,53 +212,30 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
         end
       end)
 
-    {:reply, reply, state}
+    {:reply, reply, state, state.idle_ms}
   end
 
   @impl GenServer
-  def handle_call({:inject_then_encrypt, device, plaintext, store, mode}, _from, state) do
-    %{conn: conn, key: key} = state
-
-    reply =
-      with_cipher(fn ->
-        record = SessionStore.load_session(conn, key) || SessionRecord.new()
-
-        record =
-          if mode == :if_absent and SessionRecord.get_open_session(record) != nil,
-            do: record,
-            else: SessionBuilder.init_outgoing(record, device, store)
-
-        {:ok, type, ciphertext, record} = SessionCipher.encrypt(record, plaintext, store)
-        SessionStore.store_session(conn, key, record)
-        {:ok, type, ciphertext}
-      end)
-
-    {:reply, reply, state}
+  def handle_call(:record, _from, %{conn: conn, key: key} = state) do
+    {:reply, {:ok, SessionStore.load_session(conn, key)}, state, state.idle_ms}
   end
 
   @impl GenServer
-  def handle_call(:get_record, _from, %{conn: conn, key: key} = state) do
-    {:reply, {:ok, SessionStore.load_session(conn, key)}, state}
-  end
-
-  @impl GenServer
-  def handle_call(:take_record, _from, %{conn: conn, key: key} = state) do
-    record = SessionStore.load_session(conn, key)
-    if record, do: delete_record(conn, key)
-    {:reply, {:ok, record}, state}
-  end
-
-  @impl GenServer
-  def handle_call({:put_record, record}, _from, %{conn: conn, key: key} = state) do
-    SessionStore.store_session(conn, key, record)
-    {:reply, :ok, state}
-  end
-
-  @impl GenServer
-  def handle_call(:delete, _from, %{conn: conn, key: key} = state) do
+  def handle_call({:replace, nil}, _from, %{conn: conn, key: key} = state) do
     delete_record(conn, key)
-    {:reply, :ok, state}
+    {:reply, :ok, state, state.idle_ms}
   end
+
+  @impl GenServer
+  def handle_call({:replace, record}, _from, %{conn: conn, key: key} = state) do
+    SessionStore.store_session(conn, key, record)
+    {:reply, :ok, state, state.idle_ms}
+  end
+
+  # Idle long enough → shed the process. Write-through means there's nothing to
+  # flush; the next op for this record re-starts a fresh custodian via for_address/3.
+  @impl GenServer
+  def handle_info(:timeout, state), do: {:stop, :normal, state}
 
   # --- internals ---
 

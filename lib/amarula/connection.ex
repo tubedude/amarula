@@ -64,8 +64,8 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Crypto.Constants
   alias Amarula.Protocol.Proto
 
-  alias Amarula.Protocol.Signal.{PreKeys, SessionInjector, SessionStore, DeviceListCache}
-  alias Amarula.Protocol.Signal.LidMappingFileStore
+  alias Amarula.Protocol.Signal.{PreKeys, SessionCustodian, SessionInjector, SessionStore}
+  alias Amarula.Protocol.Signal.{DeviceListCache, LidMappingFileStore}
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
   alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing, Notifications, Receive}
@@ -2058,7 +2058,7 @@ defmodule Amarula.Connection do
   defp maybe_inject_retry_keys(state, node) do
     case NodeUtils.get_binary_node_child(node, "keys") do
       %Node{} ->
-        SessionInjector.inject(node, state.auth_creds, conn(state))
+        SessionInjector.inject(node, state.auth_creds, conn(state), state.instance_id, :always)
         state
 
       _ ->
@@ -2406,7 +2406,7 @@ defmodule Amarula.Connection do
       # Wipe up front so a concurrent send can't encrypt to the old identity in the
       # window before the refreshed bundle lands. No session → a new contact,
       # nothing to refresh.
-      case wipe_identity_sessions(conn(state), from) do
+      case wipe_identity_sessions(state, from) do
         n when n > 0 ->
           Logger.debug("encrypt(identity) from #{from}: wiped #{n} stale session(s), refreshing")
           force_refresh_sessions(state, [from])
@@ -2421,12 +2421,27 @@ defmodule Amarula.Connection do
   # Delete all of `from`'s 1:1 sessions (every device). Returns the count deleted, or
   # 0 when we can't resolve the signal-user or enumerate the store. LID-aware, so it
   # matches wherever the session actually lives after a PN→LID migration.
-  defp wipe_identity_sessions(conn, from) do
+  defp wipe_identity_sessions(state, from) do
+    conn = conn(state)
+
     with signal_user when is_binary(signal_user) <- LidMappingFileStore.signal_user(conn, from),
          {:ok, keys} <- SessionStore.list_session_keys(conn) do
-      SessionStore.delete_user_sessions(conn, signal_user, keys)
+      prefix = signal_user <> "."
+
+      # Delete each device's session THROUGH its custodian, so an in-flight encrypt
+      # on that address serializes against the wipe and can't resurrect it.
+      keys
+      |> Enum.filter(&String.starts_with?(&1, prefix))
+      |> Enum.reduce(0, &wipe_one_session(&1, state, conn, &2))
     else
       _ -> 0
+    end
+  end
+
+  defp wipe_one_session(addr, state, conn, deleted) do
+    case SessionCustodian.replace(state.instance_id, conn, addr, nil) do
+      :ok -> deleted + 1
+      _ -> deleted
     end
   end
 
@@ -2471,21 +2486,58 @@ defmodule Amarula.Connection do
   # :already}: `:none` means the user had no PN session to move (caller may want a
   # fresh bundle instead).
   #
-  # NB: this writes session records from the Connection process. A ConversationSender
-  # mid-encrypt for the same recipient writes from ITS process, so the two can race —
-  # but inbound decrypt already writes sessions from Connection, so this only widens
-  # an existing window rather than opening a new one.
+  # Both the PN and LID records are mutated through their SessionCustodians, so a
+  # concurrent send/decrypt on either can't clobber the migration mid-flight. The
+  # residual hazard is the cross-record sequencing (read PN, then write LID) — see
+  # migrate_pn_records, which uses install_if_absent so a session a concurrent send
+  # injected on the LID address wins instead of being overwritten.
   defp migrate_pn_user(state, pn_user, lid_user, keys) do
     if MapSet.member?(state.migrated_pn_sessions, pn_user) do
       {state, :already}
     else
       state = %{state | migrated_pn_sessions: MapSet.put(state.migrated_pn_sessions, pn_user)}
 
-      case SessionStore.migrate_pn_to_lid(conn(state), pn_user, lid_user, keys) do
+      case migrate_pn_records(state, pn_user, lid_user, keys) do
         0 -> {state, :none}
         _ -> {state, :migrated}
       end
     end
+  end
+
+  # Move each of pn_user's device sessions onto the LID address THROUGH the
+  # custodians (the per-record lock). Cross-record and non-atomic, so it is written
+  # to be safe under a concurrent send that injects a LID session mid-migration:
+  #   1. read the PN record,
+  #   2. install it on the LID address ONLY IF no live session is already there
+  #      (install_if_absent) — a concurrently-injected LID session WINS; we never
+  #      clobber a live ratchet with the migrated record,
+  #   3. drop the PN source only after (2) succeeded — :ok or already-present both
+  #      mean the LID side is settled — and only count the pair when the delete
+  #      itself landed. A failure at any step leaves the PN record for a later
+  #      re-migration (idempotent: step 2 then finds the LID session and skips).
+  # (The PN side has no concurrent mutator here — inbound PN decrypts run in this
+  # same Connection process, and sends resolve to the LID address.) Returns moved.
+  defp migrate_pn_records(state, pn_user, lid_user, keys) do
+    conn = conn(state)
+    iid = state.instance_id
+    pn_prefix = pn_user <> "."
+
+    keys
+    |> Enum.filter(&String.starts_with?(&1, pn_prefix))
+    |> Enum.reduce(0, fn pn_addr, moved ->
+      device = String.replace_prefix(pn_addr, pn_prefix, "")
+      lid_addr = "#{lid_user}_1.#{device}"
+
+      with {:ok, record} when not is_nil(record) <-
+             SessionCustodian.record(iid, conn, pn_addr),
+           installed when installed in [:ok, {:skipped, :session_exists}] <-
+             SessionCustodian.install_if_absent(iid, conn, lid_addr, record),
+           :ok <- SessionCustodian.replace(iid, conn, pn_addr, nil) do
+        moved + 1
+      else
+        _ -> moved
+      end
+    end)
   end
 
   # Migrate one newly-mapped {lid, pn} pair (over the batch's pre-listed `keys`),
@@ -3404,7 +3456,8 @@ defmodule Amarula.Connection do
     {:ok, messages, used_pre_key_ids, errors} =
       MessageDecryptor.decrypt_node(node,
         store: store,
-        conn: conn(state)
+        conn: conn(state),
+        instance_id: state.instance_id
       )
 
     state = remove_used_pre_keys(state, used_pre_key_ids)
@@ -4256,7 +4309,9 @@ defmodule Amarula.Connection do
   # bundles; the injector LID-resolves the addresses so they overwrite/seed the
   # LID-keyed sessions the send path uses. Best-effort: failures are logged only.
   defp handle_tracked_iq(:assert_lid_sessions, {:ok, node}, state) do
-    injected = SessionInjector.inject(node, state.auth_creds, conn(state))
+    injected =
+      SessionInjector.inject(node, state.auth_creds, conn(state), state.instance_id, :always)
+
     Logger.debug("Force-refreshed #{injected} LID session(s)")
     state
   end

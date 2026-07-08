@@ -50,7 +50,12 @@ defmodule Amarula.Supervisor do
   def init(_init_arg) do
     children = [
       {Registry, keys: :unique, name: Amarula.ProfileRegistry},
-      {Registry, keys: :unique, name: Amarula.InstanceRegistry},
+      # Partitioned: one partition serially processes :DOWN eviction for every
+      # custodian and sender of every connection on the node. A shed burst (many
+      # custodians idling out together) could back a single partition up past the
+      # custodian find-or-start retry budget; partitioning spreads that work.
+      {Registry,
+       keys: :unique, name: Amarula.InstanceRegistry, partitions: System.schedulers_online()},
       {DynamicSupervisor, strategy: :one_for_one, name: connections_supervisor()}
     ]
 

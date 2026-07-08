@@ -100,17 +100,12 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   alias Amarula.Protocol.Signal.{
     DeviceListCache,
     LidMappingFileStore,
-    SessionCipher,
+    SessionCustodian,
     SessionInjector,
     SessionStore
   }
 
-  alias Amarula.Protocol.Signal.Group.{
-    GroupCipher,
-    GroupSessionBuilder,
-    SenderKeyName,
-    SenderKeyStore
-  }
+  alias Amarula.Protocol.Signal.Group.SenderKeyName
 
   alias Amarula.Connection
   alias Amarula.Protocol.USync
@@ -204,6 +199,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       cm: Keyword.fetch!(opts, :cm),
       conn: conn,
       creds: Keyword.fetch!(opts, :creds),
+      instance_id: Keyword.fetch!(opts, :instance_id),
       idle_ms: idle_ms(conn)
     }
 
@@ -290,6 +286,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       cm: state.cm,
       conn: state.conn,
       creds: state.creds,
+      instance_id: state.instance_id,
       kind: kind,
       msg_id: msg_id,
       target_jid: jid,
@@ -553,7 +550,9 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       Logger.debug("Fetching bundles for #{length(missing)} device(s)")
 
       with {:ok, reply} <- fetch_bundles(ctx, Enum.map(missing, & &1.jid)) do
-        SessionInjector.inject(reply, ctx.creds, ctx.conn)
+        # :if_absent — a concurrent inbound pkmsg may have established the session
+        # while we were fetching; the custodian re-checks and keeps the live one.
+        SessionInjector.inject(reply, ctx.creds, ctx.conn, ctx.instance_id, :if_absent)
         {:ok, ctx}
       end
     end
@@ -598,20 +597,21 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   # device as a per-device pkmsg so they can decrypt the skmsg. First send to a
   # group distributes keys to everyone; we redistribute on every send for now.
   defp encrypt(%{kind: :group, message: message} = ctx) do
-    sk_store = SenderKeyStore.build(ctx.conn)
     me_id = sender_identity(ctx)
     sender_name = SenderKeyName.from_jids(ctx.target_jid, me_id)
 
+    # Our sender key for the group is one record → route the SKDM build + skmsg
+    # encrypt through its custodian (the per-record lock).
     {:ok, skdm} =
-      GroupSessionBuilder.create_sender_key_distribution_message(
-        GroupSessionBuilder.new(sk_store),
-        sk_store,
-        ctx.target_jid,
-        me_id
-      )
+      SessionCustodian.create_skdm(ctx.instance_id, ctx.conn, sender_name, ctx.target_jid, me_id)
 
     {:ok, skmsg} =
-      GroupCipher.encrypt(sk_store, sender_name, MessageEncoder.encode(message))
+      SessionCustodian.group_encrypt(
+        ctx.instance_id,
+        ctx.conn,
+        sender_name,
+        MessageEncoder.encode(message)
+      )
 
     # The SKDM-only message, encrypted per device (the dm path). It carries no
     # text — members read the body from the group skmsg; this pkmsg only delivers
@@ -705,12 +705,13 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   defp encrypt_for_device(ctx, %{jid: device_jid}, plaintext) do
     addr = LidMappingFileStore.signal_address(ctx.conn, device_jid)
     store = SessionStore.build(ctx.creds)
-    record = SessionStore.load_session(ctx.conn, addr)
 
-    # SessionCipher.encrypt returns {:ok, ...} or raises (let-it-crash); there is
-    # no error tuple to handle.
-    {:ok, enc_type, ciphertext, record} = SessionCipher.encrypt(record, plaintext, store)
-    SessionStore.store_session(ctx.conn, addr, record)
+    # Route the load → encrypt → store through the record's custodian (the lock).
+    # The matches keep the send's let-it-crash: a missing session / cipher failure
+    # is a MatchError that fails the send pipe, exactly as the raise did before.
+    {:ok, enc_type, ciphertext} =
+      SessionCustodian.encrypt(ctx.instance_id, ctx.conn, addr, plaintext, store)
+
     {device_jid, enc_type, ciphertext}
   end
 

@@ -4,29 +4,25 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   routing in `src/Utils/decode-wa-message.ts` (`decryptMessageNode`).
 
   For each `<enc>` child it dispatches by `type`:
-    * `pkmsg` / `msg` → 1:1 Signal session cipher (`SessionCipher`)
+    * `pkmsg` / `msg` → 1:1 Signal session, decrypted through the record's
+      `SessionCustodian` (the per-record lock, so an overlapping send-side encrypt
+      can't clobber the ratchet)
     * `plaintext`     → passthrough
-    * `skmsg`         → group sender-key (not handled here yet; left to caller)
+    * `skmsg`         → group sender-key
 
   The decrypted bytes are unpadded (random-max-16) and decoded as a
-  `Proto.Message`, unwrapping `deviceSentMessage`.
-
-  Sessions are loaded/stored via `SessionStore` keyed by the sender's signal
-  address. This module is pure aside from the session file I/O.
+  `Proto.Message`, unwrapping `deviceSentMessage`. This module owns the per-message
+  work (routing, unpad, proto decode); the load → cipher → store of a record lives
+  in its custodian.
   """
 
   require Logger
 
   alias Amarula.Protocol.Binary.NodeUtils
   alias Amarula.Protocol.Proto
-  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionCipher, SessionStore}
+  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionCustodian}
 
-  alias Amarula.Protocol.Signal.Group.{
-    GroupCipher,
-    GroupSessionBuilder,
-    SenderKeyName,
-    SenderKeyStore
-  }
+  alias Amarula.Protocol.Signal.Group.SenderKeyName
 
   @doc """
   Decrypt all decryptable `<enc>` children of `node`.
@@ -39,12 +35,13 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   libsignal's `session_cipher` does via `removePreKey`. `opts` requires:
     * `:store` — the cipher store from `SessionStore.build/1`
     * `:conn` — the `Amarula.Conn` scoping session persistence
+    * `:instance_id` — to resolve each record's `SessionCustodian`
   """
   @spec decrypt_node(map(), keyword()) :: {:ok, [struct()], [integer()], [term()]}
   def decrypt_node(node, opts) do
     store = Keyword.fetch!(opts, :store)
     conn = Keyword.fetch!(opts, :conn)
-    sk_store = SenderKeyStore.build(conn)
+    instance_id = Keyword.fetch!(opts, :instance_id)
 
     from = NodeUtils.get_attr(node, "from")
     participant = NodeUtils.get_attr(node, "participant")
@@ -58,8 +55,8 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
       from: from,
       author: author,
       store: store,
-      sk_store: sk_store,
-      conn: conn
+      conn: conn,
+      instance_id: instance_id
     }
 
     {messages, used_pre_key_ids, errors} =
@@ -74,18 +71,9 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   defp reduce_enc(enc, {msgs, used_ids, errs}, ctx) do
     type = NodeUtils.get_attr(enc, "type")
 
-    case decrypt_enc(
-           type,
-           enc.content,
-           ctx.addr,
-           ctx.from,
-           ctx.author,
-           ctx.store,
-           ctx.sk_store,
-           ctx.conn
-         ) do
+    case decrypt_enc(type, enc.content, ctx) do
       {:ok, msg, pre_key_id} ->
-        maybe_process_skdm(msg, ctx.author, ctx.sk_store)
+        maybe_process_skdm(msg, ctx)
         {[msg | msgs], prepend_if(pre_key_id, used_ids), errs}
 
       {:error, reason} ->
@@ -100,59 +88,34 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
   defp prepend_if(nil, list), do: list
   defp prepend_if(value, list), do: [value | list]
 
-  defp decrypt_enc(_type, content, _addr, _from, _author, _store, _sk_store, _conn)
-       when not is_binary(content),
-       do: {:error, :no_content}
+  defp decrypt_enc(_type, content, _ctx) when not is_binary(content), do: {:error, :no_content}
 
-  defp decrypt_enc("pkmsg", content, addr, _from, _author, store, _sk_store, conn) do
-    record = SessionStore.load_session(conn, addr)
+  # 1:1 Signal: route the load → cipher → store through the record's custodian
+  # (the per-record lock), so an overlapping send-side encrypt can't clobber it.
+  defp decrypt_enc("pkmsg", content, ctx), do: decrypt_1to1(:pkmsg, content, ctx)
+  defp decrypt_enc("msg", content, ctx), do: decrypt_1to1(:msg, content, ctx)
 
-    with {:ok, plaintext, record, pre_key_id} <-
-           run_cipher(fn ->
-             SessionCipher.decrypt_pre_key_whisper_message(record, content, store)
-           end) do
-      SessionStore.store_session(conn, addr, record)
-
-      with {:ok, msg} <- decode_padded(plaintext), do: {:ok, msg, pre_key_id}
-    end
-  end
-
-  defp decrypt_enc("msg", content, addr, _from, _author, store, _sk_store, conn) do
-    with record when not is_nil(record) <- SessionStore.load_session(conn, addr),
-         {:ok, plaintext, record} <-
-           run_cipher(fn -> SessionCipher.decrypt_whisper_message(record, content, store) end) do
-      SessionStore.store_session(conn, addr, record)
-
-      with {:ok, msg} <- decode_padded(plaintext), do: {:ok, msg, nil}
-    else
-      nil -> {:error, :no_session}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp decrypt_enc("skmsg", content, _addr, from, author, _store, sk_store, _conn) do
+  defp decrypt_enc("skmsg", content, %{from: from, author: author, conn: conn, instance_id: iid}) do
     sender_key_name = SenderKeyName.from_jids(from, author)
 
-    with {:ok, plaintext} <- GroupCipher.decrypt(sk_store, sender_key_name, content),
+    with {:ok, plaintext} <- SessionCustodian.group_decrypt(iid, conn, sender_key_name, content),
          {:ok, msg} <- decode_padded(plaintext) do
       {:ok, msg, nil}
     end
   end
 
-  defp decrypt_enc("plaintext", content, _addr, _from, _author, _store, _sk_store, _conn) do
+  defp decrypt_enc("plaintext", content, _ctx) do
     with {:ok, msg} <- decode_proto(content), do: {:ok, msg, nil}
   end
 
-  defp decrypt_enc(type, _content, _addr, _from, _author, _store, _sk_store, _conn) do
-    {:error, {:unsupported_enc_type, type}}
-  end
+  defp decrypt_enc(type, _content, _ctx), do: {:error, {:unsupported_enc_type, type}}
 
-  # The Signal cipher signals failure by raising (libsignal-shaped); convert to a
-  # tuple at this one boundary so a bad <enc> becomes an error entry, not a crash.
-  defp run_cipher(fun) do
-    fun.()
-  rescue
-    e -> {:error, e}
+  defp decrypt_1to1(type, content, %{instance_id: iid, conn: conn, addr: addr, store: store}) do
+    with {:ok, plaintext, pre_key_id} <-
+           SessionCustodian.decrypt(iid, conn, addr, type, content, store),
+         {:ok, msg} <- decode_padded(plaintext) do
+      {:ok, msg, pre_key_id}
+    end
   end
 
   defp decode_padded(plaintext) do
@@ -190,25 +153,21 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
     end
   end
 
-  # Process senderKeyDistributionMessage inside a just-decrypted group message.
-  defp maybe_process_skdm(msg, author, sk_store) do
+  # Process senderKeyDistributionMessage inside a just-decrypted group message —
+  # through the sender's sender-key custodian (the per-record lock).
+  defp maybe_process_skdm(msg, %{author: author, conn: conn, instance_id: iid}) do
     skdm = Map.get(msg, :senderKeyDistributionMessage)
 
     if skdm && skdm.groupId do
-      builder = GroupSessionBuilder.new(sk_store)
+      sender_key_name = SenderKeyName.from_jids(skdm.groupId, author)
 
-      case GroupSessionBuilder.process_sender_key_distribution_message(
-             builder,
-             sk_store,
-             skdm,
-             author
-           ) do
+      case SessionCustodian.process_skdm(iid, conn, sender_key_name, skdm, author) do
         :ok ->
           :ok
 
-        {:error, reason} ->
+        error ->
           Logger.warning(
-            "Failed to process sender key distribution (author=#{author}): #{inspect(reason)}"
+            "Failed to process sender key distribution (author=#{author}): #{inspect(error)}"
           )
       end
     end

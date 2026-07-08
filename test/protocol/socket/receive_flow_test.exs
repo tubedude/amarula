@@ -68,6 +68,12 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
     # runs exactly as in production.
     instance_id = make_ref()
 
+    {:ok, _custodian_sup} =
+      DynamicSupervisor.start_link(
+        strategy: :one_for_one,
+        name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)
+      )
+
     {:ok, sup} =
       DynamicSupervisor.start_link(
         strategy: :one_for_one,

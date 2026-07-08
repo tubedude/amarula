@@ -11,6 +11,7 @@ defmodule Amarula.Protocol.Signal.SessionInjectorTest do
   alias Amarula.Protocol.Binary.Node
   alias Amarula.Protocol.Messages.MessageEncoder
   alias Amarula.Protocol.Signal.{SessionCipher, SessionInjector, SessionStore}
+  alias Amarula.Protocol.Socket.ConnectionSupervisor
 
   @bundle_path Path.expand("../../fixtures/initiator_bundle.json", __DIR__)
   @out_path Path.expand("../../fixtures/outbound_message.json", __DIR__)
@@ -22,10 +23,20 @@ defmodule Amarula.Protocol.Signal.SessionInjectorTest do
   setup do
     dir = Path.join(System.tmp_dir!(), "amarula_inject_#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(dir) end)
-    {:ok, dir: dir, conn: Amarula.TestConn.new(dir)}
+    instance_id = make_ref()
+
+    # inject routes each user's session write through its custodian.
+    {:ok, _custodian_sup} =
+      DynamicSupervisor.start_link(
+        strategy: :one_for_one,
+        name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)
+      )
+
+    {:ok, dir: dir, conn: Amarula.TestConn.new(dir), instance_id: instance_id}
   end
 
-  test "parses a bundle IQ, builds a session, encrypts a decodable message", %{conn: conn} do
+  test "parses a bundle IQ, builds a session, encrypts a decodable message",
+       %{conn: conn, instance_id: iid} do
     bundle = @bundle_path |> File.read!() |> JSON.decode!()
 
     # Bob's bundle uses raw 32B value nodes (server form); identity raw too.
@@ -55,7 +66,7 @@ defmodule Amarula.Protocol.Signal.SessionInjectorTest do
       pre_keys: %{}
     }
 
-    assert SessionInjector.inject(iq, creds, conn) == 1
+    assert SessionInjector.inject(iq, creds, conn, iid, :if_absent) == 1
 
     # Load the session the injector persisted and encrypt over it.
     addr = "5511999999999.0"

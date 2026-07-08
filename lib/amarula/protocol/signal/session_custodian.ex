@@ -367,8 +367,11 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
     # an idle-shed the next incarnation would re-read the record from storage and
     # resurrect it. Same write-through contract as store_and_cache/2.
     case delete_record(conn, key) do
-      :ok -> {:reply, :ok, %{state | cached: nil}, state.idle_ms}
-      {:error, reason} -> {:reply, {:error, {:storage_delete_failed, reason}}, state, state.idle_ms}
+      :ok ->
+        {:reply, :ok, %{state | cached: nil}, state.idle_ms}
+
+      {:error, reason} ->
+        {:reply, {:error, {:storage_delete_failed, reason}}, state, state.idle_ms}
     end
   end
 
@@ -382,7 +385,9 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
 
   @impl GenServer
   def handle_call({:group_encrypt, plaintext}, _from, %{conn: conn, key: name} = state) do
-    reply = rescue_group(fn -> GroupCipher.encrypt(SenderKeyStore.build(conn), name, plaintext) end)
+    reply =
+      rescue_group(fn -> GroupCipher.encrypt(SenderKeyStore.build(conn), name, plaintext) end)
+
     {:reply, reply, state, state.idle_ms}
   end
 
@@ -398,7 +403,13 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
       rescue_group(fn ->
         sk_store = SenderKeyStore.build(conn)
         builder = GroupSessionBuilder.new(sk_store)
-        GroupSessionBuilder.create_sender_key_distribution_message(builder, sk_store, group_id, me_id)
+
+        GroupSessionBuilder.create_sender_key_distribution_message(
+          builder,
+          sk_store,
+          group_id,
+          me_id
+        )
       end)
 
     {:reply, reply, state, state.idle_ms}
@@ -410,7 +421,13 @@ defmodule Amarula.Protocol.Signal.SessionCustodian do
       rescue_group(fn ->
         sk_store = SenderKeyStore.build(conn)
         builder = GroupSessionBuilder.new(sk_store)
-        GroupSessionBuilder.process_sender_key_distribution_message(builder, sk_store, skdm, author)
+
+        GroupSessionBuilder.process_sender_key_distribution_message(
+          builder,
+          sk_store,
+          skdm,
+          author
+        )
       end)
 
     {:reply, reply, state, state.idle_ms}

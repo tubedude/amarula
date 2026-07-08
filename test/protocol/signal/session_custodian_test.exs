@@ -101,14 +101,28 @@ defmodule Amarula.Protocol.Signal.SessionCustodianTest do
 
     test "a :msg with no session returns {:error, :no_session}", ctx do
       assert {:error, :no_session} =
-               SessionCustodian.decrypt(ctx.instance_id, ctx.conn, @addr, :msg, <<1, 2, 3>>, store())
+               SessionCustodian.decrypt(
+                 ctx.instance_id,
+                 ctx.conn,
+                 @addr,
+                 :msg,
+                 <<1, 2, 3>>,
+                 store()
+               )
     end
 
     test "a cipher failure surfaces as an error tuple, not a custodian crash", ctx do
       # Garbage pkmsg → the cipher raises → the op converts it to {:error, _};
       # the custodian stays alive for the next caller.
       assert {:error, _} =
-               SessionCustodian.decrypt(ctx.instance_id, ctx.conn, @addr, :pkmsg, <<0, 1, 2>>, store())
+               SessionCustodian.decrypt(
+                 ctx.instance_id,
+                 ctx.conn,
+                 @addr,
+                 :pkmsg,
+                 <<0, 1, 2>>,
+                 store()
+               )
 
       assert {:ok, pid} = SessionCustodian.for_address(ctx.instance_id, ctx.conn, @addr)
       assert Process.alive?(pid)
@@ -143,10 +157,15 @@ defmodule Amarula.Protocol.Signal.SessionCustodianTest do
 
   describe "record custody (record/replace)" do
     test "replace writes; record reads it back without removing", ctx do
-      assert :ok = SessionCustodian.replace(ctx.instance_id, ctx.conn, @addr, %{sessions: %{x: 1}})
-      assert {:ok, %{sessions: %{x: 1}}} = SessionCustodian.record(ctx.instance_id, ctx.conn, @addr)
+      assert :ok =
+               SessionCustodian.replace(ctx.instance_id, ctx.conn, @addr, %{sessions: %{x: 1}})
+
+      assert {:ok, %{sessions: %{x: 1}}} =
+               SessionCustodian.record(ctx.instance_id, ctx.conn, @addr)
+
       # still there
-      assert {:ok, %{sessions: %{x: 1}}} = SessionCustodian.record(ctx.instance_id, ctx.conn, @addr)
+      assert {:ok, %{sessions: %{x: 1}}} =
+               SessionCustodian.record(ctx.instance_id, ctx.conn, @addr)
     end
 
     test "replace(nil) deletes the record", ctx do

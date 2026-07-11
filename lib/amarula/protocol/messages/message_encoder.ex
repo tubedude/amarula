@@ -11,8 +11,8 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
   receive side) reads the last byte as the pad length and strips it.
   """
 
-  alias Amarula.Protocol.Proto
   alias Amarula.Protocol.Messages.{Poll, PollCrypto}
+  alias Amarula.Protocol.Proto
 
   @doc "Encode a `%Proto.Message{}` (or message map) and append random PKCS-style pad."
   @spec encode(struct() | map()) :: binary()
@@ -205,6 +205,61 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
         pollCreationMessageKey: poll_key,
         vote: vote,
         senderTimestampMs: System.system_time(:millisecond)
+      }
+    }
+  end
+
+  @doc """
+  Build a reply to a received button, list, or template prompt — the normal
+  "user taps a button" action, not originating a new prompt. `kind` picks the
+  proto (`:button`, `:list`, or `:template`); `option_id` is the chosen
+  option's id; `text` its display text; `index` its 0-indexed position
+  (`:template` only, `nil` for the others); `context` the `%Proto.ContextInfo{}`
+  referencing the original prompt (see `context_info/1`).
+
+  `ButtonsResponseMessage.selectedDisplayText` is a `oneof` field (grouped
+  under `:response`), so it's set as `{:selectedDisplayText, text}`, not a
+  plain key — `TemplateButtonReplyMessage.selectedDisplayText` and
+  `ListResponseMessage.title` are ordinary `proto3_optional` fields and take
+  the value directly.
+  """
+  @spec options_reply(
+          :button | :list | :template,
+          String.t(),
+          String.t(),
+          non_neg_integer() | nil,
+          Proto.ContextInfo.t() | nil
+        ) :: Proto.Message.t()
+  def options_reply(:button, option_id, text, _index, context) do
+    %Proto.Message{
+      buttonsResponseMessage: %Proto.Message.ButtonsResponseMessage{
+        selectedButtonId: option_id,
+        response: {:selectedDisplayText, text},
+        type: :DISPLAY_TEXT,
+        contextInfo: context
+      }
+    }
+  end
+
+  def options_reply(:template, option_id, text, index, context) do
+    %Proto.Message{
+      templateButtonReplyMessage: %Proto.Message.TemplateButtonReplyMessage{
+        selectedId: option_id,
+        selectedDisplayText: text,
+        selectedIndex: index,
+        contextInfo: context
+      }
+    }
+  end
+
+  def options_reply(:list, option_id, text, _index, context) do
+    %Proto.Message{
+      listResponseMessage: %Proto.Message.ListResponseMessage{
+        title: text,
+        singleSelectReply: %Proto.Message.ListResponseMessage.SingleSelectReply{
+          selectedRowId: option_id
+        },
+        contextInfo: context
       }
     }
   end

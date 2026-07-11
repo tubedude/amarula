@@ -274,4 +274,91 @@ defmodule AmarulaTest do
     Amarula.mark_read(conn, "x@s.whatsapp.net", ["ID1"])
     assert_received {:got, {:mark_read, "x@s.whatsapp.net", ["ID1"], nil}}
   end
+
+  describe "send_options_reply/4" do
+    defp options_prompt(kind, options, id \\ "PROMPT1") do
+      Amarula.Msg.from_proto(%Proto.Message{conversation: "irrelevant"}, %{
+        id: id,
+        channel: Amarula.Address.parse("x@s.whatsapp.net"),
+        from: Amarula.Address.parse("x@s.whatsapp.net")
+      })
+      |> Map.put(:content, %Amarula.Content.Options{kind: kind, options: options})
+    end
+
+    test "auto-derives kind/text for a :buttons prompt (normalized to :button)", %{conn: conn} do
+      prompt = options_prompt(:buttons, [%{id: "yes", text: "Yes", description: nil}])
+
+      assert {:ok, "MSGID"} = Amarula.send_options_reply(conn, prompt, "yes")
+      assert_received {:got, {:send_message, "x@s.whatsapp.net", msg}}
+
+      assert msg.buttonsResponseMessage.selectedButtonId == "yes"
+      assert msg.buttonsResponseMessage.response == {:selectedDisplayText, "Yes"}
+      assert msg.buttonsResponseMessage.type == :DISPLAY_TEXT
+      assert msg.buttonsResponseMessage.contextInfo.stanzaId == "PROMPT1"
+    end
+
+    test "auto-derives text + 0-indexed position for a :template prompt", %{conn: conn} do
+      prompt =
+        options_prompt(:template, [
+          %{id: "a", text: "First", description: nil},
+          %{id: "b", text: "Second", description: nil}
+        ])
+
+      assert {:ok, "MSGID"} = Amarula.send_options_reply(conn, prompt, "b")
+      assert_received {:got, {:send_message, _jid, msg}}
+
+      assert msg.templateButtonReplyMessage.selectedId == "b"
+      assert msg.templateButtonReplyMessage.selectedDisplayText == "Second"
+      assert msg.templateButtonReplyMessage.selectedIndex == 1
+    end
+
+    test "auto-derives title (the option's text) for a :list prompt", %{conn: conn} do
+      prompt = options_prompt(:list, [%{id: "row1", text: "Pizza", description: "cheesy"}])
+
+      assert {:ok, "MSGID"} = Amarula.send_options_reply(conn, prompt, "row1")
+      assert_received {:got, {:send_message, _jid, msg}}
+
+      assert msg.listResponseMessage.title == "Pizza"
+      assert msg.listResponseMessage.singleSelectReply.selectedRowId == "row1"
+    end
+
+    test "accepts a lightweight {jid, msg_id} ref with explicit :kind/:text/:index", %{
+      conn: conn
+    } do
+      ref = {"x@s.whatsapp.net", "PROMPT2"}
+
+      assert {:ok, "MSGID"} =
+               Amarula.send_options_reply(conn, ref, "b", kind: :template, text: "Second", index: 1)
+
+      assert_received {:got, {:send_message, "x@s.whatsapp.net", msg}}
+      assert msg.templateButtonReplyMessage.selectedId == "b"
+      assert msg.templateButtonReplyMessage.selectedDisplayText == "Second"
+      assert msg.templateButtonReplyMessage.selectedIndex == 1
+      assert msg.templateButtonReplyMessage.contextInfo.stanzaId == "PROMPT2"
+    end
+
+    test "raises when :kind can't be determined (tuple ref, no override)", %{conn: conn} do
+      ref = {"x@s.whatsapp.net", "PROMPT3"}
+
+      assert_raise ArgumentError, ~r/can't determine :kind/, fn ->
+        Amarula.send_options_reply(conn, ref, "yes", text: "Yes")
+      end
+    end
+
+    test "raises when the option id isn't found and no :text override is given", %{conn: conn} do
+      prompt = options_prompt(:buttons, [%{id: "yes", text: "Yes", description: nil}])
+
+      assert_raise ArgumentError, ~r/can't determine the display text/, fn ->
+        Amarula.send_options_reply(conn, prompt, "no")
+      end
+    end
+
+    test "raises a specific error for :interactive prompts (not supported yet)", %{conn: conn} do
+      prompt = options_prompt(:interactive, [%{id: "x", text: "X", description: nil}])
+
+      assert_raise ArgumentError, ~r/doesn't support :interactive/, fn ->
+        Amarula.send_options_reply(conn, prompt, "x")
+      end
+    end
+  end
 end

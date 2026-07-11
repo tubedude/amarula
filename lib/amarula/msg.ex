@@ -57,13 +57,15 @@ defmodule Amarula.Msg do
   | `:event`               | `Amarula.send_event/4`                               |
   | `:group_invite`        | `Amarula.send_group_invite/5`                        |
   | `:member_tag`          | `Amarula.update_member_tag/3` (group is `msg.channel`) |
+  | `:list` / `:buttons` / `:template` | `Amarula.send_options_reply/4` (pick one of the prompt's options — this replies to the prompt, it does not originate a new one) |
 
-  **Receive-only** (no originating send): `:product`, `:order`, the interactive
-  replies (`:button_response`/`:list_response`/`:template_reply`/`:interactive_response`
-  — you receive a user's choice, but originating the buttons/list isn't supported),
-  and the interactive *prompts* (`:list`/`:buttons`/`:template`/`:interactive` — you
-  receive a presented set of choices but can't send one). Event RSVP responses are
-  not yet supported either.
+  **Receive-only** (no originating send): `:product`, `:order`, and originating a
+  new `:list`/`:buttons`/`:template`/`:interactive` *prompt* — only Meta-approved
+  Business integrations may do that; a normal account can reply to one (see the
+  table above) but not send one from scratch. `:interactive_response`
+  (a native-flow reply) also has no send helper yet — `send_options_reply/4`
+  covers button/list/template replies only. Event RSVP responses are not yet
+  supported either.
 
   ## Addressing — `channel`, `from`, `to`
 

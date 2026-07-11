@@ -6,8 +6,12 @@ and the `Amarula` facade — not against this document's own bookkeeping. `Messa
 has about 90 content fields; most of the interesting ones are covered.
 
 > **Scope note:** most of the remaining unhandled fields are WhatsApp Business /
-> template UX that the server no longer lets a normal linked-device client
-> **send** (sends are rejected). Those are only worth handling on **receive**.
+> template UX. Originating a new prompt (a `buttonsMessage`/`listMessage`/
+> `templateMessage`) is not implemented — that's not a protocol restriction, it's
+> that only Meta-approved Business integrations are expected to send them, and a
+> normal account doing so risks the account. **Replying** to one you received is
+> a different, unrestricted action (a real user tapping a button), and Amarula
+> does support that — see `Amarula.send_options_reply/4`.
 
 ## Currently Implemented
 
@@ -23,6 +27,9 @@ has about 90 content fields; most of the interesting ones are covered.
   `stickerMessage`, plus the view-once wrapper, the PTV (round video note)
   variant, and album parent/child linking (`albumMessage`)
 - `eventMessage` (event creation — RSVP responses are not supported; see Gaps)
+- `buttonsResponseMessage` / `templateButtonReplyMessage` / `listResponseMessage`
+  (replying to a received button/list/template prompt — `send_options_reply/4`;
+  originating a new prompt is not implemented, see the scope note above)
 - `groupInviteMessage`, `pinInChatMessage`, `keepInChatMessage`
 - `protocolMessage`: edit (`MESSAGE_EDIT`), revoke (`REVOKE`),
   `PEER_DATA_OPERATION` (placeholder resend, on-demand history),
@@ -38,9 +45,11 @@ Plus non-`Message` surfaces: presence, chat state, read receipts, groups
   sticker, incl. PTV mapped to `:video`), protocol, sender_key, contact,
   contacts, location, poll, poll_vote
 - pin, keep, group_invite, event
-- WhatsApp Business / interactive content, receive-only: product, order,
-  button_response, list_response, template_reply, interactive_response, list,
-  buttons, template, interactive
+- WhatsApp Business / interactive content: product, order, and
+  interactive_response are receive-only. button_response, list_response, and
+  template_reply can now be originated too, via `send_options_reply/4` — see
+  above. The *prompt* types (list, buttons, template, interactive) remain
+  receive-only: replying to one is supported, originating a new one is not.
 
 Everything else falls through to `{:other, message}`. Inbound `contextInfo`
 (quoted reply + mentions) is decoded in `Amarula.Msg` regardless of message type.

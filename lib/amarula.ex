@@ -116,6 +116,7 @@ defmodule Amarula do
   """
 
   alias Amarula.Connection
+  alias Amarula.Content.Options
   alias Amarula.ProfileRegistry
   alias Amarula.Protocol.Messages.{Media, MessageEncoder}
   alias Amarula.Protocol.Proto
@@ -719,6 +720,119 @@ defmodule Amarula do
   defp resolve_creator(nil, %Proto.MessageKey{participant: p}) when is_binary(p), do: p
   defp resolve_creator(nil, %Proto.MessageKey{remoteJid: jid}), do: jid
   defp resolve_creator(creator, _key), do: Amarula.Address.to_jid!(creator)
+
+  @send_options_reply_opts NimbleOptions.new!(
+                             kind: [
+                               type: {:in, [:button, :list, :template]},
+                               doc:
+                                 "which kind of prompt this replies to. Required when `ref` isn't a full " <>
+                                   "`%Amarula.Msg{}` with `%Amarula.Content.Options{}` content, since " <>
+                                   "there's then no other way to know which proto to build."
+                             ],
+                             text: [
+                               type: :string,
+                               doc:
+                                 "the chosen option's display text. Auto-derived from `ref.content.options` " <>
+                                   "when possible; required otherwise."
+                             ],
+                             index: [
+                               type: :non_neg_integer,
+                               doc:
+                                 "the chosen option's 0-indexed position, for a `:template` prompt only. " <>
+                                   "Auto-derived the same way as `:text`."
+                             ]
+                           )
+
+  @doc """
+  Reply to a received button, list, or template prompt by selecting one of its
+  options — the normal "user taps a button" action. This does not (and cannot)
+  originate a new prompt: see `Amarula.Msg`'s "Receive-only" note — only
+  Meta-approved Business integrations may originate one, and doing so yourself
+  risks the account.
+
+  `ref` is the prompt message — typically the full `%Amarula.Msg{}` you just
+  received (with `%Amarula.Content.Options{}` content), so the chosen option's
+  display text (and, for a `:template` prompt, its index) are looked up
+  automatically from `ref.content.options` by matching `option_id`. A
+  lightweight `{jid, msg_id}` tuple works too, but then you must supply
+  `:kind` and `:text` (and `:index`, for `:template`) yourself, since the
+  original options aren't available to look up.
+
+  `option_id` is the `id` of the chosen option (an `id` from
+  `ref.content.options`).
+
+  Not yet supported: replying to an `:interactive` (native-flow) prompt —
+  those need a button name and a JSON params payload, not a simple option id.
+  Build the reply proto yourself from `msg.raw` if you need this now.
+
+  ## Options
+
+  #{NimbleOptions.docs(@send_options_reply_opts)}
+  """
+  @spec send_options_reply(conn(), message_ref(), String.t(), keyword()) :: send_result()
+  def send_options_reply(conn, ref, option_id, opts \\ []) do
+    opts = NimbleOptions.validate!(opts, @send_options_reply_opts)
+    {jid, key} = message_key(ref)
+    {kind, text, index} = resolve_option(ref, option_id, opts)
+
+    # A full %Amarula.Msg{} gets a real quote (stanzaId + participant + the
+    # inline quotedMessage), same as a text reply. A tuple ref can't go through
+    # context_info/1's :quoted tuple clause: it calls Address.to_jid!/1 on the
+    # participant unconditionally, which has no nil clause — and a 1:1 tuple
+    # ref has no participant to give it. Build the ContextInfo directly instead.
+    context =
+      case ref do
+        %Amarula.Msg{} -> MessageEncoder.context_info(quoted: ref)
+        _tuple_ref -> %Proto.ContextInfo{stanzaId: key.id, participant: key.participant}
+      end
+
+    message = MessageEncoder.options_reply(kind, option_id, text, index, context)
+    send_built(conn, jid, message)
+  end
+
+  defp resolve_option(ref, option_id, opts) do
+    known = known_option(ref, option_id)
+
+    if known[:kind] == :interactive do
+      raise ArgumentError,
+            "send_options_reply/4 doesn't support :interactive prompts yet (native-flow replies " <>
+              "need a name + JSON params, not a simple option id) — build the reply proto yourself " <>
+              "from msg.raw if you need this now"
+    end
+
+    kind =
+      opts[:kind] || known[:kind] ||
+        raise ArgumentError,
+              "send_options_reply/4: can't determine :kind for #{inspect(option_id)} — pass a " <>
+                "full %Amarula.Msg{} whose content is %Amarula.Content.Options{}, or supply the " <>
+                ":kind option"
+
+    text =
+      opts[:text] || known[:text] ||
+        raise ArgumentError,
+              "send_options_reply/4: can't determine the display text for #{inspect(option_id)} " <>
+                "(not found in ref.content.options) — supply the :text option"
+
+    {kind, text, opts[:index] || known[:index]}
+  end
+
+  defp known_option(%Amarula.Msg{content: %Options{kind: kind, options: options}}, option_id) do
+    # kind comes from the prompt as a whole, so it's known even if option_id
+    # doesn't match any of the prompt's options — only text/index need the match.
+    base = %{kind: normalize_options_kind(kind)}
+
+    case Enum.find_index(options, &(&1.id == option_id)) do
+      nil -> base
+      idx -> Map.merge(base, %{text: Enum.at(options, idx).text, index: idx})
+    end
+  end
+
+  defp known_option(_ref, _option_id), do: %{}
+
+  # Amarula.Content.Options.kind names the presented message (:buttons, plural);
+  # the reply proto is keyed by the action (:button, singular). Everything else matches.
+  defp normalize_options_kind(:buttons), do: :button
+  defp normalize_options_kind(kind), do: kind
 
   @doc "Send a contact (`display_name` + vCard string) to `jid`."
   @spec send_contact(conn(), jid(), String.t(), String.t()) :: send_result()

@@ -198,6 +198,38 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
     end
   end
 
+  describe "options_reply/5" do
+    setup do
+      {:ok, ctx: %Proto.ContextInfo{stanzaId: "PROMPT1", participant: "p@s.whatsapp.net"}}
+    end
+
+    test ":button sets the oneof response tuple, not a plain field", %{ctx: ctx} do
+      msg = MessageEncoder.options_reply(:button, "yes", "Yes", nil, ctx)
+
+      assert msg.buttonsResponseMessage.selectedButtonId == "yes"
+      assert msg.buttonsResponseMessage.response == {:selectedDisplayText, "Yes"}
+      assert msg.buttonsResponseMessage.type == :DISPLAY_TEXT
+      assert msg.buttonsResponseMessage.contextInfo == ctx
+    end
+
+    test ":template sets a plain selectedDisplayText field + selectedIndex", %{ctx: ctx} do
+      msg = MessageEncoder.options_reply(:template, "b", "Second", 1, ctx)
+
+      assert msg.templateButtonReplyMessage.selectedId == "b"
+      assert msg.templateButtonReplyMessage.selectedDisplayText == "Second"
+      assert msg.templateButtonReplyMessage.selectedIndex == 1
+      assert msg.templateButtonReplyMessage.contextInfo == ctx
+    end
+
+    test ":list sets title (plain field) + singleSelectReply.selectedRowId", %{ctx: ctx} do
+      msg = MessageEncoder.options_reply(:list, "row1", "Pizza", nil, ctx)
+
+      assert msg.listResponseMessage.title == "Pizza"
+      assert msg.listResponseMessage.singleSelectReply.selectedRowId == "row1"
+      assert msg.listResponseMessage.contextInfo == ctx
+    end
+  end
+
   describe "context_info/1 (reply + mentions)" do
     test "no quoted/mentions → nil (message stays a plain conversation)" do
       assert MessageEncoder.context_info([]) == nil

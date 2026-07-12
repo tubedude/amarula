@@ -55,5 +55,18 @@ defmodule Amarula.ProfileRegistry do
       [{pid, _}] -> pid
       [] -> nil
     end
+  rescue
+    # The default registry (`Amarula.ProfileRegistry`) is started by
+    # `Amarula.Supervisor`, which the consumer adds to their own tree — it isn't
+    # auto-started. Looking it up before it exists raises `ArgumentError` from
+    # `Registry.lookup/2`; surface a message naming the fix instead of that opaque
+    # "unknown registry" error.
+    ArgumentError ->
+      raise """
+      Amarula.Supervisor is not running. Add `Amarula.Supervisor` to your supervision \
+      tree, before any `{Amarula, …}` connection children:
+
+          children = [Amarula.Supervisor, MyApp.Bot, {Amarula, profile: :me, parent: MyApp.Bot}]
+      """
   end
 end

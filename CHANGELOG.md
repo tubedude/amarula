@@ -54,7 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       ]
 
   If it isn't running when you connect, Amarula raises with a message telling you
-  to add `Amarula.Supervisor`, instead of a `:noproc` exit.
+  to add `Amarula.Supervisor`, instead of a `:noproc` exit or an opaque
+  `unknown registry` error.
 - **The `:contacts_update` avatar event carries more.** A `picture` notification now
   surfaces `picture_id` (to fetch the new avatar) and `author` (who changed it, on
   group avatars) alongside the existing `id`/`img_url`.

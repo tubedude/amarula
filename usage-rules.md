@@ -131,10 +131,10 @@ Amarula.send_contact(conn, jid, display_name, vcard)
 # Keep `secret` to tally votes (Amarula.Protocol.Messages.Poll).
 ```
 
-Reactions/edits/deletes point at a message via a **`message_ref`** — pass either the
-**`%Amarula.Msg{}` you received** as-is, or a **`{jid, msg_id}` tuple**. (Distinct from
-`message_key`, the `Proto.MessageKey` value that `mark_read/4` and `fetch_history/4`
-take.)
+Reactions/edits/deletes — and `fetch_history/4` — point at a message via a
+**`message_ref`**: pass either the **`%Amarula.Msg{}` you received** as-is, or a
+**`{jid, msg_id}` tuple**. (`mark_read/4` is different — it takes a list of plain
+message-id strings, not a `message_ref`.)
 
 Presence/typing: `set_presence/2` (`:available`/`:unavailable`),
 `send_chatstate/3` (`:composing`/`:recording`/`:paused`), `subscribe_presence/2`,
@@ -199,7 +199,8 @@ if msg.from_me and msg.from.device == own_device, do: :ignore
 
 `:history_sync` events deliver WhatsApp's own history (chats/contacts/messages) **as
 events to store** — not a queryable archive Amarula maintains. Request older history on
-demand with `Amarula.fetch_history(conn, oldest_key, oldest_ts, count)`; it arrives
+demand with `Amarula.fetch_history(conn, oldest, oldest_ts, count)` — where `oldest`
+is a `message_ref` (a `%Amarula.Msg{}` or `{jid, msg_id}`, same as sends take); it arrives
 **asynchronously** via a later `:history_sync` event.
 
 ## Groups

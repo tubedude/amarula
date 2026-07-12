@@ -44,8 +44,11 @@ defmodule Amarula.MixProject do
     ]
   end
 
-  # ExDoc config. `mix docs` builds the HTML/epub reference; the architecture and
-  # usage guides ride along as extras so they're published, not just in-repo.
+  # ExDoc config. `mix docs` builds the HTML/epub reference; the architecture
+  # guides ride along as extras so they're published, not just in-repo.
+  # (`usage-rules.md` is deliberately NOT an extra — it ships in the hex package
+  # for consumers' agents to sync via `mix usage_rules.sync`, but it's an
+  # agent-facing spec, not a human docs page, so it stays off the ExDoc surface.)
   defp docs do
     [
       main: "readme",
@@ -73,7 +76,6 @@ defmodule Amarula.MixProject do
         "docs/LID_PN.md",
         "docs/GOING_PROD.md",
         "docs/PARITY.md",
-        "usage-rules.md",
         "CHANGELOG.md",
         "LICENSE",
         "NOTICE"

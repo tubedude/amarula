@@ -66,28 +66,45 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
     # Real per-instance sender supervisor under the app-level InstanceRegistry, so
     # the retry-resend path (`deliver_async` → per-recipient ConversationSender)
     # runs exactly as in production.
+    #
+    # Everything goes under ExUnit's test supervisor (`start_supervised!`), NOT
+    # `start_link` to the test process: ExUnit exits a finished test process with
+    # :shutdown, so a linked Connection dies concurrently with the on_exit
+    # callbacks — a `GenServer.stop` teardown then races that death and flakes on
+    # the reason mismatch. The test supervisor is shut down deterministically
+    # before on_exit callbacks run (so also before `File.rm_rf(dir)` above).
     instance_id = make_ref()
 
-    {:ok, _custodian_sup} =
-      DynamicSupervisor.start_link(
-        strategy: :one_for_one,
-        name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)
+    start_supervised!(
+      Supervisor.child_spec(
+        {DynamicSupervisor,
+         strategy: :one_for_one,
+         name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)},
+        id: :custodian_supervisor
+      )
+    )
+
+    sup =
+      start_supervised!(
+        Supervisor.child_spec(
+          {DynamicSupervisor,
+           strategy: :one_for_one,
+           name: ConnectionSupervisor.name(instance_id, :sender_supervisor)},
+          id: :sender_supervisor
+        )
       )
 
-    {:ok, sup} =
-      DynamicSupervisor.start_link(
-        strategy: :one_for_one,
-        name: ConnectionSupervisor.name(instance_id, :sender_supervisor)
+    pid =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Connection,
+           {config,
+            name: :"recv_conn_#{:erlang.phash2(instance_id)}",
+            instance_id: instance_id,
+            parent_pid: self()}},
+          restart: :temporary
+        )
       )
-
-    {:ok, pid} =
-      Connection.start_link(config,
-        name: :"recv_conn_#{:erlang.phash2(instance_id)}",
-        instance_id: instance_id,
-        parent_pid: self()
-      )
-
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     {:ok, pid: pid, conn: Amarula.Conn.new(config), supervisor: sup, config: config}
   end

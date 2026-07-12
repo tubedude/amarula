@@ -49,9 +49,14 @@ defmodule Amarula.Protocol.Groups.Notification do
 
   # --- change decoding ---
 
-  defp action(%Node{tag: tag} = child) when tag in ~w(add remove promote demote leave) do
-    {:participants, String.to_atom(tag), participants(child)}
-  end
+  # Map the tag to a fixed atom explicitly — never String.to_atom/1 on wire input,
+  # even behind a guard (a later guard change must not become an atom-exhaustion
+  # vector). An unlisted tag falls through to the {:other, tag} clause below.
+  defp action(%Node{tag: "add"} = child), do: {:participants, :add, participants(child)}
+  defp action(%Node{tag: "remove"} = child), do: {:participants, :remove, participants(child)}
+  defp action(%Node{tag: "promote"} = child), do: {:participants, :promote, participants(child)}
+  defp action(%Node{tag: "demote"} = child), do: {:participants, :demote, participants(child)}
+  defp action(%Node{tag: "leave"} = child), do: {:participants, :leave, participants(child)}
 
   defp action(%Node{tag: "subject"} = child),
     do: {:subject, NodeUtils.get_attr(child, "subject")}

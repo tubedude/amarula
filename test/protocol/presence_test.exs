@@ -137,6 +137,23 @@ defmodule Amarula.Protocol.PresenceTest do
       assert {:error, :invalid} =
                Presence.parse_update(%Node{tag: "chatstate", attrs: %{}, content: nil})
     end
+
+    # The child tag is unconstrained wire input — an unknown tag must be rejected,
+    # never atomized (atoms are not garbage collected; a peer streaming novel tags
+    # would exhaust the atom table).
+    test "chatstate with an unknown child tag is rejected, not atomized" do
+      node = %Node{
+        tag: "chatstate",
+        attrs: %{"from" => "999@lid"},
+        content: [%Node{tag: "garbage_tag_from_the_wire", attrs: %{}, content: nil}]
+      }
+
+      assert {:error, :invalid} = Presence.parse_update(node)
+
+      assert_raise ArgumentError, fn ->
+        String.to_existing_atom("garbage_tag_from_the_wire")
+      end
+    end
   end
 
   test "subscribe/2" do

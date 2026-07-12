@@ -98,12 +98,14 @@ defmodule Amarula.Connection do
     :server_response_timeout_timer,
     :qr_refs,
     :qr_timer,
+    :task_supervisor,
     pending_iqs: %{},
     msg_retry_counts: %{},
     pending_sends: %{},
     pending_acks: %{},
     pending_media_retries: %{},
     sender_monitors: %{},
+    media_tasks: %{},
     migrated_pn_sessions: MapSet.new()
   ]
 
@@ -146,6 +148,11 @@ defmodule Amarula.Connection do
           server_response_timeout_timer: reference() | nil,
           qr_refs: [String.t()],
           qr_timer: reference() | nil,
+          # Connection-owned Task.Supervisor (started linked in init) running the
+          # off-process work — media prep and history-sync downloads. Linked, so it
+          # dies with Connection and takes its in-flight tasks with it; nil only for
+          # a not-yet-initialised state.
+          task_supervisor: pid() | nil,
           pending_iqs: %{String.t() => {atom(), reference()}},
           msg_retry_counts: %{String.t() => non_neg_integer()},
           pending_sends: %{
@@ -167,6 +174,10 @@ defmodule Amarula.Connection do
           # One monitor per recipient with a live sender holding parked sends.
           # On the sender's :DOWN we fail every pending_acks entry for that jid.
           sender_monitors: %{String.t() => reference()},
+          # In-flight media-prep tasks (async_nolink), keyed by the task's monitor
+          # ref → the parked caller `from` + target jid. The task result replies via
+          # the {ref, result} message; a task crash replies via its {:DOWN, ref, …}.
+          media_tasks: %{reference() => {GenServer.from(), String.t()}},
           # Media re-upload requests awaiting the phone's mediaretry notification,
           # keyed by msg id. Each holds the consumer's `from`, the media_key needed
           # to decrypt the reply, and the timeout timer.
@@ -592,6 +603,13 @@ defmodule Amarula.Connection do
     conn = normalize_conn(arg)
     config = conn.config
 
+    # A Connection-owned Task.Supervisor for off-process work (media prep,
+    # history-sync downloads). Started LINKED here so it dies with this Connection
+    # — killing any in-flight task rather than leaving it to run against a stale
+    # pid — and a fresh one is created on restart. Every Connection has one, tree
+    # or bare, so there is no unsupervised fallback path.
+    {:ok, task_supervisor} = Task.Supervisor.start_link([])
+
     # Resolve auth credentials, in precedence order:
     #   1. an explicit config[:auth] (tests / advanced callers that manage creds);
     #   2. the profile's stored creds (the normal path — Amarula owns persistence
@@ -628,7 +646,8 @@ defmodule Amarula.Connection do
       waiting_for_server_response: false,
       server_response_timeout_timer: nil,
       qr_refs: [],
-      qr_timer: nil
+      qr_timer: nil,
+      task_supervisor: task_supervisor
     }
 
     # Own the retry cache's local resource (the ETS table, for the default
@@ -873,28 +892,21 @@ defmodule Amarula.Connection do
 
     # Media encrypt+upload are heavy and themselves round-trip through Connection
     # (the media_conn IQ) — running them inline would block (and deadlock on the
-    # self-call). Do them in a Task so Connection stays responsive to that IQ; the
-    # Task hands the ready media message back via {:send_media_ready, ...}, where
-    # the normal async dispatch (forwarding the caller's `from`) takes over. On a
-    # failure the Task replies the error to `from` directly.
-    Task.start(fn ->
-      # `from` must always get an answer — a raise here would otherwise leave the
-      # caller hanging for the full send-call timeout.
-      try do
+    # self-call). Run them in an async_nolink task under our Task.Supervisor and
+    # monitor it: the task returns {:ok, message} | {:error, reason} (no rescue —
+    # the pipeline's errors are already tuples), delivered as {ref, result}; an
+    # unexpected raise surfaces as {:DOWN, ref, …}. Either way `from` is answered
+    # (see the handle_info clauses below), so the caller never hangs.
+    task =
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
         with {:ok, enc} <- Media.encrypt(data, type),
              {:ok, uploaded} <- Media.upload(conn_pid, enc.enc, enc.file_enc_sha256, type) do
           info = Map.merge(enc, Map.put(uploaded, :mimetype, mimetype))
-          message = MessageEncoder.media(type, info, opts)
-          send(conn_pid, {:send_media_ready, jid, message, from})
-        else
-          {:error, reason} -> GenServer.reply(from, {:error, reason})
+          {:ok, MessageEncoder.media(type, info, opts)}
         end
-      rescue
-        e -> GenServer.reply(from, {:error, {:media_prepare_failed, e}})
-      end
-    end)
+      end)
 
-    {:noreply, state}
+    {:noreply, put_in(state.media_tasks[task.ref], {from, jid})}
   end
 
   @impl GenServer
@@ -1041,20 +1053,28 @@ defmodule Amarula.Connection do
     {:noreply, new_state}
   end
 
-  # WebSocket control frames must be handled first - they're protocol-level and shouldn't be decrypted
-  # Most specific pattern: control frame close (0x88)
+  # These two clauses do NOT catch WebSocket control frames — despite the 0x88/0x8A
+  # bytes, that framing is a red herring. WebSockex demuxes the frame layer before
+  # we see it: a genuine close arrives as a {:ws_event, _, {:close, _}} event
+  # (handled above) and a ping/pong as {:ws_event, _, {:ping | :pong, _}} — never as
+  # {:frame, data}. Here `data` is always an already-decoded text/binary *payload*,
+  # not raw frame bytes with an opcode. So these fire only when the payload is
+  # exactly the lone byte 0x88 / 0x8A; we match it EXACTLY (not as a prefix) so a
+  # real Noise/binary-node payload that merely begins with that byte isn't swallowed.
   @impl GenServer
-  def handle_info({:ws_event, _ws_pid, {:frame, <<136, _::binary>>}}, state) do
-    Logger.warning("Received WebSocket close frame (0x88) - server closing connection")
-    # This is a protocol-level close, not an application message
-    # Let WebSocket client handle the close event
+  def handle_info({:ws_event, _ws_pid, {:frame, <<136>>}}, state) do
+    Logger.warning(
+      "Dropping a lone 0x88 payload byte (not a socket close — see {:close, _} above)"
+    )
+
     {:noreply, state}
   end
 
-  # Most specific pattern: control frame pong (0x8A)
   @impl GenServer
-  def handle_info({:ws_event, _ws_pid, {:frame, <<138, _::binary>>}}, state) do
-    Logger.debug("Received WebSocket pong frame")
+  def handle_info({:ws_event, _ws_pid, {:frame, <<138>>}}, state) do
+    # A lone 0x8A payload byte. It's still inbound traffic, so treat it as a
+    # liveness signal and bump last_recv_time, but decode nothing.
+    Logger.debug("Dropping a lone 0x8A payload byte (not a pong)")
     {:noreply, %{state | last_recv_time: System.monotonic_time(:millisecond)}}
   end
 
@@ -1128,11 +1148,23 @@ defmodule Amarula.Connection do
     {:noreply, process_server_node(state, node)}
   end
 
-  # The media encrypt+upload Task finished; dispatch the ready media message to
-  # the recipient's ConversationSender, forwarding the original caller's `from`.
+  # A media-prep task finished. Demonitor+flush so its trailing {:DOWN, :normal}
+  # doesn't also fire, then either dispatch the send (forwarding `from`, as any
+  # other send) or reply the pipeline's {:error, reason} to the caller.
   @impl GenServer
-  def handle_info({:send_media_ready, jid, message, from}, state) do
-    dispatch_send(state, SendOps.media(jid, message), from)
+  def handle_info({ref, result}, state) when is_map_key(state.media_tasks, ref) do
+    Process.demonitor(ref, [:flush])
+    {{from, jid}, media_tasks} = Map.pop(state.media_tasks, ref)
+    state = %{state | media_tasks: media_tasks}
+
+    case result do
+      {:ok, message} ->
+        dispatch_send(state, SendOps.media(jid, message), from)
+
+      {:error, reason} ->
+        GenServer.reply(from, {:error, reason})
+        {:noreply, state}
+    end
   end
 
   @impl GenServer
@@ -1255,6 +1287,17 @@ defmodule Amarula.Connection do
       Logger.debug("WebSocket client #{inspect(pid)} down (#{inspect(reason)}) — already handled")
       {:noreply, state}
     end
+  end
+
+  # A media-prep task crashed before returning a result (async_nolink, so the exit
+  # doesn't reach us as a link — only this monitor DOWN). Answer the parked caller
+  # with a clean error instead of letting it hang to the send-call timeout.
+  @impl GenServer
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state)
+      when is_map_key(state.media_tasks, ref) do
+    {{from, _jid}, media_tasks} = Map.pop(state.media_tasks, ref)
+    GenServer.reply(from, {:error, {:media_prepare_failed, reason}})
+    {:noreply, %{state | media_tasks: media_tasks}}
   end
 
   # A per-recipient Sender died. If it crashed mid-pipe it never reported
@@ -3665,13 +3708,15 @@ defmodule Amarula.Connection do
 
   # Download + decode the history-sync blob(s) these messages reference and emit
   # the chats/contacts to the consumer. The download is a network call; run it in
-  # a Task so the receive path isn't blocked, and emit from there.
+  # a task so the receive path isn't blocked, and emit from there.
   defp download_history_sync(state, messages) do
     parent = self()
     notifications = Enum.flat_map(messages, &history_notification/1)
 
     for hsn <- notifications do
-      Task.start(fn ->
+      # Fire-and-forget under our Task.Supervisor (no caller to answer). Supervised,
+      # so a Connection death takes the download with it — never orphaned.
+      Task.Supervisor.start_child(state.task_supervisor, fn ->
         case HistorySync.fetch(hsn) do
           {:ok, result} ->
             send(parent, {:history_sync_result, result})

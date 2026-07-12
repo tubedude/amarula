@@ -328,7 +328,11 @@ defmodule AmarulaTest do
       ref = {"x@s.whatsapp.net", "PROMPT2"}
 
       assert {:ok, "MSGID"} =
-               Amarula.send_options_reply(conn, ref, "b", kind: :template, text: "Second", index: 1)
+               Amarula.send_options_reply(conn, ref, "b",
+                 kind: :template,
+                 text: "Second",
+                 index: 1
+               )
 
       assert_received {:got, {:send_message, "x@s.whatsapp.net", msg}}
       assert msg.templateButtonReplyMessage.selectedId == "b"

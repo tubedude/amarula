@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] - 2026-07-07
+## [0.5.0] - 2026-07-11
 
 ### Added
 
@@ -15,6 +15,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and returns a refreshed `%Amarula.Content.Media{}` (new `direct_path`) you can hand
   straight back to `download_media/1`. Returns `{:error, :not_on_phone}` if the phone
   no longer has it, `{:error, :timeout}` if it never answers.
+- **`Amarula.send_options_reply/4` — reply to a button/list/template prompt.** Covers
+  the normal "user taps a button" action (originating a new prompt remains
+  unsupported). Pass the received `%Amarula.Msg{}` plus the tapped option's id and
+  everything else — which proto to build, the display text, a template's 0-indexed
+  button position — is auto-derived from the message's `content.options`:
+
+      Amarula.send_options_reply(conn, msg, "yes")
+
+  A lightweight `{jid, msg_id}` ref also works, with `:kind`/`:text`/`:index` supplied
+  explicitly since the original prompt's options aren't available to look up.
+  `:interactive` (native-flow) prompts are explicitly rejected with a clear error, not
+  silently mis-encoded.
+- **`SessionCustodian` — per-record serialization for Signal sessions (internal).** A
+  per-record GenServer now funnels every load-modify-store of one Signal session
+  through a single process, so the send path (`ConversationSender.encrypt`) and the
+  receive path (`Connection` decrypt/migrate/wipe) can no longer clobber each other's
+  whole-record write. Closes a real race: concurrent encrypt/decrypt against the same
+  session could corrupt the ratchet state. No public API change; three new
+  benchmarks (`scripts/bench_*.exs`) demonstrate both the race and the fix against
+  real Signal traffic, no mocks.
 
 ### Changed
 

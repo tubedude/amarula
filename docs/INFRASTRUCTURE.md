@@ -315,15 +315,25 @@ can't clobber a live ratchet.
 ## Sending
 
 `Amarula.send_text/3` → `Connection` → the recipient's `ConversationSender`. The
-sender runs a linear `ctx → ctx` pipe:
+sender first runs the **send-step plugin pipeline** (which may transform the
+message or halt the send outright — the built-in retry-cache step records here),
+then a linear `ctx → ctx` pipe:
 
 ```
-resolve_devices    (device cache, else USync)
-  → ensure_sessions  (stored sessions, else prekey-bundle fetch)
-    → encrypt        (per device; plain vs DSM; through the record's
-                       SessionCustodian — see [Session Custody](#session-custody))
-      → relay        (build the frame, send the <participants> stanza)
+send-steps         (plugin pipeline; may transform or halt — e.g. retry-cache)
+  → resolve_devices  (device cache, else USync)
+    → ensure_sessions  (stored sessions, else a prekey-bundle fetch injected
+                         through the record's SessionCustodian)
+      → encrypt        (per device; plain vs DSM; each ratchet advanced through
+                         the record's SessionCustodian — see
+                         [Session Custody](#session-custody))
+        → relay        (build the frame, send the <participants> stanza)
 ```
+
+Every step that mutates a Signal record — the `ensure_sessions` bundle inject and
+each per-device `encrypt`, and on the group path both the sender-key distribution
+build and the one-shot skmsg encrypt — funnels through that record's
+`SessionCustodian`. The sender itself never writes crypto state directly.
 
 **Why a process per recipient.** The sender holds no state of its own — not even the
 ratchet, which lives in `SessionCustodian`. So what does its per-recipient lock
@@ -332,9 +342,10 @@ protect?
 It keeps one recipient's whole *pipeline* — device resolution, session ensure,
 per-device encrypt, relay — from interleaving with itself. Two concurrent calls to
 the same recipient can't race on device-list state or emit an out-of-order
-`<participants>` stanza. Serial *within* a recipient, parallel *across* recipients —
-same granularity as before; what it protects just narrowed (the ratchet moved to the
-custodian).
+`<participants>` stanza. Serial *within* a recipient, parallel *across* recipients.
+Ratchet safety is a separate concern, owned one level down by the
+`SessionCustodian` (see [Session Custody](#session-custody)); the sender's lock is
+purely about the pipeline, not the crypto record.
 
 Because the sender holds nothing, it is cheap to lose and respawn. It gets current
 credentials handed to it per send — creds change after login, so a cached snapshot
@@ -375,7 +386,7 @@ The lifecycle of one parked send:
 | Stage | Where | What happens |
 | --- | --- | --- |
 | **1. Park** | `Connection`, at dispatch | Mint the `msg_id`; store the caller's `from` in `pending_acks` (keyed by `msg_id`, with the recipient JID and a freshly-armed **ack-timeout timer**); dispatch to the sender. `Connection` does **not** block — it returns `{:noreply, …}` and is free for other sends. The wait for the server is fully set up here, before the sender even runs. |
-| **2. Run** | Sender | Run the pipe (`resolve_devices → ensure_sessions → encrypt → relay`), blocking on `Connection.query_iq` round-trips *in the sender's own process* so `Connection` stays free to route those IQ replies. |
+| **2. Run** | Sender | Run the send-steps plugin pipeline, then the pipe (`resolve_devices → ensure_sessions → encrypt → relay`), blocking on `Connection.query_iq` round-trips *in the sender's own process* so `Connection` stays free to route those IQ replies. A plugin halt short-circuits before the pipe and is reported as a failure (step 3). |
 | **3. Report back** | Sender | **Asymmetric — see below.** On success, report nothing. On failure, report `{:send_failed, msg_id, reason}`. |
 | **4. Resolve** | `Connection`, on inbound `<ack>` | A plain ack resolves the success shape (default `{:ok, msg_id}`); an ack with an `error` attr resolves `{:error, {:send_rejected, code}}`. Either way the entry is dropped, so a duplicate ack is a harmless no-op. |
 | **5. Or time out** | `Connection` | No confirmation within `@ack_timeout_ms` (default 30s, overridable via `config.ack_timeout_ms`) → `{:error, :ack_timeout}`. |

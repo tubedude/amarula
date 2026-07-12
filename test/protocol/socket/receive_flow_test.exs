@@ -22,7 +22,10 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
 
   alias Amarula.Protocol.Auth.AuthUtils
   alias Amarula.Protocol.Binary.{Node, NodeUtils}
+  alias Amarula.Protocol.Crypto.Crypto
+  alias Amarula.Protocol.Messages.Media
   alias Amarula.Protocol.Proto
+  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionStore}
   alias Amarula.Protocol.Socket.ConnectionSupervisor
   alias Amarula.Connection
 
@@ -64,6 +67,12 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
     # the retry-resend path (`deliver_async` → per-recipient ConversationSender)
     # runs exactly as in production.
     instance_id = make_ref()
+
+    {:ok, _custodian_sup} =
+      DynamicSupervisor.start_link(
+        strategy: :one_for_one,
+        name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)
+      )
 
     {:ok, sup} =
       DynamicSupervisor.start_link(
@@ -349,6 +358,65 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
     )
   end
 
+  # --- PN→LID session migration (#15) ---
+
+  describe "PN→LID session migration" do
+    test "moves a PN sender's session onto the LID address before decrypting", ctx do
+      conn = ctx.conn
+
+      # We know this contact's PN and LID are the same account and hold a live
+      # PN-keyed Signal session for them.
+      SessionStore.store_session(conn, "10000000001.0", %{sessions: %{live: true}})
+      LidMappingFileStore.store_mappings(conn, [{"20000000009@lid", @jid}])
+
+      # An inbound message from the PN address drives handle_message; the retry
+      # receipt it emits (undecryptable) is our barrier that migration has run.
+      inject(ctx, undecryptable_message("MIG1", @jid))
+      assert recv_frame().tag == "receipt"
+
+      # The ratchet moved to the LID signal-address; the PN entry is gone.
+      assert SessionStore.load_session(conn, "20000000009_1.0") == %{sessions: %{live: true}}
+      assert SessionStore.load_session(conn, "10000000001.0") == nil
+    end
+
+    test "leaves a PN sender with no known LID untouched", ctx do
+      conn = ctx.conn
+      SessionStore.store_session(conn, "10000000001.0", %{sessions: %{live: true}})
+
+      inject(ctx, undecryptable_message("MIG2", @jid))
+      assert recv_frame().tag == "receipt"
+
+      # No mapping → no migration; the session stays under the PN address.
+      assert SessionStore.load_session(conn, "10000000001.0") == %{sessions: %{live: true}}
+    end
+
+    # Send-path handler (migrate_pn_sessions/2, a synchronous call). The invariant
+    # the feature rests on: a contact whose PN session we could move must NOT be
+    # force-refreshed (that would clobber the moved ratchet); only a contact with
+    # nothing to move falls back to a fresh bundle fetch.
+    test "send-path: a contact with a PN session is re-keyed, with no bundle fetch", ctx do
+      conn = ctx.conn
+      SessionStore.store_session(conn, "10000000001.0", %{sessions: %{live: true}})
+
+      assert :ok = Connection.migrate_pn_sessions(ctx.pid, [{"20000000009@lid", @jid}])
+
+      # Ratchet moved to the LID address; the PN entry is gone.
+      assert SessionStore.load_session(conn, "20000000009_1.0") == %{sessions: %{live: true}}
+      assert SessionStore.load_session(conn, "10000000001.0") == nil
+      # :migrated → NO force-refresh IQ.
+      refute_receive {:frame_out, _}, 100
+    end
+
+    test "send-path: a contact with no PN session triggers a bundle fetch", ctx do
+      assert :ok = Connection.migrate_pn_sessions(ctx.pid, [{"20000000009@lid", @jid}])
+
+      # :none → a force-refresh encrypt IQ goes out for the LID.
+      iq = recv_frame()
+      assert iq.tag == "iq"
+      assert attr(iq, "xmlns") == "encrypt"
+    end
+  end
+
   # --- notification dispatch ---
 
   describe "notification dispatch" do
@@ -408,6 +476,44 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       node =
         Node.create("notification", %{"type" => "encrypt", "from" => @server, "id" => "N3"}, [
           Node.create("count", %{"value" => "500"}, nil)
+        ])
+
+      inject(ctx, node)
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      refute_receive {:frame_out, _}, 150
+    end
+
+    test "encrypt from a peer (identity change) wipes the session, then force-refreshes", ctx do
+      conn = ctx.conn
+      SessionStore.store_session(conn, "10000000001.0", %{sessions: %{stale: true}})
+
+      node =
+        Node.create("notification", %{"type" => "encrypt", "from" => @jid, "id" => "N-ID"}, [
+          Node.create("identity", %{}, <<1, 2, 3>>)
+        ])
+
+      inject(ctx, node)
+      _ack = recv_frame()
+
+      iq = recv_frame()
+      assert iq.tag == "iq"
+      assert attr(iq, "xmlns") == "encrypt"
+
+      user =
+        iq |> NodeUtils.get_binary_node_child("key") |> NodeUtils.get_binary_node_child("user")
+
+      assert attr(user, "jid") == @jid
+
+      # The stale session was wiped up front, before the refresh IQ went out.
+      assert SessionStore.load_session(conn, "10000000001.0") == nil
+    end
+
+    test "encrypt from a peer we have no session with: no refresh", ctx do
+      node =
+        Node.create("notification", %{"type" => "encrypt", "from" => @jid, "id" => "N-ID2"}, [
+          Node.create("identity", %{}, <<1, 2, 3>>)
         ])
 
       inject(ctx, node)
@@ -805,6 +911,111 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       chats: [],
       contacts: [],
       push_names: Keyword.fetch!(opts, :push_names)
+    }
+  end
+
+  describe "media retry (server-error receipt ↔ mediaretry notification)" do
+    test "sends a server-error receipt, then resolves the caller with the refreshed path", ctx do
+      media_key = :crypto.strong_rand_bytes(32)
+      msg = media_msg(media_key)
+
+      # retry_media/2 parks on a GenServer.call — drive it from a Task so the test
+      # stays free to observe the receipt and inject the phone's reply.
+      task = Task.async(fn -> Amarula.retry_media(ctx.pid, msg) end)
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "type") == "server-error"
+      # Addressed to our own (non-AD) user jid.
+      assert attr(receipt, "to") == @me_jid
+
+      rmr = NodeUtils.get_binary_node_child(receipt, "rmr")
+      assert attr(rmr, "jid") == @jid
+      assert attr(rmr, "from_me") == "false"
+      # 1:1 chat → no participant on the <rmr>.
+      assert attr(rmr, "participant") == nil
+
+      inject(ctx, mediaretry_notification(msg.id, media_key, :SUCCESS, "/v/new/path"))
+
+      assert {:ok, %Amarula.Content.Media{direct_path: "/v/new/path", media_key: ^media_key}} =
+               Task.await(task)
+    end
+
+    test "surfaces <error code=2> as {:error, :not_on_phone}", ctx do
+      media_key = :crypto.strong_rand_bytes(32)
+      msg = media_msg(media_key)
+
+      task = Task.async(fn -> Amarula.retry_media(ctx.pid, msg) end)
+      _receipt = recv_frame()
+
+      error_notif = %Node{
+        tag: "notification",
+        attrs: %{"id" => msg.id, "type" => "mediaretry", "from" => @jid},
+        content: [%Node{tag: "error", attrs: %{"code" => "2"}, content: nil}]
+      }
+
+      inject(ctx, error_notif)
+      assert {:error, :not_on_phone} = Task.await(task)
+    end
+
+    test "a non-media message is rejected in-process, never touching the socket", ctx do
+      text = %Amarula.Msg{
+        channel: Amarula.Address.pn("10000000001"),
+        type: :text,
+        content: "hi",
+        raw: %Proto.Message{}
+      }
+
+      assert {:error, :not_media} = Amarula.retry_media(ctx.pid, text)
+      refute_receive {:frame_out, _}, 100
+    end
+  end
+
+  # A minimal 1:1 media %Msg{} to retry, keyed by `media_key`.
+  defp media_msg(media_key) do
+    %Amarula.Msg{
+      id: "MEDIARETRY1",
+      channel: Amarula.Address.pn("10000000001"),
+      from: Amarula.Address.pn("10000000001"),
+      to: Amarula.Address.pn("10000000002"),
+      from_me: false,
+      type: :media,
+      content: %Amarula.Content.Media{
+        kind: :image,
+        media_key: media_key,
+        direct_path: "/old/path"
+      },
+      raw: %Proto.Message{}
+    }
+  end
+
+  # A <notification type="mediaretry"> carrying a GCM-encrypted MediaRetryNotification,
+  # exactly as the phone answers our server-error receipt.
+  defp mediaretry_notification(msg_id, media_key, result, direct_path) do
+    iv = :crypto.strong_rand_bytes(12)
+
+    payload =
+      Proto.MediaRetryNotification.encode(%Proto.MediaRetryNotification{
+        stanzaId: msg_id,
+        result: result,
+        directPath: direct_path
+      })
+
+    {:ok, enc_p} = Crypto.aes_encrypt_gcm(payload, Media.retry_key(media_key), iv, msg_id)
+
+    %Node{
+      tag: "notification",
+      attrs: %{"id" => msg_id, "type" => "mediaretry", "from" => @jid},
+      content: [
+        %Node{
+          tag: "encrypt",
+          attrs: %{},
+          content: [
+            %Node{tag: "enc_p", attrs: %{}, content: enc_p},
+            %Node{tag: "enc_iv", attrs: %{}, content: iv}
+          ]
+        }
+      ]
     }
   end
 end

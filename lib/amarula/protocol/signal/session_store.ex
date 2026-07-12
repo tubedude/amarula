@@ -77,4 +77,16 @@ defmodule Amarula.Protocol.Signal.SessionStore do
   def store_session(%Conn{storage: scope, profile: profile}, addr, record) do
     Storage.put(scope, profile, :session, addr, SessionRecord.remove_old_sessions(record))
   end
+
+  @doc """
+  List every stored 1:1 session address on `conn`.
+
+  `{:error, reason}` when the storage adapter can't enumerate keys (e.g. a custom
+  adapter that doesn't implement `list_keys/3`). The Connection passes the result
+  into the custodian-driven migration/wipe so a batch enumerates storage once.
+  """
+  @spec list_session_keys(Conn.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def list_session_keys(%Conn{storage: scope, profile: profile}) do
+    Storage.list_keys(scope, profile, :session)
+  end
 end

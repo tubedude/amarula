@@ -116,6 +116,7 @@ defmodule Amarula do
   """
 
   alias Amarula.Connection
+  alias Amarula.Content.Options
   alias Amarula.ProfileRegistry
   alias Amarula.Protocol.Messages.{Media, MessageEncoder}
   alias Amarula.Protocol.Proto
@@ -345,6 +346,7 @@ defmodule Amarula do
   `connect/2` by hand:
 
       children = [
+        Amarula.Supervisor,                                    # Amarula's shared tree (add it first)
         MyApp.WhatsAppRouter,                                  # your event sink (a named process)
         {Amarula, profile: :sales,   parent: MyApp.WhatsAppRouter},
         {Amarula, profile: :support, parent: MyApp.WhatsAppRouter}
@@ -352,7 +354,9 @@ defmodule Amarula do
 
       Supervisor.start_link(children, strategy: :one_for_one)
 
-  The argument is a keyword list (or map): the `new/1` config, plus `:parent` —
+  `Amarula.Supervisor` starts the library's shared tree and must come **before** any
+  `{Amarula, …}` child; it is not started for you. The rest of the argument is a
+  keyword list (or map): the `new/1` config, plus `:parent` —
   the event sink (a **registered name**, so it survives restarts; see `connect/2`).
   Each child gets a distinct `id` of `{Amarula, profile}`, so several profiles
   coexist under one supervisor.
@@ -717,6 +721,119 @@ defmodule Amarula do
   defp resolve_creator(nil, %Proto.MessageKey{remoteJid: jid}), do: jid
   defp resolve_creator(creator, _key), do: Amarula.Address.to_jid!(creator)
 
+  @send_options_reply_opts NimbleOptions.new!(
+                             kind: [
+                               type: {:in, [:button, :list, :template]},
+                               doc:
+                                 "which kind of prompt this replies to. Required when `ref` isn't a full " <>
+                                   "`%Amarula.Msg{}` with `%Amarula.Content.Options{}` content, since " <>
+                                   "there's then no other way to know which proto to build."
+                             ],
+                             text: [
+                               type: :string,
+                               doc:
+                                 "the chosen option's display text. Auto-derived from `ref.content.options` " <>
+                                   "when possible; required otherwise."
+                             ],
+                             index: [
+                               type: :non_neg_integer,
+                               doc:
+                                 "the chosen option's 0-indexed position, for a `:template` prompt only. " <>
+                                   "Auto-derived the same way as `:text`."
+                             ]
+                           )
+
+  @doc """
+  Reply to a received button, list, or template prompt by selecting one of its
+  options — the normal "user taps a button" action. This does not (and cannot)
+  originate a new prompt: see `Amarula.Msg`'s "Receive-only" note — only
+  Meta-approved Business integrations may originate one, and doing so yourself
+  risks the account.
+
+  `ref` is the prompt message — typically the full `%Amarula.Msg{}` you just
+  received (with `%Amarula.Content.Options{}` content), so the chosen option's
+  display text (and, for a `:template` prompt, its index) are looked up
+  automatically from `ref.content.options` by matching `option_id`. A
+  lightweight `{jid, msg_id}` tuple works too, but then you must supply
+  `:kind` and `:text` (and `:index`, for `:template`) yourself, since the
+  original options aren't available to look up.
+
+  `option_id` is the `id` of the chosen option (an `id` from
+  `ref.content.options`).
+
+  Not yet supported: replying to an `:interactive` (native-flow) prompt —
+  those need a button name and a JSON params payload, not a simple option id.
+  Build the reply proto yourself from `msg.raw` if you need this now.
+
+  ## Options
+
+  #{NimbleOptions.docs(@send_options_reply_opts)}
+  """
+  @spec send_options_reply(conn(), message_ref(), String.t(), keyword()) :: send_result()
+  def send_options_reply(conn, ref, option_id, opts \\ []) do
+    opts = NimbleOptions.validate!(opts, @send_options_reply_opts)
+    {jid, key} = message_key(ref)
+    {kind, text, index} = resolve_option(ref, option_id, opts)
+
+    # A full %Amarula.Msg{} gets a real quote (stanzaId + participant + the
+    # inline quotedMessage), same as a text reply. A tuple ref can't go through
+    # context_info/1's :quoted tuple clause: it calls Address.to_jid!/1 on the
+    # participant unconditionally, which has no nil clause — and a 1:1 tuple
+    # ref has no participant to give it. Build the ContextInfo directly instead.
+    context =
+      case ref do
+        %Amarula.Msg{} -> MessageEncoder.context_info(quoted: ref)
+        _tuple_ref -> %Proto.ContextInfo{stanzaId: key.id, participant: key.participant}
+      end
+
+    message = MessageEncoder.options_reply(kind, option_id, text, index, context)
+    send_built(conn, jid, message)
+  end
+
+  defp resolve_option(ref, option_id, opts) do
+    known = known_option(ref, option_id)
+
+    if known[:kind] == :interactive do
+      raise ArgumentError,
+            "send_options_reply/4 doesn't support :interactive prompts yet (native-flow replies " <>
+              "need a name + JSON params, not a simple option id) — build the reply proto yourself " <>
+              "from msg.raw if you need this now"
+    end
+
+    kind =
+      opts[:kind] || known[:kind] ||
+        raise ArgumentError,
+              "send_options_reply/4: can't determine :kind for #{inspect(option_id)} — pass a " <>
+                "full %Amarula.Msg{} whose content is %Amarula.Content.Options{}, or supply the " <>
+                ":kind option"
+
+    text =
+      opts[:text] || known[:text] ||
+        raise ArgumentError,
+              "send_options_reply/4: can't determine the display text for #{inspect(option_id)} " <>
+                "(not found in ref.content.options) — supply the :text option"
+
+    {kind, text, opts[:index] || known[:index]}
+  end
+
+  defp known_option(%Amarula.Msg{content: %Options{kind: kind, options: options}}, option_id) do
+    # kind comes from the prompt as a whole, so it's known even if option_id
+    # doesn't match any of the prompt's options — only text/index need the match.
+    base = %{kind: normalize_options_kind(kind)}
+
+    case Enum.find_index(options, &(&1.id == option_id)) do
+      nil -> base
+      idx -> Map.merge(base, %{text: Enum.at(options, idx).text, index: idx})
+    end
+  end
+
+  defp known_option(_ref, _option_id), do: %{}
+
+  # Amarula.Content.Options.kind names the presented message (:buttons, plural);
+  # the reply proto is keyed by the action (:button, singular). Everything else matches.
+  defp normalize_options_kind(:buttons), do: :button
+  defp normalize_options_kind(kind), do: kind
+
   @doc "Send a contact (`display_name` + vCard string) to `jid`."
   @spec send_contact(conn(), jid(), String.t(), String.t()) :: send_result()
   def send_contact(conn, jid, display_name, vcard),
@@ -1077,6 +1194,54 @@ defmodule Amarula do
   def download_media(%Amarula.Msg{}), do: {:error, :not_media}
 
   def download_media(%Amarula.Content.Media{} = m), do: Media.download(m, m.kind)
+
+  @doc """
+  Ask the phone to re-upload a media message whose CDN blob has expired.
+
+  WhatsApp's media URLs are short-lived; once the phone rotates a message off the
+  CDN, `download_media/1` fails with `{:error, {:http, 404}}`. This sends a
+  server-error receipt for `msg` and waits for the phone to re-upload from its own
+  copy, returning a **refreshed** `%Amarula.Content.Media{}` (new `direct_path`)
+  you can hand straight to `download_media/1`:
+
+      case Amarula.download_media(msg) do
+        {:error, {:http, 404}} ->
+          {:ok, media} = Amarula.retry_media(conn, msg)
+          Amarula.download_media(media)
+
+        ok ->
+          ok
+      end
+
+  Unlike `download_media/1`, this **needs the live `conn`** — the receipt and its
+  notification reply ride the socket. Returns `{:error, :not_media}` for a
+  non-media (or keyless) message, `{:error, :not_on_phone}` if the phone no longer
+  has it, `{:error, :timeout}` if it never answers, or `{:error, :not_connected}`.
+  """
+  @spec retry_media(conn(), Amarula.Msg.t()) ::
+          {:ok, Amarula.Content.Media.t()} | {:error, term()}
+  def retry_media(
+        conn,
+        %Amarula.Msg{type: :media, content: %Amarula.Content.Media{media_key: key} = m} = msg
+      )
+      when is_binary(key) do
+    {chat_jid, participant} = retry_target(msg)
+    req = {:request_media_retry, msg.id, chat_jid, msg.from_me, participant, key}
+
+    case GenServer.call(conn, req, @send_call_timeout) do
+      {:ok, direct_path} -> {:ok, %{m | direct_path: direct_path}}
+      {:error, _} = err -> err
+    end
+  end
+
+  def retry_media(_conn, %Amarula.Msg{}), do: {:error, :not_media}
+
+  # Chat jid + (groups only) the message author — the pair the `<rmr>` uses to tell
+  # the phone which message to re-upload.
+  defp retry_target(%Amarula.Msg{channel: channel, from: from}) do
+    participant = if Amarula.Address.group?(channel), do: Amarula.Address.to_jid!(from)
+    {Amarula.Address.to_jid!(channel), participant}
+  end
 
   # Send an already-built %Proto.Message{} to `jid`. The shared tail of the
   # message-building send helpers (contact/location/reaction/edit/revoke), which

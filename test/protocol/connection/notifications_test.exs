@@ -37,6 +37,20 @@ defmodule Amarula.Connection.NotificationsTest do
              ]
     end
 
+    test "a devices child → :own_devices" do
+      node = %Node{
+        tag: "notification",
+        content: [
+          %Node{
+            tag: "devices",
+            content: [%Node{tag: "device", attrs: %{"jid" => "me:2@s.whatsapp.net"}}]
+          }
+        ]
+      }
+
+      assert Notifications.account_sync(node) == :own_devices
+    end
+
     test "unrecognized → :ignore" do
       assert Notifications.account_sync(%Node{tag: "notification", content: []}) == :ignore
     end
@@ -70,19 +84,35 @@ defmodule Amarula.Connection.NotificationsTest do
   end
 
   describe "picture/1" do
-    test "a <set> means changed" do
+    test "a <set> means changed, carrying picture_id and author" do
       node = %Node{
         tag: "notification",
         attrs: %{"from" => "1@s.whatsapp.net"},
-        content: [%Node{tag: "set"}]
+        content: [%Node{tag: "set", attrs: %{"id" => "PIC123", "author" => "9@s.whatsapp.net"}}]
       }
 
-      assert {"1@s.whatsapp.net", "changed"} = Notifications.picture(node)
+      assert %{
+               id: "1@s.whatsapp.net",
+               img_url: "changed",
+               picture_id: "PIC123",
+               author: "9@s.whatsapp.net"
+             } = Notifications.picture(node)
     end
 
-    test "no <set> means removed" do
+    test "a <delete> means removed, no picture_id" do
+      node = %Node{
+        tag: "notification",
+        attrs: %{"from" => "1@s.whatsapp.net"},
+        content: [%Node{tag: "delete", attrs: %{}}]
+      }
+
+      assert %{id: "1@s.whatsapp.net", img_url: "removed", picture_id: nil, author: nil} =
+               Notifications.picture(node)
+    end
+
+    test "no action child means removed" do
       node = %Node{tag: "notification", attrs: %{"from" => "1@s.whatsapp.net"}, content: []}
-      assert {"1@s.whatsapp.net", "removed"} = Notifications.picture(node)
+      assert %{img_url: "removed", picture_id: nil} = Notifications.picture(node)
     end
   end
 end

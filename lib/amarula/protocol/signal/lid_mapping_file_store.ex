@@ -93,6 +93,19 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   end
 
   @doc """
+  The signal-*user* for `jid` — its signal-address with the device suffix dropped,
+  so it prefixes every one of the user's per-device session keys (`"<user>.<device>"`
+  → `"<user>"`). LID-aware, like `signal_address/2`. `nil` for an undecodable jid.
+  """
+  @spec signal_user(Conn.t(), String.t()) :: String.t() | nil
+  def signal_user(conn, jid) do
+    case JID.decode(jid) do
+      %{} -> conn |> signal_address(jid) |> String.split(".") |> hd()
+      _ -> nil
+    end
+  end
+
+  @doc """
   LID-priority *wire* jid: a PN device jid mapped to its LID equivalent
   (preserving the device), else the jid unchanged. Mirrors Baileys
   assertSessions `wireJids` — the server serves prekey bundles keyed by the LID

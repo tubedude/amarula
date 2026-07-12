@@ -23,6 +23,7 @@ defmodule Amarula.Protocol.Messages.Media do
 
   alias Amarula.Protocol.Binary.{Node, NodeUtils}
   alias Amarula.Protocol.Crypto.{Constants, Crypto}
+  alias Amarula.Protocol.Proto
   alias Amarula.Connection
 
   @hkdf_info %{
@@ -162,6 +163,113 @@ defmodule Amarula.Protocol.Messages.Media do
       {:error, :bad_mac}
     end
   end
+
+  # --- media retry (ask the phone to re-upload after a CDN 404/410) ---
+  #
+  # WhatsApp drops media from its CDN after a while; a later download then 404/410s.
+  # The recovery is to send a <receipt type="server-error"> asking the *sender's
+  # phone* to re-upload; the phone replies with a <notification type="mediaretry">
+  # carrying a fresh directPath. Both payloads are AES-256-GCM under a key HKDF'd
+  # from the message's media_key, with the message id as the GCM AAD.
+
+  @retry_hkdf_info "WhatsApp Media Retry Notification"
+
+  @doc """
+  HKDF-derived key that wraps the media-retry receipt/notification, keyed by the
+  message's `media_key`. (RFC 5869 empty salt = 32 zero bytes.)
+  """
+  @spec retry_key(binary()) :: binary()
+  def retry_key(media_key), do: Crypto.hkdf(media_key, 32, <<0::256>>, @retry_hkdf_info)
+
+  @doc """
+  Build the `<receipt type="server-error">` node that asks the sender's phone to
+  re-upload media whose CDN copy is gone. `own_jid` is our account jid in non-AD
+  form (no device), `chat_jid` the conversation, `participant_jid` the group sender
+  (nil for a 1:1).
+  """
+  @spec build_retry_receipt(
+          String.t(),
+          String.t(),
+          String.t(),
+          boolean(),
+          String.t() | nil,
+          binary()
+        ) :: Node.t()
+  def build_retry_receipt(msg_id, own_jid, chat_jid, from_me, participant_jid, media_key) do
+    iv = :crypto.strong_rand_bytes(12)
+    plaintext = Proto.ServerErrorReceipt.encode(%Proto.ServerErrorReceipt{stanzaId: msg_id})
+    {:ok, enc_p} = Crypto.aes_encrypt_gcm(plaintext, retry_key(media_key), iv, msg_id)
+
+    rmr_attrs =
+      [{"jid", chat_jid}, {"from_me", to_string(from_me)}] ++
+        if(participant_jid, do: [{"participant", participant_jid}], else: [])
+
+    %Node{
+      tag: "receipt",
+      attrs: [{"id", msg_id}, {"to", own_jid}, {"type", "server-error"}],
+      content: [
+        %Node{
+          tag: "encrypt",
+          attrs: %{},
+          content: [
+            %Node{tag: "enc_p", attrs: %{}, content: enc_p},
+            %Node{tag: "enc_iv", attrs: %{}, content: iv}
+          ]
+        },
+        %Node{tag: "rmr", attrs: rmr_attrs, content: nil}
+      ]
+    }
+  end
+
+  @doc """
+  Decode a `<notification type="mediaretry">` reply, decrypting it with the same
+  `media_key`. Returns `{:ok, new_direct_path}` on success (update the descriptor
+  and re-download), or `{:error, reason}`: `:not_on_phone` when the phone no longer
+  holds the media (`<error code="2">`), `:malformed_notification`, a GCM decrypt
+  error, or `{:result, result}` for a non-SUCCESS `MediaRetryNotification`.
+  """
+  @spec decode_retry_notification(Node.t(), binary()) :: {:ok, String.t()} | {:error, term()}
+  def decode_retry_notification(node, media_key) do
+    case NodeUtils.get_binary_node_child(node, "error") do
+      %Node{} = err ->
+        if NodeUtils.get_attr(err, "code") == "2",
+          do: {:error, :not_on_phone},
+          else: {:error, {:server_error, NodeUtils.get_attr(err, "code")}}
+
+      nil ->
+        decrypt_retry_notification(node, media_key)
+    end
+  end
+
+  defp decrypt_retry_notification(node, media_key) do
+    msg_id = NodeUtils.get_attr(node, "id")
+    encrypt = NodeUtils.get_binary_node_child(node, "encrypt")
+    enc_p = enc_child(encrypt, "enc_p")
+    iv = enc_child(encrypt, "enc_iv")
+
+    with true <- is_binary(enc_p) and is_binary(iv),
+         {:ok, plain} <- Crypto.aes_decrypt_gcm(enc_p, retry_key(media_key), iv, msg_id) do
+      case Proto.MediaRetryNotification.decode(plain) do
+        %Proto.MediaRetryNotification{result: :SUCCESS, directPath: dp} when is_binary(dp) ->
+          {:ok, dp}
+
+        %Proto.MediaRetryNotification{result: result} ->
+          {:error, {:result, result}}
+      end
+    else
+      false -> {:error, :malformed_notification}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp enc_child(%Node{} = encrypt, tag) do
+    case NodeUtils.get_binary_node_child(encrypt, tag) do
+      %Node{content: content} when is_binary(content) -> content
+      _ -> nil
+    end
+  end
+
+  defp enc_child(_, _), do: nil
 
   # PKCS#7 pad/unpad to the 16-byte AES block (crypto_one_time needs aligned input).
   defp pkcs7_pad(data) do

@@ -94,6 +94,7 @@ child comes up (and is restarted) with your app:
 
 ```elixir
 children = [
+  Amarula.Supervisor,                                    # Amarula's shared tree — you own it
   MyApp.WhatsAppRouter,                                  # your event sink (a named process)
   {Amarula, profile: :sales,   parent: MyApp.WhatsAppRouter},
   {Amarula, profile: :support, parent: MyApp.WhatsAppRouter}
@@ -102,6 +103,8 @@ children = [
 Supervisor.start_link(children, strategy: :one_for_one)
 ```
 
+`Amarula.Supervisor` starts the library's shared registries + dynamic supervisor;
+add it **first** — it is not started for you.
 `:parent` is the event sink (pass a **registered name** so it survives restarts);
 the rest is the `new/1` config. Each child gets a distinct id of `{Amarula, profile}`,
 so profiles coexist. This is for **already-paired** accounts (pair first with
@@ -503,12 +506,14 @@ This regenerates `lib/amarula/protocol/proto/wa_proto.pb.ex` under the
 ## Lineage and license
 
 Amarula began as a port of [Baileys](https://github.com/WhiskeySockets/Baileys)
-(the TypeScript WhatsApp Web library) and still **tracks a specific upstream
-revision** — that's how it keeps pace with WhatsApp's undocumented,
-frequently-changing protocol. `Amarula.Baileys` and
+(the TypeScript WhatsApp Web library) and stays honest against WhatsApp's
+undocumented, frequently-changing protocol by validating against **two**
+independent implementations: it tracks a specific Baileys revision *and*
+cross-checks correctness against [whatsmeow](https://github.com/tulir/whatsmeow)
+(an independent Go implementation).
 [`docs/PARITY.md`](https://github.com/tubedude/amarula/blob/main/docs/PARITY.md)
-record exactly which revision and how parity is maintained. The architecture,
-public API, and OTP design, however, are Amarula's own — the Elixir side is not a
+records the pinned Baileys revision and how parity is maintained. The architecture,
+public API, and OTP design are Amarula's own — the Elixir side is not a
 transliteration.
 
 Released under the [MIT License](LICENSE), © 2026 Roberto Trevisan. Baileys

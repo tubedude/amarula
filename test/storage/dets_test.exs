@@ -107,4 +107,18 @@ defmodule Amarula.Storage.DETSTest do
              name: "Alice"
            }
   end
+
+  test "list_keys returns every key in a namespace, isolated from other namespaces", %{scope: s} do
+    Storage.put(s, @profile, :session, "199999.0", :a)
+    Storage.put(s, @profile, :session, "199999.2", :b)
+    Storage.put(s, @profile, :session, "188888_1.0", :c)
+    Storage.put(s, @profile, :sender_key, "grp::sender", :other)
+
+    assert {:ok, keys} = Storage.list_keys(s, @profile, :session)
+    assert Enum.sort(keys) == ["188888_1.0", "199999.0", "199999.2"]
+  end
+
+  test "list_keys is empty when nothing is stored", %{scope: s} do
+    assert {:ok, []} = Storage.list_keys(s, @profile, :session)
+  end
 end

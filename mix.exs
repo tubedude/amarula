@@ -4,13 +4,14 @@ defmodule Amarula.MixProject do
   def project do
     [
       app: :amarula,
-      version: "0.4.5",
+      version: "0.5.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       aliases: aliases(),
-      description: "A WhatsApp Web client for Elixir — an idiomatic OTP port of Baileys.",
+      description:
+        "An independent, OTP-native WhatsApp Web client for Elixir — Noise handshake, Signal end-to-end encryption, multi-device.",
       package: package(),
       docs: docs(),
       test_coverage: test_coverage()
@@ -68,7 +69,7 @@ defmodule Amarula.MixProject do
       extras: [
         "README.md",
         "docs/INFRASTRUCTURE.md",
-        "docs/CRYPTO_BOUNDARY.md",
+        "docs/CUSTODIAN_BENCHMARKS.md",
         "docs/LID_PN.md",
         "docs/GOING_PROD.md",
         "docs/PARITY.md",
@@ -77,9 +78,48 @@ defmodule Amarula.MixProject do
         "LICENSE",
         "NOTICE"
       ],
-      source_url: "https://github.com/tubedude/amarula"
+      source_url: "https://github.com/tubedude/amarula",
+      before_closing_body_tag: &before_closing_body_tag/1
     ]
   end
+
+  # Renders ```mermaid fenced blocks in the extras (e.g. docs/INFRASTRUCTURE.md's
+  # supervision tree) as diagrams. ExDoc has no built-in Mermaid support; this is
+  # the documented recipe (see deps/ex_doc/README.md, "Rendering Mermaid graphs")
+  # — a CDN script that finds `pre code.mermaid` after the page loads and swaps
+  # in a rendered SVG.
+  defp before_closing_body_tag(:html) do
+    """
+    <script defer src="https://cdn.jsdelivr.net/npm/mermaid@10.2.3/dist/mermaid.min.js"></script>
+    <script>
+      let initialized = false;
+      window.addEventListener("exdoc:loaded", () => {
+        if (!initialized) {
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: document.body.className.includes("dark") ? "dark" : "default"
+          });
+          initialized = true;
+        }
+        let id = 0;
+        for (const codeEl of document.querySelectorAll("pre code.mermaid")) {
+          const preEl = codeEl.parentElement;
+          const graphDefinition = codeEl.textContent;
+          const graphEl = document.createElement("div");
+          const graphId = "mermaid-graph-" + id++;
+          mermaid.render(graphId, graphDefinition).then(({svg, bindFunctions}) => {
+            graphEl.innerHTML = svg;
+            bindFunctions?.(graphEl);
+            preEl.insertAdjacentElement("afterend", graphEl);
+            preEl.remove();
+          });
+        }
+      });
+    </script>
+    """
+  end
+
+  defp before_closing_body_tag(_), do: ""
 
   # `mix check` runs the test suite, so default it to the :test env.
   def cli do
@@ -96,8 +136,7 @@ defmodule Amarula.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger],
-      mod: {Amarula.Application, []}
+      extra_applications: [:logger]
     ]
   end
 

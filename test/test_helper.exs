@@ -19,3 +19,7 @@ end
 # instant for a passing test (the delivery is sub-ms when not starved) but gives
 # a loaded runner ample slack.
 ExUnit.start(assert_receive_timeout: 2000)
+
+# Amarula's shared tree is not started automatically; consumers add
+# `Amarula.Supervisor` to their own tree. The suite does the same.
+{:ok, _} = Amarula.Supervisor.start_link([])

@@ -1,70 +1,78 @@
-# Baileys parity
+# Upstream References
 
-Amarula is a port of [Baileys](https://github.com/WhiskeySockets/Baileys). Its
-protocol logic tracks a **specific upstream revision**, recorded in one place:
-`Amarula.Baileys.parity/0` (`lib/amarula/baileys.ex`). This doc is the runbook for
-checking upstream for changes and re-syncing.
+Amarula ports its protocol logic from [Baileys](https://github.com/WhiskeySockets/Baileys). While Baileys serves as our reference for what WhatsApp Web expects on the wire, Amarula doesn't mirror its TypeScript/Node.js code structure. We adapt the protocol to fit idiomatic BEAM concurrency. For example, `SessionCustodian` handles per-record serialization using OTP patterns, rather than trying to mimic a single-process Node environment.
 
-## Currently pinned
+We rely on two upstream references for different reasons:
 
-Run `Amarula.Baileys.parity()` for the live value. As of this writing:
+* **[Baileys](https://github.com/WhiskeySockets/Baileys) (TypeScript):** Our primary source for the port. We track a **review watermark**—the specific commit marking the last time we reviewed Baileys for upstream changes. This isn't a guarantee of 100% bug-for-bug parity; any undetected protocol flaws in Baileys up to that commit might also exist here.
+* **[whatsmeow](https://github.com/tulir/whatsmeow) (Go):** An independent implementation used for cross-checking. Since it's a separate codebase, it's a great tool for catching bugs that Baileys and Amarula might share, and for understanding undocumented parts of the protocol.
 
-| field | value |
-|-------|-------|
+This document tracks our current Baileys review watermark and serves as a runbook for reviewing further.
+
+## Pinned Baileys Revision
+
+| Field | Value |
+| --- | --- |
 | Baileys version | `7.0.0-rc13` |
-| commit | `eb595a5a8f0fd6b753ee97e3b2d77612fafa501d` |
-| date | 2026-06-10 |
+| Commit | `8053b086ecc97ec3f78299561de11959bab05d39` |
+| Date | 2026-05-21 |
 
-## Two versions — don't conflate them
+*(To re-verify: dereference `refs/tags/v7.0.0-rc13` on the real Baileys repo to get the commit the tag resolves to, rather than the tag object's own SHA.)*
 
-- **Source parity** (this doc / `Amarula.Baileys`): which Baileys *commit* our port
-  is faithful to. Bump when you port new upstream changes.
-- **WA protocol version** (`Amarula.Config` `:version`, e.g. `[2, 3000, …]`): the
-  on-the-wire version WhatsApp must accept, pinned from `src/Defaults/index.ts`.
-  Bump when WhatsApp/Baileys bumps it, or the handshake is rejected.
+## Two Versions to Track
 
-Either can change without the other.
+Make sure to keep these two versions distinct, as either can change without the other:
 
-## Checking upstream for changes to port
+* **Review watermark** (tracked in this doc): The boundary between what we've reviewed and what we haven't. You should bump this whenever you review upstream, even if you don't immediately port everything you find.
+* **WA protocol version** (`Amarula.Config` `:version`, e.g., `[2, 3000, …]`): The on-the-wire version WhatsApp expects, pinned from `src/Defaults/index.ts`. Bump this when Baileys updates it or if WhatsApp starts rejecting the handshake.
 
-From the Baileys checkout (the repo root, one level up from `amarula/`):
+## Checking Upstream for Changes
+
+Run these checks from the Baileys checkout (one level up from `amarula/`).
+
+**Setup tip:** Make sure your local checkout tracks branches, not just tags. If `git for-each-ref refs/remotes/` is empty, you'll need to update your fetch refspec to `+refs/heads/*:refs/remotes/origin/*` (or re-clone normally) before continuing. Also, double-check that the `$PINNED` hash actually resolves (`git cat-file -t $PINNED`) so the diff commands don't silently fail.
 
 ```bash
 # Fetch the latest upstream and see what landed since our pinned commit.
 git fetch origin
-PINNED=eb595a5a8f0fd6b753ee97e3b2d77612fafa501d   # = Amarula.Baileys.parity().commit
+PINNED=8053b086ecc97ec3f78299561de11959bab05d39   # the commit pinned above
 
 # Commits we haven't reviewed yet:
 git log --oneline $PINNED..origin/master
 
-# Focus on the layers we actually port (skip docs/build/test churn):
+# Focus on the layers we actually port (skipping docs/build/test updates):
 git diff $PINNED..origin/master -- src/Socket src/Signal src/Utils src/WABinary src/Defaults
 ```
 
-Read that diff against Amarula's corresponding modules (the `CLAUDE.md` mapping
-table pairs each `src/` file with its Elixir home). Port anything that changes
-protocol behaviour: stanza shapes, crypto, encode/decode, version constants,
-retry/ack logic. Ignore TypeScript-only churn (types, lint, build).
+Read that diff against Amarula's corresponding modules. Look out for changes to protocol behavior: stanza shapes, crypto, encode/decode, version constants, and retry/ack logic. You can safely ignore TypeScript-specific updates like types, linting, or build configs.
 
-## Re-syncing (bumping the pin)
+## Bumping the Watermark
 
-When you've ported up to a newer Baileys commit:
+After reviewing a newer Baileys commit, update the watermark—even if you decide to defer porting some of the findings. Just log what you deferred and why in the review section below.
 
-1. Update **all four** fields of `@parity` in `lib/amarula/baileys.ex` (version,
-   commit, date, repo) to the new upstream revision.
-2. If `src/Defaults/index.ts` changed the WA version, also update `@wa_version` in
-   `lib/amarula/config.ex` to match.
-3. Note what you ported in `CHANGELOG.md`.
-4. The doctest in `Amarula.Baileys` asserts the version string — update it too.
+1. Update the **Pinned Baileys Revision** table above (version, commit, date).
+2. If `src/Defaults/index.ts` changed the WA version, also update `@wa_version` in `lib/amarula/config.ex` to match.
+3. Note anything you ported in `CHANGELOG.md`.
 
-## Where each Baileys layer lives in Amarula
+## Cross-checking against whatsmeow
 
-See the mapping table in the repo-root `CLAUDE.md` ("Reference implementation
-structure"). In short: `src/Socket/*` → `lib/amarula/connection.ex` +
-`lib/amarula/protocol/socket/`; `src/Signal/*` → `lib/amarula/protocol/signal/`;
-`src/WABinary/*` → `lib/amarula/protocol/binary/`; `src/Utils/noise-handler.ts` →
-`lib/amarula/protocol/crypto/noise_handler.ex`; `src/Defaults/index.ts` →
-`lib/amarula/config.ex`.
+Since `tulir/whatsmeow` is a completely independent Go implementation, it's worth periodically diffing *behavior* (not code) against Amarula to catch shared blind spots:
+
+```bash
+git clone --depth 1 https://github.com/tulir/whatsmeow /tmp/whatsmeow
+```
+
+This is purely a cross-check. We don't copy whatsmeow's code (it's MPL-2.0), but we learn from how it handles the protocol. This practice has already helped us fix media plaintext-hash verification on download, app-state snapshot/patch MAC validation, duplicate-redelivery handling, and receipt-vs-nack semantics for consumed-key duplicates.
+
+## Where Baileys Lives in Amarula
+
+See the mapping table in the repo-root `CLAUDE.md` ("Reference implementation structure") for the full breakdown. In short:
+
+* `src/Socket/*` → `lib/amarula/connection.ex` + `lib/amarula/protocol/socket/`
+* `src/Signal/*` → `lib/amarula/protocol/signal/`
+* `src/WABinary/*` → `lib/amarula/protocol/binary/`
+* `src/Utils/noise-handler.ts` → `lib/amarula/protocol/crypto/noise_handler.ex`
+* `src/Defaults/index.ts` → `lib/amarula/config.ex`
 
 ## Upstream review — 2026-07-02 (rc12→rc13 + open items)
 

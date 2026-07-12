@@ -81,6 +81,20 @@ defmodule Amarula.Protocol.Signal.SessionStoreTest do
     assert Map.has_key?(loaded.sessions, Base.encode64(<<0::16>>))
   end
 
+  describe "list_session_keys/1" do
+    test "returns every stored session address", %{conn: conn} do
+      :ok = SessionStore.store_session(conn, "199999.0", %{sessions: %{a: 1}})
+      :ok = SessionStore.store_session(conn, "188888_1.2", %{sessions: %{b: 2}})
+
+      assert {:ok, keys} = SessionStore.list_session_keys(conn)
+      assert Enum.sort(keys) == ["188888_1.2", "199999.0"]
+    end
+
+    test "is empty when nothing is stored", %{conn: conn} do
+      assert {:ok, []} = SessionStore.list_session_keys(conn)
+    end
+  end
+
   defp entry(base_key, opts) do
     %{
       registration_id: 1,

@@ -1,4 +1,4 @@
-# LID vs PN — identity in Amarula
+# LID vs PN — Identity in Amarula
 
 WhatsApp gives every person **two addresses for the same human**:
 
@@ -9,10 +9,11 @@ WhatsApp gives every person **two addresses for the same human**:
 Same person, two names. WhatsApp is migrating to LID so people can talk without
 exposing numbers. Both can show up on the wire for one contact.
 
-In code these are the two `:kind`s of an `Amarula.Address` (`:pn` / `:lid`), the
-third being `:group`.
+In code, `:pn` and `:lid` are two of `Amarula.Address`'s four `:kind`s. The other
+two are `:group` (a group chat) and `:none` (the empty address — "no identity",
+returned instead of `nil`).
 
-## First, what's a JID?
+## First, What's a JID?
 
 A **JID** ("Jabber ID") is the raw wire string WhatsApp speaks:
 `user@server`, optionally carrying a device and/or agent:
@@ -40,14 +41,14 @@ An `Address` is **parsed-only** — a pure value carrying just `user` + `kind` +
 device list. Those need connection state and change over time, so they stay
 internal. Don't expect `Address.pn(...)` to "know" its LID.
 
-## The one rule: **LID > PN**
+## The One Rule: LID > PN
 
 When we have a LID↔PN mapping for someone, **their cryptographic identity is the
-LID**. Concretely, Amarula stores the Signal session and fetches prekey bundles
-under the **LID address**, not the PN — even when the app is addressing them by
-phone number.
+LID**. Amarula stores the Signal session and fetches prekey bundles under the
+**LID address**, not the PN — even when the app is addressing them by phone
+number.
 
-Why this matters (and isn't optional):
+Why:
 
 - The server **serves prekey bundles keyed by LID** for lid-mapped users. Ask for
   a PN bundle and you get **silence** — the request just goes unanswered.
@@ -60,7 +61,7 @@ wins whenever a mapping exists.** `LidMappingFileStore.signal_address/2` is the
 chokepoint — give it any jid, it returns the LID-based Signal address if mapped,
 else the plain PN one.
 
-## The gotcha: envelope vs. lock
+## The Gotcha: Envelope vs. Lock
 
 Think of an outgoing message as a **letter**:
 
@@ -71,7 +72,7 @@ Think of an outgoing message as a **letter**:
   to the person's **crypto identity**, which is the **LID** once a mapping exists.
 
 So one packet leaves with a **PN on the envelope** but its contents were sealed with
-the **LID's** keys. Envelope ≠ lock, and that split is correct — not a bug:
+the **LID's** keys. This split is deliberate, not a bug:
 
 | Layer                       | Address used                                     |
 | --------------------------- | ------------------------------------------------ |
@@ -79,10 +80,17 @@ the **LID's** keys. Envelope ≠ lock, and that split is correct — not a bug:
 | **Signal session storage** (lock) | LID (when mapped) — e.g. `20000000001_1.0`  |
 | **Prekey bundle fetch** (lock) | LID (when mapped) — server requires it         |
 
+The actual read-modify-write of a session record — on both the send side
+(`ConversationSender`) and the receive side (`Connection`/`MessageDecryptor`) — is
+serialized per-record through `SessionCustodian`, so a concurrent send and receive
+to the same contact can't race on the ratchet. See
+[`docs/INFRASTRUCTURE.md`](INFRASTRUCTURE.md#session-custody) for how that lock
+works; this document only covers which address (PN or LID) a given layer uses.
+
 `send_flow_test.exs` pins exactly this: the session lives at the LID address while
 `<to>` is still the PN.
 
-## What you have to keep to address properly (the 400)
+## What You Have to Keep to Address Properly (the 400)
 
 Amarula picks the *lock* (LID) for you. **You** are responsible for the *envelope* —
 and the envelope must be a **PN for a DM**. This is the part that bites:
@@ -112,7 +120,7 @@ In short: the LID is for reading identity and for the crypto Amarula handles
 internally; the **PN is what you put on the envelope**. Keep the mapping so you can
 always get back to a PN.
 
-## Where the mapping comes from
+## Where the Mapping Comes From
 
 We don't invent LIDs — we **learn** the pairing and persist it
 (`LidMappingFileStore.store_mappings/2`, which also reports which pairs are *new*
@@ -127,7 +135,7 @@ so we can force-refresh those sessions):
 
 Newly-learned pairs are surfaced to the consumer as a `:lid_mapping_update` event.
 
-## How a consumer should keep them
+## How a Consumer Should Keep Them
 
 Amarula owns the *crypto* identity choice (LID > PN, internally). But **you** decide
 how to key your own contacts/chats/DB — and the duality has two traps:
@@ -160,21 +168,22 @@ So, the recommended shape:
   LID-only, or both over time; your model should tolerate learning the second half
   later and stitching them together.
 
-## Mental model
+## Mental Model
 
 > A contact has a public name (PN) and a private name (LID). You may *call* them by
 > either, and the envelope keeps the name you used — but their **identity for
 > encryption is always the LID once you know it**, because that's the one the server
 > hands out keys for and the one they encrypt back with.
 
-## Key code pointers
+## Key Code Pointers
 
 | Concept                          | File                                                          |
 | -------------------------------- | ------------------------------------------------------------ |
-| Address kinds (`:pn`/`:lid`)     | `lib/amarula/address.ex`                                      |
+| Address kinds (`:pn`/`:lid`/`:group`/`:none`) | `lib/amarula/address.ex`                         |
 | Mapping store API                | `lib/amarula/protocol/signal/lid_mapping_file_store.ex`       |
 | LID-priority session injection   | `lib/amarula/protocol/signal/session_injector.ex`            |
-| LID-priority encrypt + storage   | `lib/amarula/protocol/messages/conversation_sender.ex`       |
+| LID-priority encrypt (resolves the address, then hands off to the session lock) | `lib/amarula/protocol/messages/conversation_sender.ex` |
+| Per-record session lock (send + receive) | `lib/amarula/protocol/signal/session_custodian.ex`     |
 | Group metadata cross-mapping     | `lib/amarula/protocol/groups/metadata.ex`                    |
 | Explicit resolve & store         | `lib/amarula/contacts.ex`                                     |
 | Wire-vs-storage assertions       | `test/protocol/socket/send_flow_test.exs`                    |

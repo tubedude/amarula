@@ -18,13 +18,14 @@ defmodule Amarula.Config do
   | `:retry_cache` | ETS (see `Amarula.RetryCache`) | sent-message cache backend + opts, e.g. `{Amarula.RetryCache.ETS, max_entries: 1000}` to raise the cap (default 200, evicts oldest). See `Amarula.RetryCache` |
   | `:registry` | `Amarula.ProfileRegistry` (local) | `{module, name}` or bare `name` for the profile→connection registry; swap for `Horde.Registry` to enforce one-conn-per-profile cluster-wide (default: per node). See `Amarula.ProfileRegistry` |
   | `:auth` | loaded from storage | explicit creds (advanced; normally Amarula loads/persists these itself) |
-  | `:version` | `#{inspect(@wa_version)}` | WhatsApp Web *protocol* version — MUST track a version WhatsApp still accepts or the handshake is rejected. The live value drifts; override the pinned default without recompiling via the `AMARULA_WA_VERSION` env var (see `wa_version/0`), or bump the pinned literal with `mix run scripts/update_wa_version.exs`. (Distinct from Baileys *source* parity — see `Amarula.Baileys` / `docs/PARITY.md`.) |
+  | `:version` | `#{inspect(@wa_version)}` | WhatsApp Web *protocol* version — MUST track a version WhatsApp still accepts or the handshake is rejected. The live value drifts; override the pinned default without recompiling via the `AMARULA_WA_VERSION` env var (see `wa_version/0`), or bump the pinned literal with `mix run scripts/update_wa_version.exs`. (Distinct from Baileys *source* parity — see `docs/PARITY.md`.) |
   | `:browser` | `["Mac OS", "Chrome", "14.4.1"]` | browser triple `[os, client, version]` shown as the linked device. If the **client** (2nd element) contains `"Android"` (case-insensitive, e.g. `["MyApp", "Android", ""]`), the connection registers as an **Android client** instead of WhatsApp Web — see the impact note below. |
   | `:max_retries` | `5` | reconnect attempts |
   | `:retry_delay` | `1000` | base reconnect backoff (ms) |
   | `:connect_timeout_ms` | `30_000` | WebSocket connect timeout |
   | `:keep_alive_interval_ms` | `30_000` | WA-level keep-alive ping interval |
   | `:sender_idle_ms` | `1_000` | how long a per-recipient `ConversationSender` stays warm after its last send before stopping. Larger = fewer respawns/session re-reads under bursty traffic (useful with a disk-backed store); smaller = sheds processes faster after a fan-out |
+  | `:custodian_idle_ms` | `30_000` | how long a per-record `SessionCustodian` (the Signal-session/sender-key lock) stays warm after its last op before shedding. Write-through means an idle-stop loses nothing; the next op restarts it. Larger = fewer respawns/session re-reads for chatty peers; smaller = sheds idle locks faster |
   | `:sync_full_history` | `true` | request full history on link |
   | `:mark_online_on_connect` | `true` | send presence-available on connect. `false` keeps this session **unavailable** — it appears offline to others and the **primary phone keeps receiving push notifications** (live messages are then queued offline rather than pushed to this session). |
   | `:fire_init_queries` | `true` | run the post-login init IQ queries |

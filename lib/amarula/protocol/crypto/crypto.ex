@@ -166,7 +166,7 @@ defmodule Amarula.Protocol.Crypto.Crypto do
   Generate a random IV for AES-GCM encryption.
 
   Creates a 12-byte IV with the counter in the last 4 bytes.
-  According to WhatsApp implementation (Baileys/whatsmeow):
+  The WhatsApp wire format is:
   - 8 leading zero bytes
   - 4 bytes big-endian counter (bytes 8-11)
   This matches: 0x0000000000000000 || be32(counter)

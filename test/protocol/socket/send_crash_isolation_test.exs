@@ -56,7 +56,7 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
       refute sup in links
       refute connection in links
 
-      children = DynamicSupervisor.which_children(Amarula.Application.connections_supervisor())
+      children = DynamicSupervisor.which_children(Amarula.Supervisor.connections_supervisor())
       assert Enum.any?(children, fn {_, pid, _, _} -> pid == sup end)
 
       # Killing the whole tree must NOT deliver an exit signal to the caller.

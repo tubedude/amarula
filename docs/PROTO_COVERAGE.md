@@ -1,28 +1,39 @@
-# Proto message coverage
+# Proto Message Coverage
 
-A review of `proto/wa_proto.proto` against what Amarula currently sends and
-receives, and which still-unimplemented message types are realistically worth
-adding. The proto's `Message` has ~90 content fields; this is the map of which
-ones we handle.
+A map of `proto/wa_proto.proto`'s `Message` type against what Amarula actually
+sends and receives, checked directly against `MessageEncoder`, `MessageContent`,
+and the `Amarula` facade — not against this document's own bookkeeping. `Message`
+has about 90 content fields; most of the interesting ones are covered.
 
-> Scope note: most unimplemented fields are WhatsApp Business / template UX that
-> the server no longer lets a normal linked-device client **send** (sends are
-> rejected). Those are only worth handling on **receive**. The tiers below
-> reflect that.
+> **Scope note:** most of the remaining unhandled fields are WhatsApp Business /
+> template UX. Originating a new prompt (a `buttonsMessage`/`listMessage`/
+> `templateMessage`) is not implemented — that's not a protocol restriction, it's
+> that only Meta-approved Business integrations are expected to send them, and a
+> normal account doing so risks the account. **Replying** to one you received is
+> a different, unrestricted action (a real user tapping a button), and Amarula
+> does support that — see `Amarula.send_options_reply/4`.
 
-## Currently implemented
+## Currently Implemented
 
 **Send** — `Amarula.Protocol.Messages.MessageEncoder` + the `Amarula` facade:
 
-- `conversation` (text)
+- `conversation` (text), switching to `extendedTextMessage` automatically when a
+  reply or mentions are present (`contextInfo`: quoted message + `mentionedJid`)
 - `contactMessage` / `contactsArrayMessage`
-- `pollCreationMessage` v1 / v2 / v3
+- `pollCreationMessage` v1 / v2 / v3, and `pollUpdateMessage` (casting a vote)
 - `locationMessage` (incl. the `isLive` flag on a static location)
 - `reactionMessage`
 - media: `imageMessage` / `videoMessage` / `audioMessage` / `documentMessage` /
-  `stickerMessage`
+  `stickerMessage`, plus the view-once wrapper, the PTV (round video note)
+  variant, and album parent/child linking (`albumMessage`)
+- `eventMessage` (event creation — RSVP responses are not supported; see Gaps)
+- `buttonsResponseMessage` / `templateButtonReplyMessage` / `listResponseMessage`
+  (replying to a received button/list/template prompt — `send_options_reply/4`;
+  originating a new prompt is not implemented, see the scope note above)
+- `groupInviteMessage`, `pinInChatMessage`, `keepInChatMessage`
 - `protocolMessage`: edit (`MESSAGE_EDIT`), revoke (`REVOKE`),
-  `PEER_DATA_OPERATION` (placeholder resend, on-demand history)
+  `PEER_DATA_OPERATION` (placeholder resend, on-demand history),
+  `GROUP_MEMBER_LABEL_CHANGE` (per-group member label)
 
 Plus non-`Message` surfaces: presence, chat state, read receipts, groups
 (`Amarula.Group`), profile (`Amarula.Profile`), contacts / USync
@@ -30,53 +41,70 @@ Plus non-`Message` surfaces: presence, chat state, read receipts, groups
 
 **Receive** — `Amarula.Protocol.Messages.MessageContent.classify/1`:
 
-- text, reaction, edit, revoke, media (5 kinds), protocol, sender_key, contact,
+- text, reaction, edit, revoke, member_tag, media (image/video/audio/document/
+  sticker, incl. PTV mapped to `:video`), protocol, sender_key, contact,
   contacts, location, poll, poll_vote
+- pin, keep, group_invite, event
+- WhatsApp Business / interactive content: product, order, and
+  interactive_response are receive-only. button_response, list_response, and
+  template_reply can now be originated too, via `send_options_reply/4` — see
+  above. The *prompt* types (list, buttons, template, interactive) remain
+  receive-only: replying to one is supported, originating a new one is not.
 
 Everything else falls through to `{:other, message}`. Inbound `contextInfo`
-(quoted reply + mentions) is already decoded in `Amarula.Msg`.
+(quoted reply + mentions) is decoded in `Amarula.Msg` regardless of message type.
 
-## Gaps worth implementing
+## Gaps Worth Implementing
 
-### Tier 1 — high value, normal-user features, low effort
+### Live location
 
-| Feature | Proto field | Notes |
-|---|---|---|
-| **Reply / quoted send** | `contextInfo` on any sub-message | Biggest gap. We *decode* quotes on receive but there's **no way to send one** — `send_text`/`send_media` take no `quoted:` opt and the encoder never sets `contextInfo`. Needs a `stanzaId`/`participant`/`quotedMessage` builder + threading an opt through `send_*`. |
-| **Mentions** | `contextInfo.mentionedJid` (with `extendedTextMessage`) | Same plumbing as replies; requires switching text → `extendedTextMessage` when mentions are present. |
-| **Cast a poll vote** | `pollUpdateMessage` (encrypted vote w/ poll secret) | We can *tally* incoming votes but can't *send* one. The crypto seam (`PollCrypto`) already exists for the receive side. |
-| **Pin / unpin a message** | `pinInChatMessage` (`PIN_FOR_ALL` / `UNPIN_FOR_ALL` + key) | Trivial encoder, key-based like reaction. |
-| **Keep in chat** | `keepInChatMessage` (key + `keepType`) | Trivial; for disappearing chats. |
-| **View-once media** | `viewOnce` bool on image/audio + `viewOnceMessageV2` wrapper | Small addition to the media path (set the flag / wrap). |
-| **PTV (video note)** | `ptvMessage` (field 66, reuses `VideoMessage`) | Round video notes; the media path already builds `VideoMessage`. |
+`liveLocationMessage` is a distinct message from the `isLive` flag Amarula
+already sets on a static `locationMessage`. It supports streaming updates
+(`sequenceNumber`, speed/heading) and isn't sent, or classified on receive —
+both directions fall through today. Worth adding if a consumer needs live
+tracking rather than a one-shot pin.
 
-### Tier 2 — useful, moderate effort
+### Event RSVP
 
-| Feature | Proto field | Notes |
-|---|---|---|
-| **Group invite as a message** | `groupInviteMessage` | `Amarula.Group.invite_code/2` already fetches the code — this wraps it into a sendable chat message (`groupJid` / `inviteCode` / `groupName` / `caption`). |
-| **Live location** | `liveLocationMessage` | Distinct from the `isLive` flag we set on a static `locationMessage`; supports streaming updates (`sequenceNumber`, speed/heading). |
-| **Album** | `albumMessage` + child media | Grouped media; needs the child-association plumbing. |
-| **Event** | `eventMessage` (+ `encEventResponseMessage`) | Create / respond to events (name, description, location, start/end). |
-| **Receive-side classification** | buttons/list/template *responses*, `productMessage`, `orderMessage`, `groupInviteMessage`, `pinInChatMessage`, `keepInChatMessage`, `eventMessage` | Today these all collapse to `{:other, message}`. Adding `classify/1` clauses (pure decode, no protocol risk) lets consumers react to them. |
+Amarula can create and send an event (`send_event`), but can't send or decode
+an RSVP response — that's `encEventResponseMessage`, an encrypted envelope with
+its own crypto seam, similar to poll votes (`PollCrypto`). Not yet built.
 
-### Tier 3 — low priority / likely server-rejected on send
+### Reply/quoted for `secretEncryptedMessage`-based edits
 
-`templateMessage`, `buttonsMessage`, `listMessage`, `interactiveMessage`,
-`productMessage`, `orderMessage`, `invoiceMessage`, the payment family
-(`sendPaymentMessage` / `requestPaymentMessage` / …),
-`newsletterAdminInviteMessage`, scheduled calls
-(`scheduledCallCreationMessage` / `scheduledCallEditMessage`).
+Not in scope for this document's "reply" gap, but a related known limitation:
+edits from newer WhatsApp clients arrive as `secretEncryptedMessage`
+(`secretEncType: :MESSAGE_EDIT`), an extra encryption layer keyed by the
+original message's `messageContextInfo.messageSecret`. Amarula only decodes the
+legacy inline `editedMessage`; the new envelope falls through to `{:other, _}`
+still encrypted. See the `KNOWN GAP` comment on the `:MESSAGE_EDIT` clause in
+`message_content.ex` for what's needed (a TTL cache of inbound message secrets +
+HMAC+GCM decrypt).
 
-These are WhatsApp Business / deprecated paths — worth **receive**
-classification only; sending them from a linked-device client generally fails.
+### Receive-side classification for the remaining Business/payment fields
 
-## Recommended order
+`invoiceMessage`, the payment family (`sendPaymentMessage` /
+`requestPaymentMessage` / `declinePaymentRequestMessage` /
+`cancelPaymentRequestMessage`), `newsletterAdminInviteMessage`, and the
+scheduled-call messages (`scheduledCallCreationMessage` /
+`scheduledCallEditMessage`) still fall through to `{:other, message}` on
+receive. Sending them from a linked-device client generally fails server-side,
+so send support isn't worth building, but decode-only `classify/1` clauses
+would let a consumer at least react to them. Low priority — these are
+Business-account-specific flows most consumers won't hit.
 
-Start with **Tier 1**, and within it the **reply + mentions `contextInfo`
-plumbing first**: it's the most-requested capability, unblocks proper threaded
-bots, and the receive-side structs already exist to mirror. The encoder changes
-are small; the real work is threading a `quoted:` / `mentions:` option from
-`send_text` / `send_media` through `Connection` → `ConversationSender` — which
-at `conversation_sender.ex:651` already forwards `messageContextInfo`, so the
-send pipe is close.
+### Receive-side classification for `albumMessage`
+
+Amarula can send an album (parent + child media), but an inbound album falls
+through to `{:other, message}` — there's no `classify/1` clause pairing an
+album's children back to their parent on receive.
+
+## Recommended Order
+
+Start with **live location** if a consumer needs it — it's a contained addition
+to the existing location path (see `MessageEncoder.location/3` and
+`MessageContent.do_media_type/1`, which already recognizes
+`liveLocationMessage` for the `mediatype` stanza attribute but has no send
+builder or `classify/1` clause). Event RSVP and the remaining Business/payment
+receive clauses are lower priority — they gate on demand from consumers who
+actually need them.

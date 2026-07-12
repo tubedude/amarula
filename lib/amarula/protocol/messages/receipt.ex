@@ -33,11 +33,17 @@ defmodule Amarula.Protocol.Messages.Receipt do
   }
 
   @doc """
-  Parse a `<receipt>` node into `%{message_ids, from, participant, status,
-  timestamp}`. Returns `{:ok, t}`, or `{:error, :unknown_type}` for a receipt type
-  we don't map (e.g. `retry`, handled elsewhere).
+  Parse a `<receipt>` node into a list of `%{message_ids, from, participant,
+  status, timestamp}`. Returns `{:ok, [t]}`, or `{:error, :unknown_type}` for a
+  receipt type we don't map (e.g. `retry`, handled elsewhere).
+
+  A plain receipt yields a one-element list. A **grouped** group receipt — no
+  top-level `id`/`participant`, instead one `<participants key=<msg_id>>` per
+  message holding `<user jid t>` entries — yields one receipt per (message,
+  participant), so a group's per-member delivery/read acks aren't collapsed into a
+  single empty-id event.
   """
-  @spec parse(Node.t()) :: {:ok, t()} | {:error, :unknown_type}
+  @spec parse(Node.t()) :: {:ok, [t()]} | {:error, :unknown_type}
   def parse(%Node{} = node) do
     type = NodeUtils.get_attr(node, "type")
 
@@ -46,14 +52,39 @@ defmodule Amarula.Protocol.Messages.Receipt do
         {:error, :unknown_type}
 
       status ->
-        {:ok,
-         %{
-           message_ids: message_ids(node),
-           from: address(NodeUtils.get_attr(node, "from")),
-           participant: address(NodeUtils.get_attr(node, "participant")),
-           status: status,
-           timestamp: timestamp(node)
-         }}
+        case NodeUtils.get_binary_node_children(node, "participants") do
+          [] -> {:ok, [single_receipt(node, status)]}
+          groups -> {:ok, grouped_receipts(node, groups, status)}
+        end
+    end
+  end
+
+  defp single_receipt(node, status) do
+    %{
+      message_ids: message_ids(node),
+      from: address(NodeUtils.get_attr(node, "from")),
+      participant: address(NodeUtils.get_attr(node, "participant")),
+      status: status,
+      timestamp: timestamp(node)
+    }
+  end
+
+  # Fan a grouped receipt out to one entry per (message, participant): each
+  # <participants key=msg_id> carries <user jid t> children, one per member.
+  defp grouped_receipts(node, groups, status) do
+    from = address(NodeUtils.get_attr(node, "from"))
+
+    for group <- groups,
+        msg_id = NodeUtils.get_attr(group, "key"),
+        not is_nil(msg_id),
+        user <- NodeUtils.get_binary_node_children(group, "user") do
+      %{
+        message_ids: [msg_id],
+        from: from,
+        participant: address(NodeUtils.get_attr(user, "jid")),
+        status: status,
+        timestamp: timestamp(user)
+      }
     end
   end
 

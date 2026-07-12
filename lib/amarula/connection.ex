@@ -28,6 +28,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Messages.{HistorySync, MessageDecryptor}
   alias Amarula.Protocol.Presence
   alias Amarula.Protocol.Call
+  alias Amarula.Protocol.Signal.DecryptError
 
   # A send blocks the caller until the per-recipient sender finishes (up to three
   # IQ round-trips for a new recipient). The client-side call timeout must exceed
@@ -42,38 +43,29 @@ defmodule Amarula.Connection do
     sticker: "image/webp"
   }
 
-  # Baileys NACK_REASONS (decode-wa-message.ts)
+  # Baileys NACK_REASONS (decode-wa-message.ts). Only 500 (unhandled) is used — a
+  # decrypt we can't recover from, retried once then nacked. Duplicates are receipted
+  # as delivered (see the duplicate_decrypt_error? branch), not nacked; WhatsApp's
+  # accurate code for that case would be 496 (SignalErrorOldCounter), noted there.
   @nack_unhandled_error 500
-  @nack_parsing_error 487
-  # libsignal error texts that all mean "this stanza was already decrypted, the
-  # key material it references is gone" — i.e. a duplicate redelivery, not a real
-  # failure:
-  #   * "Key used already or never filled" — the ratchet counter was consumed
-  #     (a repeated <enc type="msg">/whisper message).
-  #   * "Invalid PreKey ID" — the one-time prekey a <enc type="pkmsg"> references
-  #     was consumed + deleted by the first decrypt (see remove_used_pre_keys/2),
-  #     so the redelivered pkmsg can no longer find it.
-  # These are stateless string matches on purpose: the redelivery loop recurs on
-  # every reconnect (the server re-fans the undrained stanza), so recognising the
-  # error each time is what terminates it — an in-memory "seen msg_ids" set would
-  # be wiped by the 515 restart and miss the cross-reconnect duplicates.
-  @duplicate_decrypt_error_texts [
-    "Key used already or never filled",
-    "Invalid PreKey ID"
-  ]
   # Baileys maxMsgRetryCount default — cap on retry-resends per message.
   @max_msg_retry_count 5
 
   # How long to wait for an IQ reply before failing the waiting caller.
   @iq_timeout_ms 20_000
 
+  # How long to wait for the phone's <notification type="mediaretry"> reply to a
+  # server-error receipt before failing the waiting caller (the phone re-uploads
+  # off its own copy, so this can take longer than an IQ round-trip).
+  @media_retry_timeout_ms 30_000
+
   # The <ack> wait (default 30s, config :ack_timeout_ms) lives on
   # Connection.AckLifecycle now; @send_call_timeout must still exceed it.
   alias Amarula.Protocol.Crypto.Constants
   alias Amarula.Protocol.Proto
 
-  alias Amarula.Protocol.Signal.{PreKeys, SessionInjector, SessionStore, DeviceListCache}
-  alias Amarula.Protocol.Signal.LidMappingFileStore
+  alias Amarula.Protocol.Signal.{PreKeys, SessionCustodian, SessionInjector, SessionStore}
+  alias Amarula.Protocol.Signal.{DeviceListCache, LidMappingFileStore}
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
   alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing, Notifications, Receive}
@@ -110,7 +102,9 @@ defmodule Amarula.Connection do
     msg_retry_counts: %{},
     pending_sends: %{},
     pending_acks: %{},
-    sender_monitors: %{}
+    pending_media_retries: %{},
+    sender_monitors: %{},
+    migrated_pn_sessions: MapSet.new()
   ]
 
   @typedoc """
@@ -172,7 +166,16 @@ defmodule Amarula.Connection do
           },
           # One monitor per recipient with a live sender holding parked sends.
           # On the sender's :DOWN we fail every pending_acks entry for that jid.
-          sender_monitors: %{String.t() => reference()}
+          sender_monitors: %{String.t() => reference()},
+          # Media re-upload requests awaiting the phone's mediaretry notification,
+          # keyed by msg id. Each holds the consumer's `from`, the media_key needed
+          # to decrypt the reply, and the timeout timer.
+          pending_media_retries: %{
+            String.t() => {GenServer.from(), binary(), reference()}
+          },
+          # PN users whose Signal sessions have been migrated onto their LID this
+          # connection — an idempotency guard so we migrate once, not per message.
+          migrated_pn_sessions: MapSet.t(String.t())
         }
 
   # Client API
@@ -397,6 +400,20 @@ defmodule Amarula.Connection do
   @spec assert_lid_sessions(GenServer.server(), [String.t()]) :: :ok
   def assert_lid_sessions(_pid, []), do: :ok
   def assert_lid_sessions(pid, lids), do: GenServer.cast(pid, {:assert_lid_sessions, lids})
+
+  @doc """
+  Re-key newly-learned LID↔PN pairs so existing PN Signal sessions move onto the LID
+  address instead of renegotiating. `pairs` is `[{lid_jid, pn_jid}, ...]`. Contacts
+  with no prior PN session get a fresh prekey-bundle fetch instead.
+
+  Synchronous (a `call`) on purpose: the caller (a `ConversationSender`) reads the
+  session at the LID address immediately after in `ensure_sessions`, so the move
+  must be committed first — a cast would race that read and force a needless
+  renegotiation. Safe from deadlock: this handler never calls back into the sender.
+  """
+  @spec migrate_pn_sessions(GenServer.server(), [{String.t(), String.t()}]) :: :ok
+  def migrate_pn_sessions(_pid, []), do: :ok
+  def migrate_pn_sessions(pid, pairs), do: GenServer.call(pid, {:migrate_pn_sessions, pairs})
 
   @doc """
   Cast newly-learned LID↔PN pairs so the consumer gets a `:lid_mapping_update`
@@ -713,6 +730,30 @@ defmodule Amarula.Connection do
     end
   end
 
+  # Blocking media re-upload: send a server-error receipt for a message whose CDN
+  # blob expired, then park the caller under the msg id until the phone's
+  # <notification type="mediaretry"> arrives (handle_media_retry_notification) or
+  # the media-retry timeout fires.
+  @impl GenServer
+  def handle_call(
+        {:request_media_retry, msg_id, chat_jid, from_me, participant, media_key},
+        from,
+        state
+      ) do
+    if ready_to_send?(state) do
+      own_jid = JID.jid_normalized_user(me(state).id)
+
+      receipt =
+        Media.build_retry_receipt(msg_id, own_jid, chat_jid, from_me, participant, media_key)
+
+      timer = Process.send_after(self(), {:media_retry_timeout, msg_id}, @media_retry_timeout_ms)
+      pending = Map.put(state.pending_media_retries, msg_id, {from, media_key, timer})
+      {:noreply, send_binary_node(%{state | pending_media_retries: pending}, receipt)}
+    else
+      {:reply, {:error, :not_connected}, state}
+    end
+  end
+
   @impl GenServer
   def handle_call({:relay_stanza, node}, _from, state) do
     send_reply(state, node)
@@ -860,6 +901,28 @@ defmodule Amarula.Connection do
   def handle_call({:update_auth_creds, new_creds}, _from, state) do
     Logger.info("Updating authentication credentials")
     {:reply, :ok, update_creds(state, new_creds)}
+  end
+
+  # Re-key existing PN sessions onto their LID; only contacts with no PN session to
+  # move need a fresh bundle (fetching for a migrated one would clobber the ratchet).
+  @impl GenServer
+  def handle_call({:migrate_pn_sessions, pairs}, _from, state) do
+    # Enumerate the session store ONCE for the whole batch (not per pair), then
+    # move each pair's ratchet; the lids that had nothing to move fall back to a
+    # fresh bundle fetch.
+    case SessionStore.list_session_keys(conn(state)) do
+      {:ok, keys} ->
+        {needs_fetch, state} = Enum.flat_map_reduce(pairs, state, &migrate_pair(&1, &2, keys))
+        {:reply, :ok, force_refresh_sessions(state, needs_fetch)}
+
+      {:error, reason} ->
+        Logger.warning(
+          "migrate_pn_sessions: cannot enumerate sessions (#{inspect(reason)}); " <>
+            "senders fall back to fresh-bundle fetches"
+        )
+
+        {:reply, :ok, state}
+    end
   end
 
   # Catch-all: an unexpected call must not crash the whole per-connection tree.
@@ -1115,6 +1178,20 @@ defmodule Amarula.Connection do
   @impl GenServer
   def handle_info({:iq_timeout, id}, state) do
     {:noreply, handle_iq_timeout(state, id)}
+  end
+
+  # The phone never answered our media-retry receipt within the window — fail the
+  # parked caller so retry_media/2 returns instead of hanging to its call timeout.
+  @impl GenServer
+  def handle_info({:media_retry_timeout, msg_id}, state) do
+    case Map.pop(state.pending_media_retries, msg_id) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {{from, _media_key, _timer}, pending} ->
+        GenServer.reply(from, {:error, :timeout})
+        {:noreply, %{state | pending_media_retries: pending}}
+    end
   end
 
   # --- Ack-on-send: the per-recipient Sender reports its pipe result back here;
@@ -1890,9 +1967,12 @@ defmodule Amarula.Connection do
     state = send_message_ack(state, node)
 
     case Receipt.parse(node) do
-      {:ok, receipt} ->
-        Logger.debug("Receipt #{receipt.status} for #{inspect(receipt.message_ids)}")
-        emit_to_subscribers(state, :receipt_update, receipt)
+      {:ok, receipts} ->
+        Enum.each(receipts, fn receipt ->
+          Logger.debug("Receipt #{receipt.status} for #{inspect(receipt.message_ids)}")
+          emit_to_subscribers(state, :receipt_update, receipt)
+        end)
+
         state
 
       {:error, _} ->
@@ -1978,7 +2058,7 @@ defmodule Amarula.Connection do
   defp maybe_inject_retry_keys(state, node) do
     case NodeUtils.get_binary_node_child(node, "keys") do
       %Node{} ->
-        SessionInjector.inject(node, state.auth_creds, conn(state))
+        SessionInjector.inject(node, state.auth_creds, conn(state), state.instance_id, :always)
         state
 
       _ ->
@@ -2105,6 +2185,19 @@ defmodule Amarula.Connection do
         emit_to_subscribers(state, :blocklist_update, items)
         state
 
+      :own_devices ->
+        # Our own linked-device set changed (a device added/removed elsewhere).
+        # Drop our own cached device list so the next send re-USyncs it — otherwise
+        # a newly-linked device would be missing from the encrypt recipients.
+        me = me(state)
+
+        own =
+          [me[:id], me[:lid]] |> Enum.reject(&is_nil/1) |> Enum.map(&JID.jid_normalized_user/1)
+
+        Logger.debug("account_sync: own device set changed — dropping own device cache")
+        Enum.each(own, &DeviceListCache.delete(conn(state), &1))
+        state
+
       :ignore ->
         state
     end
@@ -2129,9 +2222,9 @@ defmodule Amarula.Connection do
   # picture — a contact/group avatar changed; surface it as a contact update so a
   # consumer can refresh the image (Baileys emits contacts.update imgUrl).
   defp dispatch_notification(state, "picture", node) do
-    {from, img_url} = Notifications.picture(node)
-    Logger.debug("picture #{img_url} for #{from}")
-    emit_to_subscribers(state, :contacts_update, [%{id: from, img_url: img_url}])
+    update = Notifications.picture(node)
+    Logger.debug("picture #{update.img_url} for #{update.id}")
+    emit_to_subscribers(state, :contacts_update, [update])
     state
   end
 
@@ -2159,9 +2252,31 @@ defmodule Amarula.Connection do
     end
   end
 
+  # mediaretry — the phone's reply to a server-error receipt we sent to re-request
+  # an expired media blob. Decode it against the media_key we parked and reply to
+  # the waiting retry_media/2 caller with {:ok, new_direct_path} or an error.
+  defp dispatch_notification(state, "mediaretry", node) do
+    handle_media_retry_notification(state, node)
+  end
+
   defp dispatch_notification(state, type, _node) do
     Logger.debug("Notification (type=#{type}) acked — no handler")
     state
+  end
+
+  defp handle_media_retry_notification(state, node) do
+    msg_id = NodeUtils.get_attr(node, "id")
+
+    case Map.pop(state.pending_media_retries, msg_id) do
+      {nil, _} ->
+        Logger.debug("mediaretry notification for #{msg_id} with no pending waiter — ignoring")
+        state
+
+      {{from, media_key, timer}, pending} ->
+        Process.cancel_timer(timer)
+        GenServer.reply(from, Media.decode_retry_notification(node, media_key))
+        %{state | pending_media_retries: pending}
+    end
   end
 
   # Mirror of Baileys' link_code_companion_reg handler: decipher the phone's
@@ -2276,32 +2391,183 @@ defmodule Amarula.Connection do
     end
   end
 
-  # A peer's identity changed. Baileys (handleIdentityChange): only force-refresh
-  # if we ALREADY have a session with them (a new contact needs none), and skip
-  # during offline batch processing (it'd refresh stale state). Otherwise re-fetch
-  # their key bundle so our session matches their new identity.
+  # A peer's identity changed. Only act if we ALREADY have a session with them (a
+  # new contact needs none), and skip during offline batch processing (it'd refresh
+  # stale state). Otherwise wipe the stale session(s) and re-fetch their key bundle
+  # so our session matches their new identity — and nothing encrypts to the old one
+  # in the gap.
   defp maybe_refresh_identity(state, node, from) do
     offline? = NodeUtils.get_attr(node, "offline") not in [nil, ""]
-    has_session? = SessionStore.load_session(conn(state), from) != nil
 
-    cond do
-      not has_session? ->
-        Logger.debug("encrypt(identity) from #{from}: no existing session — skipping refresh")
+    if offline? do
+      Logger.debug("encrypt(identity) from #{from}: offline batch — deferring refresh")
+      state
+    else
+      # Wipe up front so a concurrent send can't encrypt to the old identity in the
+      # window before the refreshed bundle lands. No session → a new contact,
+      # nothing to refresh.
+      case wipe_identity_sessions(state, from) do
+        n when n > 0 ->
+          Logger.debug("encrypt(identity) from #{from}: wiped #{n} stale session(s), refreshing")
+          force_refresh_sessions(state, [from])
+
+        _ ->
+          Logger.debug("encrypt(identity) from #{from}: no existing session — skipping refresh")
+          state
+      end
+    end
+  end
+
+  # Delete all of `from`'s 1:1 sessions (every device). Returns the count deleted, or
+  # 0 when we can't resolve the signal-user or enumerate the store. LID-aware, so it
+  # matches wherever the session actually lives after a PN→LID migration.
+  defp wipe_identity_sessions(state, from) do
+    conn = conn(state)
+
+    with signal_user when is_binary(signal_user) <- LidMappingFileStore.signal_user(conn, from),
+         {:ok, keys} <- SessionStore.list_session_keys(conn) do
+      prefix = signal_user <> "."
+
+      # Delete each device's session THROUGH its custodian, so an in-flight encrypt
+      # on that address serializes against the wipe and can't resurrect it.
+      keys
+      |> Enum.filter(&String.starts_with?(&1, prefix))
+      |> Enum.reduce(0, &wipe_one_session(&1, state, conn, &2))
+    else
+      _ -> 0
+    end
+  end
+
+  defp wipe_one_session(addr, state, conn, deleted) do
+    case SessionCustodian.replace(state.instance_id, conn, addr, nil) do
+      :ok -> deleted + 1
+      _ -> deleted
+    end
+  end
+
+  # Before decrypting, if the sender is PN-addressed but we know their LID, move
+  # their PN session onto the LID address. Idempotent per pn user per connection
+  # (the migrated_pn_sessions guard also spares a storage read for repeat senders).
+  defp maybe_migrate_sender_session(state, node) do
+    author = NodeUtils.get_attr(node, "participant") || NodeUtils.get_attr(node, "from")
+
+    with true <- is_binary(author) and JID.jid_user?(author) and not JID.lid_user?(author),
+         %{user: pn_user} <- JID.decode(author),
+         false <- MapSet.member?(state.migrated_pn_sessions, pn_user),
+         lid_user when is_binary(lid_user) <- LidMappingFileStore.lid_for_pn(conn(state), author),
+         {:ok, keys} <- SessionStore.list_session_keys(conn(state)) do
+      # Ignore the :migrated/:none result on purpose: the receive path never
+      # force-fetches a bundle. A :none (no PN session to move) just means an
+      # inbound pkmsg will establish the session on decrypt — fetching is a
+      # send-side concern (see the migrate_pn_sessions handler).
+      {state, _result} = migrate_pn_user(state, pn_user, lid_user, keys)
+      state
+    else
+      # A storage adapter that can't enumerate keys can't migrate in place; the
+      # decrypt lookup will then miss the still-PN-keyed ratchet. Rare (File/DETS
+      # both enumerate) but not silent.
+      {:error, reason} ->
+        Logger.warning(
+          "PN→LID migrate on receive: cannot enumerate sessions (#{inspect(reason)})"
+        )
+
         state
 
-      offline? ->
-        Logger.debug("encrypt(identity) from #{from}: offline batch — deferring refresh")
+      # Every other else case is routine, not an anomaly: not a PN user, already
+      # migrated, or no LID mapping. `jid_user?` having passed guarantees
+      # `JID.decode/1` returns a map, so that clause can't fail.
+      _ ->
         state
+    end
+  end
 
-      true ->
-        Logger.debug("encrypt(identity) from #{from}: refreshing session")
-        force_refresh_sessions(state, [from])
+  # Idempotently re-key one PN user's sessions onto their LID (from the pre-listed
+  # `keys`), recording it so we migrate once. Returns {state, :migrated | :none |
+  # :already}: `:none` means the user had no PN session to move (caller may want a
+  # fresh bundle instead).
+  #
+  # Both the PN and LID records are mutated through their SessionCustodians, so a
+  # concurrent send/decrypt on either can't clobber the migration mid-flight. The
+  # residual hazard is the cross-record sequencing (read PN, then write LID) — see
+  # migrate_pn_records, which uses install_if_absent so a session a concurrent send
+  # injected on the LID address wins instead of being overwritten.
+  defp migrate_pn_user(state, pn_user, lid_user, keys) do
+    if MapSet.member?(state.migrated_pn_sessions, pn_user) do
+      {state, :already}
+    else
+      state = %{state | migrated_pn_sessions: MapSet.put(state.migrated_pn_sessions, pn_user)}
+
+      case migrate_pn_records(state, pn_user, lid_user, keys) do
+        0 -> {state, :none}
+        _ -> {state, :migrated}
+      end
+    end
+  end
+
+  # Move each of pn_user's device sessions onto the LID address THROUGH the
+  # custodians (the per-record lock). Cross-record and non-atomic, so it is written
+  # to be safe under a concurrent send that injects a LID session mid-migration:
+  #   1. read the PN record,
+  #   2. install it on the LID address ONLY IF no live session is already there
+  #      (install_if_absent) — a concurrently-injected LID session WINS; we never
+  #      clobber a live ratchet with the migrated record,
+  #   3. drop the PN source only after (2) succeeded — :ok or already-present both
+  #      mean the LID side is settled — and only count the pair when the delete
+  #      itself landed. A failure at any step leaves the PN record for a later
+  #      re-migration (idempotent: step 2 then finds the LID session and skips).
+  # (The PN side has no concurrent mutator here — inbound PN decrypts run in this
+  # same Connection process, and sends resolve to the LID address.) Returns moved.
+  defp migrate_pn_records(state, pn_user, lid_user, keys) do
+    conn = conn(state)
+    iid = state.instance_id
+    pn_prefix = pn_user <> "."
+
+    keys
+    |> Enum.filter(&String.starts_with?(&1, pn_prefix))
+    |> Enum.reduce(0, fn pn_addr, moved ->
+      device = String.replace_prefix(pn_addr, pn_prefix, "")
+      lid_addr = "#{lid_user}_1.#{device}"
+
+      with {:ok, record} when not is_nil(record) <-
+             SessionCustodian.record(iid, conn, pn_addr),
+           installed when installed in [:ok, {:skipped, :session_exists}] <-
+             SessionCustodian.install_if_absent(iid, conn, lid_addr, record),
+           :ok <- SessionCustodian.replace(iid, conn, pn_addr, nil) do
+        moved + 1
+      else
+        _ -> moved
+      end
+    end)
+  end
+
+  # Migrate one newly-mapped {lid, pn} pair (over the batch's pre-listed `keys`),
+  # threading state and emitting the lid into the fetch list ONLY when there was no
+  # PN session to re-key (:none) — a migrated contact must not be force-refreshed,
+  # which would clobber the moved ratchet. Shaped for Enum.flat_map_reduce/3.
+  defp migrate_pair({lid, pn}, state, keys) do
+    # store_mappings accepts pairs in either order; guard the orientation here so a
+    # reversed pair can't migrate the wrong direction.
+    with true <- JID.lid_user?(lid),
+         %{user: pn_user} <- JID.decode(pn),
+         %{user: lid_user} <- JID.decode(lid) do
+      case migrate_pn_user(state, pn_user, lid_user, keys) do
+        {state, :none} -> {[lid], state}
+        {state, _} -> {[], state}
+      end
+    else
+      # The pairs come from USync, so a mis-oriented or undecodable jid is an
+      # upstream anomaly, not routine — surface it (JID-free) rather than drop it.
+      _ ->
+        Logger.warning("migrate_pn_sessions: skipping a mis-oriented or undecodable mapping pair")
+        {[], state}
     end
   end
 
   # Build + send the <iq xmlns=encrypt> key fetch that force-refreshes the named
   # jids' Signal sessions (Baileys assertSessions force=true). Used both for
   # newly-mapped LIDs and for an identity-change notification.
+  defp force_refresh_sessions(state, []), do: state
+
   defp force_refresh_sessions(state, jids) do
     user_nodes =
       Enum.map(jids, fn jid ->
@@ -2441,6 +2707,7 @@ defmodule Amarula.Connection do
     state
     |> clear_server_response_waiting()
     |> fail_pending_iqs(:not_connected)
+    |> fail_pending_media_retries(:not_connected)
     |> disconnect_websocket()
     |> Map.merge(%{
       noise_state: nil,
@@ -2469,6 +2736,17 @@ defmodule Amarula.Connection do
     end)
 
     %{state | pending_iqs: %{}}
+  end
+
+  # Drain parked media-retry callers on a restart, mirroring fail_pending_iqs: the
+  # phone's notification can't reach us across the socket swap, so fail fast.
+  defp fail_pending_media_retries(state, reason) do
+    Enum.each(state.pending_media_retries, fn {_id, {from, _media_key, timer}} ->
+      Process.cancel_timer(timer)
+      GenServer.reply(from, {:error, reason})
+    end)
+
+    %{state | pending_media_retries: %{}}
   end
 
   defp handle_pair_device(state, node) do
@@ -3168,12 +3446,18 @@ defmodule Amarula.Connection do
     from = NodeUtils.get_attr(node, "from")
     own_sender? = own_sender?(state, node, from)
 
+    # If the sender is PN-addressed but we now know their LID, move their Signal
+    # session onto the LID address BEFORE decrypting — otherwise the LID-aware
+    # address lookup in decrypt_node would miss the still-PN-keyed ratchet. #15.
+    state = maybe_migrate_sender_session(state, node)
+
     store = SessionStore.build(state.auth_creds)
 
     {:ok, messages, used_pre_key_ids, errors} =
       MessageDecryptor.decrypt_node(node,
         store: store,
-        conn: conn(state)
+        conn: conn(state),
+        instance_id: state.instance_id
       )
 
     state = remove_used_pre_keys(state, used_pre_key_ids)
@@ -3279,19 +3563,26 @@ defmodule Amarula.Connection do
             state
         end
 
-      # A consumed-key error ("Key used already or never filled" /
-      # "Invalid PreKey ID") = the ratchet counter or one-time prekey was already
-      # consumed by the first decrypt (a duplicate redelivery). A retry is
-      # pointless — the sender can't re-encrypt to key material we've moved past —
-      # and nacking 500 makes the server keep redelivering it forever (a
-      # poison-message loop). Baileys (messages-recv.ts:1629) acks these with
-      # ParsingError(487) and does NOT retry, terminating the redelivery.
+      # `%DecryptError{reason: :key_unavailable}` = the key material this stanza
+      # references is gone: the ratchet counter was consumed, or the pkmsg's
+      # one-time prekey isn't in our store. Almost always a duplicate redelivery
+      # (the first decrypt consumed the key), though a genuinely unknown prekey id
+      # lands here too. Either way we can't (and needn't) retry.
+      #
+      # We treat it as RECEIVED: send the same <receipt> the success path does
+      # (which is what drains the server's offline queue), NOT an error nack. A
+      # duplicate is a message we already have, so nacking 487 (ParsingError) would
+      # mislabel it as a parse failure. WhatsApp does have an accurate code for this
+      # exact condition — 496 (SignalErrorOldCounter) — but even that reads as an
+      # error to the server's rate heuristics, so we prefer the positive delivery
+      # receipt: the most honest signal (received, not an error). (Baileys nacks 487
+      # here; we diverge on purpose.)
       duplicate_decrypt_error?(errors) ->
         Logger.debug(
-          "Message #{msg_id} from #{from}: already-decrypted duplicate — ack ParsingError"
+          "Message #{msg_id} from #{from}: already-decrypted duplicate — receipt as delivered"
         )
 
-        send_message_ack(state, node, @nack_parsing_error)
+        send_delivery_receipt(state, node)
 
       true ->
         Logger.debug("Message #{msg_id} from #{from}: nothing decrypted — retry + nack")
@@ -3305,30 +3596,20 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Detect a libsignal consumed-key failure (a duplicate redelivery of an
-  # already-decrypted message): either the ratchet counter is spent ("Key used
-  # already or never filled") or the one-time prekey a pkmsg references is gone
-  # ("Invalid PreKey ID").
-  #
-  # Match on SUBSTRING, not equality: the two enc types surface the signal
-  # differently. A `pkmsg` raises the libsignal text unwrapped, but a `msg` goes
-  # through the multi-session trial decrypt, which wraps the per-session
-  # DecryptError inside "No matching sessions found for message: <inspect(errs)>"
-  # (`SessionCipher.decrypt_with_sessions`). The consumed-key text is still in
-  # there — an exact match missed it and nacked 500 + retried the *most common*
-  # duplicate (a normal ratchet message redelivered after a lost ack / 515 restart).
-  # Exposed (not private) so it can be unit-tested directly.
+  # A redelivery we can't (and needn't) retry: the key material the stanza
+  # references is unavailable — the ratchet counter was consumed, or the pkmsg's
+  # one-time prekey isn't in our store. The Signal layer flags this structurally as
+  # `%DecryptError{reason: :key_unavailable}` (raised in `SessionCipher`/
+  # `SessionBuilder`, propagated through the multi-session trial decrypt), so we
+  # match the reason — not error prose, which the `msg` path wraps. It's ~always a
+  # duplicate; recognising it each time is what terminates the redelivery loop,
+  # which recurs on every 515 reconnect (the server re-fans the undrained stanza)
+  # where an in-memory "seen msg_ids" set would be wiped by the restart. Exposed
+  # for a direct test.
   @doc false
   def duplicate_decrypt_error?(errors) do
-    Enum.any?(errors, fn
-      %{message: msg} when is_binary(msg) -> duplicate_text?(msg)
-      msg when is_binary(msg) -> duplicate_text?(msg)
-      _ -> false
-    end)
+    Enum.any?(errors, &match?(%DecryptError{reason: :key_unavailable}, &1))
   end
-
-  defp duplicate_text?(msg),
-    do: Enum.any?(@duplicate_decrypt_error_texts, &String.contains?(msg, &1))
 
   # One-time prekeys consumed by a PreKeySignalMessage must be deleted, like
   # libsignal's removePreKey after decryptPreKeyWhisperMessage.
@@ -4028,7 +4309,9 @@ defmodule Amarula.Connection do
   # bundles; the injector LID-resolves the addresses so they overwrite/seed the
   # LID-keyed sessions the send path uses. Best-effort: failures are logged only.
   defp handle_tracked_iq(:assert_lid_sessions, {:ok, node}, state) do
-    injected = SessionInjector.inject(node, state.auth_creds, conn(state))
+    injected =
+      SessionInjector.inject(node, state.auth_creds, conn(state), state.instance_id, :always)
+
     Logger.debug("Force-refreshed #{injected} LID session(s)")
     state
   end

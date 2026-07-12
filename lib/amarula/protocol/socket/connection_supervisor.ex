@@ -50,13 +50,29 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
       restart: :temporary
     }
 
-    with {:ok, sup} <-
-           DynamicSupervisor.start_child(Amarula.Application.connections_supervisor(), spec),
+    with :ok <- ensure_supervisor_running(),
+         {:ok, sup} <-
+           DynamicSupervisor.start_child(Amarula.Supervisor.connections_supervisor(), spec),
          connection when is_pid(connection) <- whereis(instance_id, :connection) do
       {:ok, sup, connection}
     else
       :undefined -> {:error, :connection_not_started}
       {:error, _} = err -> err
+    end
+  end
+
+  # `Amarula.Supervisor` is added by the consumer, not started automatically. If it
+  # isn't running, raise a message naming the fix instead of exiting with `:noproc`.
+  defp ensure_supervisor_running do
+    if Process.whereis(Amarula.Supervisor.connections_supervisor()) do
+      :ok
+    else
+      raise """
+      Amarula.Supervisor is not running. Add `Amarula.Supervisor` to your supervision \
+      tree, before any `{Amarula, …}` connection children:
+
+          children = [Amarula.Supervisor, MyApp.Bot, {Amarula, profile: :me, parent: MyApp.Bot}]
+      """
     end
   end
 
@@ -100,6 +116,7 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
   @impl true
   def init(%{instance_id: instance_id, conn: conn, opts: opts}) do
     children = [
+      {DynamicSupervisor, name: name(instance_id, :custodian_supervisor), strategy: :one_for_one},
       {Connection,
        {conn,
         name: name(instance_id, :connection),
@@ -108,11 +125,13 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
       {DynamicSupervisor, name: name(instance_id, :sender_supervisor), strategy: :one_for_one}
     ]
 
-    # `:rest_for_one`, ordered Connection → sender supervisor. Senders block on
-    # Connection's IQ replies, so if Connection restarts the senders (which may be
-    # mid-pipe waiting on it) must restart too. The reverse is not true — a sender
-    # crash is isolated and never restarts Connection. (Connection owns the retry
-    # cache's ETS itself, so there is no separate cache child to coordinate.)
+    # `:rest_for_one`, ordered custodian supervisor → Connection → sender supervisor.
+    # Senders block on Connection's IQ replies, so if Connection restarts the senders
+    # (which may be mid-pipe waiting on it) must restart too — they sit AFTER it.
+    # Custodians are leaves (they wait on no one), so a Connection restart must NOT
+    # wipe them — they sit BEFORE it, untouched by its restart. A sender/Connection
+    # crash never restarts a custodian. (Connection owns the retry cache's ETS itself,
+    # so there is no separate cache child to coordinate.)
     Supervisor.init(children, strategy: :rest_for_one)
   end
 

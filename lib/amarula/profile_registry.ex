@@ -7,7 +7,7 @@ defmodule Amarula.ProfileRegistry do
   ## Reach = the registry module's reach
 
   By default this is a local Elixir `Registry` (this module name doubles as the
-  default registry's process name, started by `Amarula.Application`), so uniqueness
+  default registry's process name, started by `Amarula.Supervisor`), so uniqueness
   is enforced **per node**. A clustered consumer can supply a different,
   `:via`-compatible registry via the `:registry` connection config — e.g.
   `Horde.Registry` for **cluster-wide** uniqueness:
@@ -55,5 +55,18 @@ defmodule Amarula.ProfileRegistry do
       [{pid, _}] -> pid
       [] -> nil
     end
+  rescue
+    # The default registry (`Amarula.ProfileRegistry`) is started by
+    # `Amarula.Supervisor`, which the consumer adds to their own tree — it isn't
+    # auto-started. Looking it up before it exists raises `ArgumentError` from
+    # `Registry.lookup/2`; surface a message naming the fix instead of that opaque
+    # "unknown registry" error.
+    ArgumentError ->
+      raise """
+      Amarula.Supervisor is not running. Add `Amarula.Supervisor` to your supervision \
+      tree, before any `{Amarula, …}` connection children:
+
+          children = [Amarula.Supervisor, MyApp.Bot, {Amarula, profile: :me, parent: MyApp.Bot}]
+      """
   end
 end

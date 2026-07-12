@@ -5,18 +5,95 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-07-11
+
+### Added
+
+- **`Amarula.retry_media/2` — re-upload retry for expired media.** WhatsApp's media
+  URLs are short-lived; once the CDN drops a blob, `download_media/1` fails with
+  `{:error, {:http, 404}}`. `retry_media/2` asks the sender's phone to re-upload it
+  and returns a refreshed `%Amarula.Content.Media{}` (new `direct_path`) you can hand
+  straight back to `download_media/1`. Returns `{:error, :not_on_phone}` if the phone
+  no longer has it, `{:error, :timeout}` if it never answers.
+- **`Amarula.send_options_reply/4` — reply to a button/list/template prompt.** Covers
+  the normal "user taps a button" action (originating a new prompt remains
+  unsupported). Pass the received `%Amarula.Msg{}` plus the tapped option's id and
+  everything else — which proto to build, the display text, a template's 0-indexed
+  button position — is auto-derived from the message's `content.options`:
+
+      Amarula.send_options_reply(conn, msg, "yes")
+
+  A lightweight `{jid, msg_id}` ref also works, with `:kind`/`:text`/`:index` supplied
+  explicitly since the original prompt's options aren't available to look up.
+  `:interactive` (native-flow) prompts are explicitly rejected with a clear error, not
+  silently mis-encoded.
+- **`SessionCustodian` — per-record serialization for Signal sessions (internal).** A
+  per-record GenServer now funnels every load-modify-store of one Signal session
+  through a single process, so the send path (`ConversationSender.encrypt`) and the
+  receive path (`Connection` decrypt/migrate/wipe) can no longer clobber each other's
+  whole-record write. Closes a real race: concurrent encrypt/decrypt against the same
+  session could corrupt the ratchet state. No public API change; three new
+  benchmarks (`scripts/bench_*.exs`) demonstrate both the race and the fix against
+  real Signal traffic, no mocks.
+
+### Changed
+
+- **BREAKING — Amarula no longer starts its process tree; you add it to yours.** The
+  library no longer defines an `Application` — the two registries and the connections
+  `DynamicSupervisor` now live in a new **`Amarula.Supervisor`** that you add to your
+  own supervision tree, so you control its placement, restart strategy, and nesting,
+  and there is no global auto-start.
+
+  **Migration:** add `Amarula.Supervisor` as a child, **before** any `{Amarula, …}`
+  connection children and before `connect/2`:
+
+      children = [
+        Amarula.Supervisor,
+        MyApp.Bot,
+        {Amarula, profile: :me, parent: MyApp.Bot}
+      ]
+
+  If it isn't running when you connect, Amarula raises with a message telling you
+  to add `Amarula.Supervisor`, instead of a `:noproc` exit or an opaque
+  `unknown registry` error.
+- **The `:contacts_update` avatar event carries more.** A `picture` notification now
+  surfaces `picture_id` (to fetch the new avatar) and `author` (who changed it, on
+  group avatars) alongside the existing `id`/`img_url`.
+
+### Removed
+
+- **The internal `Amarula.Baileys` parity module is gone.** Amarula is now an
+  independent OTP-native implementation rather than a single-upstream port; the
+  reference-revision tracking it held moved into `docs/PARITY.md`.
 
 ### Fixed
 
-- **Duplicate 1:1 message redeliveries are acked, not retried.** A normal ratchet
-  message (`<enc type="msg">`) redelivered after a lost ack or a 515 restart is a
-  consumed-key duplicate, but the multi-session trial decrypt wraps the libsignal
-  "Key used already or never filled" signal inside a generic "No matching sessions
-  found" error. The duplicate check matched that text exactly, so it missed the
-  wrapped form and nacked `500` + sent a spurious retry receipt (the poison-redelivery
-  loop the `487` path exists to prevent). It now matches the consumed-key text as a
-  substring, covering both the `pkmsg` (unwrapped) and `msg` (wrapped) forms.
+- **PN→LID Signal-session migration.** When a contact who was known by phone number
+  adopts a LID identity, their live Signal session is now re-keyed from the
+  phone-number address onto the LID address (both on receiving their next message and
+  before the next send), instead of leaving the ratchet stranded — which previously
+  caused a window of undecryptable messages. No renegotiation when a session already
+  exists to move.
+- **Duplicate 1:1 message redeliveries are acknowledged as received, not retried.** A
+  ratchet message redelivered after a lost ack or a 515 restart is a consumed-key
+  duplicate. Amarula now recognises it structurally (a typed decrypt error, covering
+  both the `pkmsg` and the wrapped `msg` forms) and sends the same delivery receipt
+  the success path does — draining the server's offline queue — instead of nacking
+  `500` and firing a spurious retry receipt (the redelivery/poison loop).
+- **A peer's identity change now actually refreshes the session.** On an
+  `encrypt`/`identity` notification for a peer we hold a session with, Amarula wipes
+  the stale session up front and re-fetches their key bundle — so nothing encrypts to
+  the old identity in the gap. (The prior guard compared a jid against a
+  signal-address key, so the refresh never fired.)
+- **Group delivery/read receipts are no longer dropped.** An aggregated group
+  receipt (no top-level `id`, one `<participants key=<msg_id>>` child per message)
+  parsed as an empty-id `:receipt_update`; it now fans out to one `:receipt_update`
+  per (message, participant), so per-member delivery/read state actually surfaces.
+- **Own linked-device changes refresh the device cache.** An `account_sync`
+  notification with a `<devices>` child (a device linked/unlinked from another
+  session) was ignored, leaving our own device list stale until the next full USync —
+  so a newly-linked device could be omitted from a send's encrypt recipients. We now
+  drop our own cached device list on that notification.
 
 ## [0.4.5] - 2026-07-07
 
@@ -724,7 +801,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tubedude/amarula/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/tubedude/amarula/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/tubedude/amarula/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/tubedude/amarula/compare/v0.3.0...v0.4.3

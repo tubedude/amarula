@@ -38,55 +38,28 @@ defmodule Amarula.Protocol.Binary.JID do
   - `device`: Optional device number
   - `agent`: Optional agent number
 
+  Both `device` and `agent` follow Baileys' `!!x` rule — a `nil` or `0` value
+  drops that segment (server defaults to `s.whatsapp.net`).
+
   ## Examples
 
       iex> JID.encode(%{user: "1234", server: "s.whatsapp.net"})
       "1234@s.whatsapp.net"
 
-      iex> JID.encode(%{user: "1234", device: 0, server: "s.whatsapp.net"})
-      "1234:0@s.whatsapp.net"
+      iex> JID.encode(%{user: "1234", device: 2, server: "s.whatsapp.net"})
+      "1234:2@s.whatsapp.net"
 
       iex> JID.encode(%{user: "1234", agent: 1, server: "s.whatsapp.net"})
       "1234_1@s.whatsapp.net"
   """
   @spec encode(map()) :: binary()
-  def encode(%{user: user, server: server, device: device, agent: agent})
-      when not is_nil(device) and not is_nil(agent) do
-    user_str = user_to_string(user)
-    agent_str = "_#{agent}"
-    # device 0 → no suffix (Baileys jidEncode `!!device`)
-    device_str = if device == 0, do: "", else: ":#{device}"
-    "#{user_str}#{agent_str}#{device_str}@#{server}"
+  def encode(%{user: user} = jid) do
+    server = Map.get(jid, :server, "s.whatsapp.net")
+    "#{user_to_string(user)}#{suffix("_", jid[:agent])}#{suffix(":", jid[:device])}@#{server}"
   end
 
-  # Device 0 (and nil) emit NO `:device` suffix — matches Baileys jidEncode
-  # (`!!device ? :device : ''`). A device-suffixed `:0` jid is malformed for the
-  # server (e.g. prekey-bundle fetches by `user:0@...` are silently ignored).
-  def encode(%{user: user, server: server, device: 0}) do
-    encode(%{user: user, server: server})
-  end
-
-  def encode(%{user: user, server: server, device: device}) when not is_nil(device) do
-    user_str = user_to_string(user)
-    device_str = ":#{device}"
-    "#{user_str}#{device_str}@#{server}"
-  end
-
-  def encode(%{user: user, server: server, agent: agent}) when not is_nil(agent) do
-    user_str = user_to_string(user)
-    agent_str = "_#{agent}"
-    "#{user_str}#{agent_str}@#{server}"
-  end
-
-  def encode(%{user: user, server: server}) do
-    user_str = user_to_string(user)
-    "#{user_str}@#{server}"
-  end
-
-  def encode(%{user: user}) do
-    user_str = user_to_string(user)
-    "#{user_str}@s.whatsapp.net"
-  end
+  defp suffix(_sep, x) when x in [nil, 0], do: ""
+  defp suffix(sep, x), do: "#{sep}#{x}"
 
   @doc """
   Decodes a JID string into its components.
@@ -118,59 +91,45 @@ defmodule Amarula.Protocol.Binary.JID do
 
   def decode(_), do: nil
 
+  # nil-safe String.ends_with? — a non-binary jid never matches a suffix. Lets the
+  # suffix predicates below stay one-liners with no `_ -> false` head or guard.
+  defp ends?(jid, suffix) when is_binary(jid), do: String.ends_with?(jid, suffix)
+  defp ends?(_, _), do: false
+
   @doc """
   Checks if a JID represents a user (PN user).
   """
   @spec jid_user?(binary() | nil) :: boolean()
-  def jid_user?(jid) when is_binary(jid) do
-    String.ends_with?(jid, "@s.whatsapp.net") or
-      String.ends_with?(jid, "@lid") or
-      String.ends_with?(jid, "@hosted") or
-      String.ends_with?(jid, "@hosted.lid")
+  def jid_user?(jid) do
+    ends?(jid, "@s.whatsapp.net") or ends?(jid, "@lid") or
+      ends?(jid, "@hosted") or ends?(jid, "@hosted.lid")
   end
-
-  def jid_user?(_), do: false
 
   @doc """
   Checks if a JID represents a group.
   """
   @spec jid_group?(binary() | nil) :: boolean()
-  def jid_group?(jid) when is_binary(jid), do: String.ends_with?(jid, "@g.us")
-  def jid_group?(_), do: false
-
-  @doc """
-  Checks if a JID represents a group.
-  This is an alias for jid_group?/1 for compatibility with the messages module.
-  """
-  @spec group?(binary() | nil) :: boolean()
-  def group?(jid), do: jid_group?(jid)
+  def jid_group?(jid), do: ends?(jid, "@g.us")
 
   @doc """
   Checks if a JID represents a LID user.
   """
   @spec lid_user?(binary() | nil) :: boolean()
-  def lid_user?(jid) when is_binary(jid), do: String.ends_with?(jid, "@lid")
-  def lid_user?(_), do: false
+  def lid_user?(jid), do: ends?(jid, "@lid")
 
   @doc """
   Checks if a JID represents a broadcast.
   """
   @spec jid_broadcast?(binary() | nil) :: boolean()
-  def jid_broadcast?(jid) when is_binary(jid), do: String.ends_with?(jid, "@broadcast")
-  def jid_broadcast?(_), do: false
+  def jid_broadcast?(jid), do: ends?(jid, "@broadcast")
 
   @doc """
   Checks if a JID represents a bot.
   """
   @spec jid_bot?(binary() | nil) :: boolean()
   def jid_bot?(jid) when is_binary(jid) do
-    with [user, _] <- String.split(jid, "@", parts: 2),
-         true <- Regex.match?(@bot_regex, user),
-         true <- String.ends_with?(jid, "@c.us") do
-      true
-    else
-      _ -> false
-    end
+    [user | _] = String.split(jid, "@", parts: 2)
+    Regex.match?(@bot_regex, user) and ends?(jid, "@c.us")
   end
 
   def jid_bot?(_), do: false
@@ -179,22 +138,19 @@ defmodule Amarula.Protocol.Binary.JID do
   Checks if a JID represents a newsletter.
   """
   @spec jid_newsletter?(binary() | nil) :: boolean()
-  def jid_newsletter?(jid) when is_binary(jid), do: String.ends_with?(jid, "@newsletter")
-  def jid_newsletter?(_), do: false
+  def jid_newsletter?(jid), do: ends?(jid, "@newsletter")
 
   @doc """
   Checks if a JID represents a hosted PN user.
   """
   @spec hosted_pn_user?(binary() | nil) :: boolean()
-  def hosted_pn_user?(jid) when is_binary(jid), do: String.ends_with?(jid, "@hosted")
-  def hosted_pn_user?(_), do: false
+  def hosted_pn_user?(jid), do: ends?(jid, "@hosted")
 
   @doc """
   Checks if a JID represents a hosted LID user.
   """
   @spec hosted_lid_user?(binary() | nil) :: boolean()
-  def hosted_lid_user?(jid) when is_binary(jid), do: String.ends_with?(jid, "@hosted.lid")
-  def hosted_lid_user?(_), do: false
+  def hosted_lid_user?(jid), do: ends?(jid, "@hosted.lid")
 
   @doc """
   Checks if a JID is the status broadcast.
@@ -206,26 +162,29 @@ defmodule Amarula.Protocol.Binary.JID do
   Checks if a JID represents Meta AI.
   """
   @spec jid_meta_ai?(binary() | nil) :: boolean()
-  def jid_meta_ai?(jid) when is_binary(jid), do: String.ends_with?(jid, "@bot")
-  def jid_meta_ai?(_), do: false
+  def jid_meta_ai?(jid), do: ends?(jid, "@bot")
 
   @doc """
   Normalizes a JID to user format, converting c.us to s.whatsapp.net.
   """
   @spec jid_normalized_user(binary() | nil) :: binary()
-  def jid_normalized_user(jid) do
-    case decode(jid) do
-      %{user: user, server: server} ->
-        normalized_server = if server == "c.us", do: "s.whatsapp.net", else: server
-        encode(%{user: user, server: normalized_server})
+  def jid_normalized_user(jid), do: jid |> decode() |> to_user_jid()
 
-      _ ->
-        ""
-    end
-  end
+  # Re-encode a decoded jid to its account-level user form — dropping device/agent
+  # (we take only `:user`/`:server`) and normalizing c.us → s.whatsapp.net. A
+  # malformed jid (`decode/1` → nil) yields "".
+  defp to_user_jid(%{user: user, server: "c.us"}),
+    do: encode(%{user: user, server: "s.whatsapp.net"})
+
+  defp to_user_jid(%{user: user, server: server}), do: encode(%{user: user, server: server})
+  defp to_user_jid(_), do: ""
 
   @doc """
   Compares two JIDs to see if they represent the same user.
+
+  Divergence from Baileys (deliberate): two undecodable jids are **not** the same
+  user. Baileys' `areJidsSameUser` returns `true` for two nils; we don't — nil is
+  the absence of an identity, not a shared one.
   """
   @spec are_jids_same_user?(binary() | nil, binary() | nil) :: boolean()
   def are_jids_same_user?(jid1, jid2) do
@@ -236,23 +195,26 @@ defmodule Amarula.Protocol.Binary.JID do
   end
 
   @doc """
-  Transfers device from one JID to another.
+  Copies the device id of `from_jid` onto `to_jid` (device 0 when the source has none).
+
+  Divergence from Baileys (deliberate): an undecodable `to_jid` yields `""` rather
+  than throwing — callers already treat `""` as "no jid", so a soft failure keeps
+  the pipeline going instead of crashing the connection.
   """
   @spec transfer_device(binary(), binary()) :: binary()
   def transfer_device(from_jid, to_jid) do
-    from_decoded = decode(from_jid)
-    device_id = Map.get(from_decoded || %{}, :device, 0)
-    to_decoded = decode(to_jid)
+    device_id =
+      case decode(from_jid) do
+        %{device: device} -> device
+        _ -> 0
+      end
 
-    if to_decoded do
-      # Always include device, even if it's 0
-      encode(%{
-        user: to_decoded.user,
-        server: to_decoded.server,
-        device: device_id
-      })
-    else
-      ""
+    case decode(to_jid) do
+      %{user: user, server: server} ->
+        encode(%{user: user, server: server, device: device_id})
+
+      _ ->
+        ""
     end
   end
 

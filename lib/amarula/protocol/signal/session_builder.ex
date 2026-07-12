@@ -13,7 +13,7 @@ defmodule Amarula.Protocol.Signal.SessionBuilder do
   """
 
   alias Amarula.Protocol.Crypto.Crypto
-  alias Amarula.Protocol.Signal.{CryptoHelpers, SessionRecord}
+  alias Amarula.Protocol.Signal.{CryptoHelpers, DecryptError, SessionRecord}
 
   @doc """
   Process an incoming PreKeyWhisperMessage: build a responder session into
@@ -39,7 +39,12 @@ defmodule Amarula.Protocol.Signal.SessionBuilder do
           if message.pre_key_id, do: store.load_pre_key.(message.pre_key_id), else: nil
 
         if message.pre_key_id && is_nil(pre_key_pair) do
-          raise "Invalid PreKey ID"
+          # The one-time prekey this pkmsg references isn't in our store — either
+          # consumed + deleted by a first decrypt (a redelivery), or an id that was
+          # never ours. We can't tell which, but a retry can't help either way (the
+          # sender can't re-encrypt to a prekey we don't hold), so flag it
+          # :key_unavailable so the receive path acks instead of retrying.
+          raise DecryptError, reason: :key_unavailable, message: "Invalid PreKey ID"
         end
 
         signed_pre_key_pair = store.load_signed_pre_key.(message.signed_pre_key_id)

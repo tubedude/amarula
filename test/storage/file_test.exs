@@ -162,4 +162,25 @@ defmodule Amarula.Storage.FileTest do
     assert {:ok, [%{profile: "pairing", jid: nil, lid: nil, name: nil}]} =
              Storage.list_profiles_with_metadata(s)
   end
+
+  test "list_keys returns every key in a namespace, isolated from other namespaces", %{scope: s} do
+    Storage.put(s, @profile, :session, "199999.0", :a)
+    Storage.put(s, @profile, :session, "199999.2", :b)
+    Storage.put(s, @profile, :session, "188888_1.0", :c)
+    Storage.put(s, @profile, :sender_key, "grp::sender", :other)
+
+    assert {:ok, keys} = Storage.list_keys(s, @profile, :session)
+    assert Enum.sort(keys) == ["188888_1.0", "199999.0", "199999.2"]
+  end
+
+  test "list_keys is empty when nothing is stored (no directory yet)", %{scope: s} do
+    assert {:ok, []} = Storage.list_keys(s, @profile, :session)
+  end
+
+  test "list_keys does not leak the singleton creds file as a key", %{scope: s} do
+    Storage.put(s, @profile, :creds, :self, %{registration_id: 1})
+    Storage.put(s, @profile, :session, "199999.0", :a)
+
+    assert {:ok, ["199999.0"]} = Storage.list_keys(s, @profile, :session)
+  end
 end

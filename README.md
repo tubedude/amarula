@@ -47,7 +47,7 @@ WhatsApp Web implementation — see [Lineage](#lineage-and-license).
 ```elixir
 def deps do
   [
-    {:amarula, "~> 0.4"}
+    {:amarula, "~> 0.5"}
   ]
 end
 ```

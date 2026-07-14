@@ -21,9 +21,9 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
   @moduletag :capture_log
 
   alias Amarula.Protocol.Auth.AuthUtils
-  alias Amarula.Protocol.Binary.{Node, NodeUtils}
+  alias Amarula.Protocol.Binary.{JID, Node, NodeUtils}
   alias Amarula.Protocol.Crypto.Crypto
-  alias Amarula.Protocol.Messages.Media
+  alias Amarula.Protocol.Messages.{EditCrypto, Media, MessageEncoder}
   alias Amarula.Protocol.Proto
   alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionStore}
   alias Amarula.Protocol.Socket.ConnectionSupervisor
@@ -1004,6 +1004,121 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       },
       raw: %Proto.Message{}
     }
+  end
+
+  # --- secret-encrypted message edits (#30) ---
+
+  describe "secret-encrypted message edits (#30)" do
+    test "an inbound message's secret is stashed and a MESSAGE_EDIT envelope surfaces as :edit",
+         ctx do
+      secret = :crypto.strong_rand_bytes(32)
+
+      inject(ctx, plaintext_message("ORIG1", @jid, text_with_secret("original", secret)))
+      assert_receive {:amarula, :messages_upsert, %{messages: [%{type: :text}]}}
+      assert %{tag: "receipt"} = recv_frame()
+
+      inject(ctx, plaintext_message("EDIT1", @jid, edit_envelope_msg("ORIG1", @jid, secret)))
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+
+      assert %Amarula.Msg{type: :edit, content: %Amarula.Content.Edit{text: "corrected"} = edit} =
+               msg
+
+      assert edit.key == {@jid, "ORIG1"}
+      assert %{tag: "receipt"} = recv_frame()
+    end
+
+    test "an envelope targeting an unknown message falls through as :other (still receipted)",
+         ctx do
+      secret = :crypto.strong_rand_bytes(32)
+      inject(ctx, plaintext_message("EDIT1", @jid, edit_envelope_msg("NEVER_SEEN", @jid, secret)))
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [%{type: :other}]}}
+      assert %{tag: "receipt"} = recv_frame()
+    end
+
+    test "a group edit from a different member than the author is suppressed", ctx do
+      group = "123456789-123456@g.us"
+      forger = "10000000009@s.whatsapp.net"
+      secret = :crypto.strong_rand_bytes(32)
+
+      inject(
+        ctx,
+        plaintext_message("ORIG1", group, text_with_secret("original", secret), %{
+          "participant" => @jid
+        })
+      )
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [%{type: :text}]}}
+
+      # The forger knows the group message's secret and encrypts a valid envelope
+      # under their own jid — the author check must still reject it.
+      envelope = edit_envelope_msg("ORIG1", forger, secret, target_participant: @jid)
+
+      inject(
+        ctx,
+        plaintext_message("EDIT1", group, envelope, %{"participant" => forger})
+      )
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [%{type: :other}]}}
+    end
+
+    test "a LID-form envelope decrypts via the LID↔PN fallback", ctx do
+      lid = "200000000000009@lid"
+      secret = :crypto.strong_rand_bytes(32)
+
+      {_count, _new} = LidMappingFileStore.store_mappings(ctx.conn, [{lid, @jid}])
+
+      # The original arrives PN-addressed; the editor encrypts with LID forms.
+      inject(ctx, plaintext_message("ORIG1", @jid, text_with_secret("original", secret)))
+      assert_receive {:amarula, :messages_upsert, %{messages: [%{type: :text}]}}
+
+      inject(ctx, plaintext_message("EDIT1", @jid, edit_envelope_msg("ORIG1", lid, secret)))
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [%{type: :edit}]}}
+    end
+  end
+
+  # A <message> whose <enc type="plaintext"> carries an encoded proto — rides the
+  # real decrypt path with no Signal session needed.
+  defp plaintext_message(id, from, %Proto.Message{} = proto, attrs \\ %{}) do
+    enc = Node.create("enc", %{"type" => "plaintext", "v" => "2"}, Proto.Message.encode(proto))
+
+    Node.create(
+      "message",
+      Map.merge(%{"from" => from, "id" => id, "t" => "1700000000"}, attrs),
+      [enc]
+    )
+  end
+
+  defp text_with_secret(text, secret) do
+    %Proto.Message{
+      conversation: text,
+      messageContextInfo: %Proto.MessageContextInfo{messageSecret: secret}
+    }
+  end
+
+  # A MESSAGE_EDIT envelope targeting `target_id`, encrypted the way the editor's
+  # client would (bare normalized jids in the derivation).
+  defp edit_envelope_msg(target_id, editor_jid, secret, opts \\ []) do
+    target_key = %Proto.MessageKey{
+      remoteJid: @jid,
+      id: target_id,
+      participant: opts[:target_participant]
+    }
+
+    editor = JID.jid_normalized_user(editor_jid)
+    original_sender = (opts[:target_participant] || editor_jid) |> JID.jid_normalized_user()
+
+    env =
+      EditCrypto.encrypt_edit(MessageEncoder.edit(target_key, "corrected"), %{
+        message_secret: secret,
+        target_msg_id: target_id,
+        original_sender_jid: original_sender,
+        editor_jid: editor
+      })
+
+    %Proto.Message{secretEncryptedMessage: %{env | targetMessageKey: target_key}}
   end
 
   # A <notification type="mediaretry"> carrying a GCM-encrypted MediaRetryNotification,

@@ -141,15 +141,15 @@ side), started by `ConnectionSupervisor`:
 ConnectionSupervisor (per instance, :rest_for_one)
 ├── Connection (GenServer) — owns the WebSocketClient + Noise/IQ state, the
 │     consumer API, consumer-event delivery to parent_pid, AND the
-│     per-connection retry-cache ETS table
+│     per-connection retry-cache + message-secret ETS tables
 └── ConversationSender DynamicSupervisor — one sender GenServer per recipient
 ```
 
 `Connection` is both the websocket owner and the consumer's endpoint — the relay
 `Socket` GenServer was merged into it (one process per connection, no double hop).
 Storage is a config concern (a scope on the `Conn`), not a process. The retry-cache
-ETS table is owned by `Connection` (created in `init`), so it's recreated clean on a
-restart — no separate owner process.
+and message-secret ETS tables are owned by `Connection` (created in `init`), so
+they're recreated clean on a restart — no separate owner process.
 
 The tree owns no Registry. The app-level `Amarula.InstanceRegistry` names every
 tree's processes by its `instance_id` ref, and maps `{instance_id, recipient_jid} →

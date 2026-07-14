@@ -128,17 +128,9 @@ defmodule Amarula.Protocol.Messages.MessageContent do
        when not is_nil(key),
        do: {:reaction, key, emoji || ""}
 
-  # Legacy edit path: the new content rides inline as `editedMessage`.
-  #
-  # KNOWN GAP (Baileys #2547, deferred): newer clients instead send the edit as a
-  # `secretEncryptedMessage` (secretEncType: :MESSAGE_EDIT) — an extra encryption
-  # layer keyed by the ORIGINAL message's `messageContextInfo.messageSecret`. That
-  # envelope falls through to `{:other, _}` below with its text still encrypted, so
-  # edits from newer clients aren't surfaced yet. Handling it needs us to retain
-  # each received message's secret for the ~15-min edit window (a small TTL cache,
-  # modelled on `DeviceListCache`'s lazy-expiry-on-read), then decrypt with the same
-  # HMAC+GCM scheme as `PollCrypto`. Tracked as future work; do not use the retry
-  # cache for the secret (it holds *outbound* sends, LRU-bounded, not inbound/TTL).
+  # Legacy edit path: the new content rides inline as `editedMessage`. Edits from
+  # newer clients arrive as an encrypted `secretEncryptedMessage` instead and are
+  # not decoded yet — they fall through to `{:other, _}` below. See issue #30.
   defp do_classify(%Proto.Message{
          protocolMessage: %{type: :MESSAGE_EDIT, key: key, editedMessage: edited}
        })

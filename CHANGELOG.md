@@ -5,6 +5,31 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-07-14
+
+### Security
+
+- **Fixed an atom-exhaustion denial-of-service on the receive path.** Inbound
+  `<chatstate>` and group (`w:gp2`) notification tags were passed to
+  `String.to_atom/1` — the chatstate path with no guard at all — so a peer streaming
+  novel tag names could exhaust the BEAM atom table (atoms are never garbage
+  collected) and bring the node down. Both paths now map only the tags the wire
+  protocol defines to fixed atoms; anything else is ignored and never interned.
+
+### Fixed
+
+- **Media sends are now fully supervised and never orphan or hang.** Media
+  encrypt+upload and history-sync downloads previously ran under bare, unsupervised
+  `Task.start/1`, with a `try/rescue` that only caught raises — not external kills.
+  They now run under a Connection-owned, linked `Task.Supervisor`; `send_media`
+  always answers the caller (even if the job crashes) and a crashed media job can
+  never take the connection's socket down with it.
+- **Inbound messages whose payload begins with `0x88` or `0x8A` are no longer
+  dropped.** Two receive-path clauses matched those bytes as WebSocket close/pong
+  control frames, but the WebSocket layer already demultiplexes control frames — so
+  the match ran against decoded message payloads and would silently swallow a
+  legitimate one. Narrowed to exact single-byte matches.
+
 ## [0.5.0] - 2026-07-11
 
 ### Added
@@ -801,7 +826,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/tubedude/amarula/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/tubedude/amarula/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/tubedude/amarula/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/tubedude/amarula/compare/v0.4.3...v0.4.4

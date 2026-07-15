@@ -67,7 +67,8 @@ defmodule Amarula.Protocol.Presence do
   @doc """
   Parse an inbound `<presence>` or `<chatstate>` node into an `update/0`
   (Baileys `handlePresenceUpdate`). Returns `{:error, :invalid}` for a malformed
-  node. `from`/`participant` are returned as wire jid strings.
+  node or an unrecognised chatstate child. `from`/`participant` are returned as
+  wire jid strings.
   """
   @spec parse_update(Node.t()) :: {:ok, update()} | {:error, :invalid}
   def parse_update(%Node{tag: "presence", attrs: attrs}) do
@@ -76,15 +77,20 @@ defmodule Amarula.Protocol.Presence do
   end
 
   def parse_update(%Node{tag: "chatstate", attrs: attrs, content: [%Node{} = child | _]}) do
-    {:ok, base_update(attrs, chatstate_presence(child))}
+    case chatstate_presence(child) do
+      nil -> {:error, :invalid}
+      presence -> {:ok, base_update(attrs, presence)}
+    end
   end
 
   def parse_update(%Node{}), do: {:error, :invalid}
 
-  # paused → available (Baileys); composing+media:audio → recording.
-  defp chatstate_presence(%Node{tag: "paused"}), do: :available
+  # paused → available (Baileys); composing+media:audio → recording. The child tag
+  # is unconstrained wire input — never atomize it; an unknown tag is nil (invalid).
   defp chatstate_presence(%Node{tag: "composing", attrs: %{"media" => "audio"}}), do: :recording
-  defp chatstate_presence(%Node{tag: tag}), do: String.to_atom(tag)
+  defp chatstate_presence(%Node{tag: "composing"}), do: :composing
+  defp chatstate_presence(%Node{tag: "paused"}), do: :available
+  defp chatstate_presence(%Node{}), do: nil
 
   defp base_update(attrs, presence) do
     jid = attrs["from"]

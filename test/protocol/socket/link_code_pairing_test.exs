@@ -43,15 +43,23 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
       auth: AuthUtils.init_auth_creds()
     }
 
+    # Under ExUnit's test supervisor (`start_supervised!`), NOT `start_link` to the
+    # test process: ExUnit exits a finished test process with :shutdown, so a linked
+    # Connection dies concurrently with the on_exit callbacks — a `GenServer.stop`
+    # teardown then races that death and flakes on the reason mismatch. The test
+    # supervisor is shut down deterministically before on_exit callbacks run.
+    #
     # A unique registered name: start_link defaults to `name: Amarula.Connection`,
     # which collides across this async test file's concurrent starts.
-    {:ok, pid} =
-      Connection.start_link(config,
-        name: :"linkcode_conn_#{System.unique_integer([:positive])}",
-        parent_pid: self()
+    pid =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Connection,
+           {config,
+            name: :"linkcode_conn_#{System.unique_integer([:positive])}", parent_pid: self()}},
+          restart: :temporary
+        )
       )
-
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     {:ok, pid: pid}
   end

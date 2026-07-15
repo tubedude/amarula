@@ -7,7 +7,7 @@ and receive messages from Elixir.
 These rules describe how to **use** the `Amarula.*` public API correctly. They are for
 agents writing consumer code against the library, not for working on the library itself.
 
-These rules track Amarula **0.5.0**. They are a curated subset, not the full API — do
+These rules track Amarula **0.5.1**. They are a curated subset, not the full API — do
 not assume an undocumented function exists. When a signature, return shape, or option is
 unclear, **read the `@doc`/`@spec` on the relevant `Amarula.*` module (hexdocs) before
 calling it** rather than guessing.
@@ -48,7 +48,7 @@ connecting an already-live profile returns `{:error, {:already_running, pid}}`; 
 `Amarula.whereis(profile)` to get the existing one.
 
 Add `Amarula.Supervisor` to your supervision tree — Amarula does **not** start its
-process tree for you (as of 0.5.0). It must come **before** any connection child or
+process tree for you (as of 0.5.1). It must come **before** any connection child or
 `connect/2` call.
 
 For a **fixed set of already-paired accounts known at boot**, start them in your own

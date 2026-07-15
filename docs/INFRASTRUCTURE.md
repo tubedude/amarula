@@ -36,7 +36,7 @@ graph TD
     TreeSup["ConnectionSupervisor<br/>one per connection (:rest_for_one)"]
     CustSup["Session-lock supervisor<br/>(DynamicSupervisor)"]
     Cust["SessionCustodian …<br/>one per Signal record"]
-    Conn["Connection<br/>owns the socket + retry-cache ETS"]
+    Conn["Connection<br/>owns the socket + retry-cache ETS<br/>+ a linked Task.Supervisor"]
     SendSup["Sender supervisor<br/>(DynamicSupervisor)"]
     Sender["ConversationSender …<br/>one per recipient"]
 
@@ -49,6 +49,11 @@ graph TD
 
 The `1st`/`2nd`/`3rd` labels are the `:rest_for_one` startup order. Session
 custodians come before `Connection` on purpose; see [Session Custody](#session-custody).
+`Connection`'s off-process work — media encrypt+upload and history-sync downloads,
+both of which hold `Connection`'s pid and round-trip through it — runs under a
+`Task.Supervisor` that `Connection` starts **linked** in its own `init`, not a
+tree sibling. So the supervisor (and every in-flight task) dies with `Connection`
+rather than outliving it against a stale pid, and a fresh one comes up on restart.
 
 The diagram above shows the internal wiring of one connection tree. It does not
 show the other registry, because that registry serves a different job: it maps a

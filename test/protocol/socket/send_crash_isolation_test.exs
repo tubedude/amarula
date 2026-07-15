@@ -66,6 +66,42 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
     end
   end
 
+  describe "off-process task supervision" do
+    # Connection's heavy off-process work (media encrypt+upload, history-sync
+    # downloads) runs under a Task.Supervisor that Connection starts LINKED in its
+    # own init. So a Connection crash takes the supervisor — and every in-flight
+    # task — down with it: a task holds the crashed Connection's pid, and one that
+    # outlived it would run against a stale pid.
+    test "a task under Connection's linked Task.Supervisor dies when Connection crashes" do
+      conn = test_conn()
+      {:ok, sup, connection} = ConnectionSupervisor.start_instance(conn, parent_pid: self())
+      on_exit(fn -> if Process.alive?(sup), do: Process.exit(sup, :kill) end)
+
+      instance_id = GenServer.call(connection, :instance_id)
+      task_sup = :sys.get_state(connection).task_supervisor
+      custodian_sup = ConnectionSupervisor.whereis(instance_id, :custodian_supervisor)
+      assert is_pid(task_sup)
+
+      # A sentinel task standing in for a media-prep / history-sync job, started
+      # under Connection's Task.Supervisor exactly as production does.
+      {:ok, task} = Task.Supervisor.start_child(task_sup, fn -> Process.sleep(:infinity) end)
+      task_ref = Process.monitor(task)
+      sup_ref = Process.monitor(task_sup)
+
+      Process.exit(connection, :kill)
+
+      # The linked supervisor dies with Connection, and the task with it — not
+      # orphaned against the dead Connection's pid.
+      assert_receive {:DOWN, ^sup_ref, :process, ^task_sup, _}, 1000
+      assert_receive {:DOWN, ^task_ref, :process, ^task, _}, 1000
+
+      # Custodians sit BEFORE Connection in the `:rest_for_one` order, so the same
+      # crash leaves them untouched (still the same pid).
+      assert Process.alive?(custodian_sup)
+      assert custodian_sup == ConnectionSupervisor.whereis(instance_id, :custodian_supervisor)
+    end
+  end
+
   defp test_conn do
     dir = Path.join(System.tmp_dir!(), "amarula_crashiso_#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(dir) end)

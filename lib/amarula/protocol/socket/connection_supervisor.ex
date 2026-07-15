@@ -4,8 +4,10 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
   a single WhatsApp connection instance:
 
       ConnectionSupervisor (:rest_for_one)
+      ├── CustodianSupervisor (DynamicSupervisor) — SessionCustodian…
       ├── Connection          (THE socket: ws + cipher + IQ + sends + consumer API;
-      │                        also owns the retry-cache ETS table)
+      │                        also owns the retry-cache ETS table AND its own
+      │                        linked Task.Supervisor for media/history-sync work)
       └── SenderSupervisor    (DynamicSupervisor) — ConversationSender…
 
   `Connection.make_socket/2` starts this supervisor and returns the `Connection`
@@ -130,8 +132,9 @@ defmodule Amarula.Protocol.Socket.ConnectionSupervisor do
     # (which may be mid-pipe waiting on it) must restart too — they sit AFTER it.
     # Custodians are leaves (they wait on no one), so a Connection restart must NOT
     # wipe them — they sit BEFORE it, untouched by its restart. A sender/Connection
-    # crash never restarts a custodian. (Connection owns the retry cache's ETS itself,
-    # so there is no separate cache child to coordinate.)
+    # crash never restarts a custodian. (Connection owns the retry cache's ETS itself
+    # and its own linked Task.Supervisor for off-process media/history-sync work, so
+    # there is no separate cache or task child to coordinate here.)
     Supervisor.init(children, strategy: :rest_for_one)
   end
 

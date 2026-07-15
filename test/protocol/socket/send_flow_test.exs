@@ -183,25 +183,39 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     instance_id = make_ref()
     registry = ConnectionSupervisor.registry_name(instance_id)
 
-    {:ok, _custodian_sup} =
-      DynamicSupervisor.start_link(
-        strategy: :one_for_one,
-        name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)
+    # Everything under ExUnit's test supervisor (`start_supervised!`), NOT
+    # `start_link` to the test process: ExUnit exits a finished test process with
+    # :shutdown, so a linked Connection dies concurrently with the on_exit
+    # callbacks — a `GenServer.stop` teardown then races that death and flakes on
+    # the reason mismatch. The test supervisor is shut down deterministically
+    # before on_exit callbacks run (so also before `File.rm_rf(dir)` above).
+    start_supervised!(
+      Supervisor.child_spec(
+        {DynamicSupervisor,
+         strategy: :one_for_one,
+         name: ConnectionSupervisor.name(instance_id, :custodian_supervisor)},
+        id: :custodian_supervisor
+      )
+    )
+
+    sup =
+      start_supervised!(
+        Supervisor.child_spec(
+          {DynamicSupervisor,
+           strategy: :one_for_one,
+           name: ConnectionSupervisor.name(instance_id, :sender_supervisor)},
+          id: :sender_supervisor
+        )
       )
 
-    {:ok, sup} =
-      DynamicSupervisor.start_link(
-        strategy: :one_for_one,
-        name: ConnectionSupervisor.name(instance_id, :sender_supervisor)
+    pid =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Connection,
+           {config, name: :"conn_#{:erlang.phash2(instance_id)}", instance_id: instance_id}},
+          restart: :temporary
+        )
       )
-
-    {:ok, pid} =
-      Connection.start_link(config,
-        name: :"conn_#{:erlang.phash2(instance_id)}",
-        instance_id: instance_id
-      )
-
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
     # Stable creds for the whole test (a fresh keypair per send would break
     # multi-send cases that reuse a session).

@@ -26,6 +26,8 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Binary.{Decoder, JID, NodeUtils, Encoder, Node}
   alias Amarula.Protocol.Messages.{ConversationSender, Media, MessageEncoder}
   alias Amarula.Protocol.Messages.{HistorySync, MessageDecryptor}
+  alias Amarula.Protocol.Messages.{EditEnvelope, MessageContent}
+  alias Amarula.MessageSecretStore
   alias Amarula.Protocol.Presence
   alias Amarula.Protocol.Call
   alias Amarula.Protocol.Signal.DecryptError
@@ -656,6 +658,12 @@ defmodule Amarula.Connection do
     # outlive the crash it triggers. A no-op for adapters with no process-owned
     # resource (DETS, Redis).
     :ok = Amarula.RetryCache.ensure_local(conn.retry_cache, conn.profile)
+
+    # Same ownership story for the message-secret store's local resource (the
+    # ETS adapter's table — inbound messageSecrets held for the 15-min edit
+    # window, so newer-client edit envelopes can be decrypted; #30). A no-op for
+    # a consumer-backed ReadOnly adapter, which owns its own storage.
+    :ok = MessageSecretStore.ensure_local(conn.message_secret_store, conn.profile)
 
     # Register under the profile in the app-level registry (the one-per-profile
     # guard + the consumer's restart-safe handle). On a restart this re-registers
@@ -3409,6 +3417,54 @@ defmodule Amarula.Connection do
     })
   end
 
+  # Stash each decrypted message's messageContextInfo.messageSecret keyed by the
+  # stanza id (what a later edit's targetMessageKey.id references), together with
+  # the stanza's server-attested author — EditEnvelope's author check compares
+  # the editor against it. #30.
+  defp stash_message_secrets(state, node, from, messages) do
+    msg_id = NodeUtils.get_attr(node, "id")
+    sender = JID.jid_normalized_user(NodeUtils.get_attr(node, "participant") || from)
+
+    if is_binary(msg_id) and sender != "" do
+      store = conn(state).message_secret_store
+
+      messages
+      |> Enum.map(&MessageContent.message_secret/1)
+      |> Enum.filter(&is_binary/1)
+      |> Enum.each(
+        &MessageSecretStore.put(store, profile(state), msg_id, %{secret: &1, sender: sender})
+      )
+    end
+  end
+
+  # Decrypt a secretEncryptedMessage MESSAGE_EDIT envelope back into the legacy
+  # inline-edit message; anything else passes through untouched. A decryption
+  # failure (no stashed secret / expired window / wrong author) logs and passes
+  # the envelope through — it classifies {:other, _}, exactly as before #30.
+  defp decrypt_edit_envelope(state, node, from, message) do
+    ctx = %{
+      conn: conn(state),
+      profile: profile(state),
+      stanza_from: from,
+      participant: NodeUtils.get_attr(node, "participant")
+    }
+
+    case EditEnvelope.decrypt(message, ctx) do
+      {:ok, inner} ->
+        inner
+
+      :not_an_edit_envelope ->
+        message
+
+      {:error, reason} ->
+        Logger.warning(
+          "Could not decrypt secretEncryptedMessage edit from #{from}: #{inspect(reason)}"
+        )
+
+        message
+    end
+  end
+
   # Our own identity as an Address (the addressed `to`), or empty before login.
   defp own_address(state) do
     case me(state)[:id] do
@@ -3504,6 +3560,13 @@ defmodule Amarula.Connection do
       )
 
     state = remove_used_pre_keys(state, used_pre_key_ids)
+
+    # Stash each message's messageContextInfo.messageSecret for the 15-min edit
+    # window, then decrypt any secretEncryptedMessage MESSAGE_EDIT envelope in
+    # this batch back into the legacy inline-edit shape (#30) — before
+    # run_recv_steps, so plugins and classification see the decoded edit.
+    stash_message_secrets(state, node, from, messages)
+    messages = Enum.map(messages, &decrypt_edit_envelope(state, node, from, &1))
 
     # The primary device shares app-state-sync keys via an APP_STATE_SYNC_KEY_SHARE
     # protocol message. Store them and (re)sync app state once we have keys — but

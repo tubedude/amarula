@@ -68,7 +68,12 @@ defmodule Amarula.MixProject do
       # Collapse module families into "folders" in the sidebar instead of many
       # flat top-level entries: the ~20 Amarula.Content.* message-content structs,
       # and the Storage / RetryCache behaviours with their adapters.
-      nest_modules_by_prefix: [Amarula.Content, Amarula.Storage, Amarula.RetryCache],
+      nest_modules_by_prefix: [
+        Amarula.Content,
+        Amarula.Storage,
+        Amarula.RetryCache,
+        Amarula.MessageSecretStore
+      ],
       extras: [
         "README.md",
         "docs/INFRASTRUCTURE.md",

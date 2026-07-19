@@ -230,6 +230,32 @@ defmodule Amarula.Msg do
     }
   end
 
+  @doc """
+  The message's `messageContextInfo.messageSecret`, or `nil`.
+
+  Newer WhatsApp clients encrypt a message *edit* under the original message's
+  secret. To decrypt those edits after a restart, persist this secret (keyed by
+  `msg.id`) alongside the message when you handle `:messages_upsert`, and serve it
+  back via an `Amarula.MessageSecretStore.ReadOnly` adapter. Also persist the
+  message's `from` (its server-attested sender) — the store's author check
+  compares against it.
+
+      def handle_info({:amarula, :messages_upsert, %{messages: msgs}}, state) do
+        for m <- msgs do
+          MyApp.Messages.save(m.id, secret: Amarula.Msg.message_secret(m), sender: m.from)
+        end
+        {:noreply, state}
+      end
+
+  The default in-memory store handles this automatically; you only need it when
+  you want edits to survive a connection restart. See `Amarula.MessageSecretStore`.
+  """
+  @spec message_secret(t()) :: binary() | nil
+  def message_secret(%__MODULE__{raw: %Proto.Message{} = proto}),
+    do: MessageContent.message_secret(proto)
+
+  def message_secret(%__MODULE__{}), do: nil
+
   # Link-preview card for a text message carrying a URL, or nil (see
   # Amarula.Content.LinkPreview). Reads the (unwrapped) extendedTextMessage.
   defp link_preview(proto) do

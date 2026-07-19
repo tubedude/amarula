@@ -5,7 +5,34 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.1] - 2026-07-14
+## [0.5.1]
+
+### Added
+
+- **Message edits from newer WhatsApp clients are now decoded** (#30). Current
+  clients send an edit as an encrypted `secretEncryptedMessage` envelope (keyed
+  by the original message's `messageSecret`) instead of the legacy inline
+  `protocolMessage.editedMessage`; those edits previously surfaced as `:other`
+  with their text still encrypted. The connection now stashes each inbound
+  message's secret for the 15-minute edit window (a per-connection in-memory
+  cache) and decrypts the envelope back into the same `:edit` message the
+  legacy path emits — no consumer changes needed. Envelopes that can't be
+  decrypted (original older than the edit window, or received before the
+  connection process last restarted) still fall through as `:other`, and an
+  edit whose sender isn't the original message's author is rejected.
+- **`Amarula.MessageSecretStore` — a pluggable store for the above secrets.** The
+  default (`Amarula.MessageSecretStore.ETS`) is the per-connection in-memory
+  cache described above, so nothing changes out of the box. If your app already
+  persists received messages, point the store at them with
+  `Amarula.MessageSecretStore.ReadOnly` (a `get: fn profile, msg_id -> {:ok,
+  %{secret, sender}} | :error end` closure) via the `:message_secret_store`
+  connection config: Amarula then keeps no in-memory copy, and edits survive a
+  connection restart because retention becomes your durable store's. Mirrors the
+  `Amarula.RetryCache` seam.
+- **`Amarula.Msg.message_secret/1`** returns a received message's
+  `messageContextInfo.messageSecret`, so a `ReadOnly` store can persist it (with
+  `msg.from`, the sender the forgery check compares against) from the
+  `:messages_upsert` event.
 
 ### Security
 

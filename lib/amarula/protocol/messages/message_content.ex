@@ -128,9 +128,11 @@ defmodule Amarula.Protocol.Messages.MessageContent do
        when not is_nil(key),
        do: {:reaction, key, emoji || ""}
 
-  # Legacy edit path: the new content rides inline as `editedMessage`. Edits from
-  # newer clients arrive as an encrypted `secretEncryptedMessage` instead and are
-  # not decoded yet — they fall through to `{:other, _}` below. See issue #30.
+  # Edits: the new content rides inline as `editedMessage`. Newer clients send an
+  # encrypted `secretEncryptedMessage` envelope instead — Connection.handle_message
+  # decrypts it (EditEnvelope, #30) back into this legacy shape before classify
+  # runs, so both paths land here. An envelope that couldn't be decrypted (no
+  # cached secret / expired window) still falls through to `{:other, _}` below.
   defp do_classify(%Proto.Message{
          protocolMessage: %{type: :MESSAGE_EDIT, key: key, editedMessage: edited}
        })
@@ -263,6 +265,41 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     case unwrap(message) do
       %Proto.Message{extendedTextMessage: %Proto.Message.ExtendedTextMessage{} = ext} -> ext
       _ -> nil
+    end
+  end
+
+  @doc """
+  The message's `messageContextInfo.messageSecret`, or `nil`. The
+  `messageContextInfo` may sit on the outer message or inside an ephemeral /
+  view-once wrapper (`MessageDecryptor` unwraps only `deviceSentMessage`), so
+  both are checked. This is the key material a later `secretEncryptedMessage`
+  edit envelope targeting this message is encrypted under — `Connection` stashes
+  it per message id (`Amarula.MessageSecretStore`).
+  """
+  @spec message_secret(Proto.Message.t()) :: binary() | nil
+  def message_secret(%Proto.Message{} = message) do
+    secret_of(message) || message |> unwrap() |> secret_of()
+  end
+
+  defp secret_of(%Proto.Message{messageContextInfo: %{messageSecret: secret}})
+       when is_binary(secret) and secret != "",
+       do: secret
+
+  defp secret_of(_), do: nil
+
+  @doc """
+  The message's `%Proto.Message.SecretEncryptedMessage{}` envelope (after
+  unwrapping device-sent/ephemeral wrappers), or `nil`. Newer clients send
+  message edits this way; see `Amarula.Protocol.Messages.EditEnvelope`.
+  """
+  @spec secret_envelope(Proto.Message.t()) :: Proto.Message.SecretEncryptedMessage.t() | nil
+  def secret_envelope(%Proto.Message{} = message) do
+    case unwrap(message) do
+      %Proto.Message{secretEncryptedMessage: %Proto.Message.SecretEncryptedMessage{} = env} ->
+        env
+
+      _ ->
+        nil
     end
   end
 

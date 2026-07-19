@@ -16,6 +16,19 @@ defmodule Amarula.MsgTest do
     assert msg.raw.conversation == "hello"
   end
 
+  test "message_secret/1 exposes the messageContextInfo secret for persistence" do
+    secret = :crypto.strong_rand_bytes(32)
+
+    msg =
+      build(%Proto.Message{
+        conversation: "hi",
+        messageContextInfo: %Proto.MessageContextInfo{messageSecret: secret}
+      })
+
+    assert Msg.message_secret(msg) == secret
+    assert Msg.message_secret(build(%Proto.Message{conversation: "hi"})) == nil
+  end
+
   test "media message exposes kind + a normalized %Amarula.Content.Media{} (not the proto)" do
     img = %Proto.Message.ImageMessage{directPath: "/x", mediaKey: <<1>>, mimetype: "image/jpeg"}
     msg = build(%Proto.Message{imageMessage: img})

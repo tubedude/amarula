@@ -36,7 +36,7 @@ graph TD
     TreeSup["ConnectionSupervisor<br/>one per connection (:rest_for_one)"]
     CustSup["Session-lock supervisor<br/>(DynamicSupervisor)"]
     Cust["SessionCustodian …<br/>one per Signal record"]
-    Conn["Connection<br/>owns the socket + retry-cache ETS<br/>+ a linked Task.Supervisor"]
+    Conn["Connection<br/>owns the socket + retry-cache and<br/>message-secret ETS + a linked Task.Supervisor"]
     SendSup["Sender supervisor<br/>(DynamicSupervisor)"]
     Sender["ConversationSender …<br/>one per recipient"]
 
@@ -89,7 +89,14 @@ The single per-connection process and the consumer's endpoint. It owns:
 - credential resolve/persist through the Storage seam;
 - the consumer API (`send_*`, `group_*`, presence, reads, downloads);
 - dispatch of inbound frames and delivery of events to `parent_pid`;
-- the per-connection retry-cache ETS table (see [Retry Cache](#retry-cache)).
+- the per-connection retry-cache ETS table (see [Retry Cache](#retry-cache)) and
+  the message-secret store's ETS table (inbound `messageSecret`s held for the
+  15-min edit window so newer clients' `secretEncryptedMessage` edit envelopes
+  can be decrypted — `Amarula.MessageSecretStore` / `EditEnvelope`, #30; same
+  init-owned, restart-clean lifecycle as the retry cache). Like the retry cache
+  it is a pluggable seam: the default `MessageSecretStore.ETS` adapter owns this
+  table, but a consumer can supply a `MessageSecretStore.ReadOnly` adapter backed
+  by their own message store, in which case Connection owns no table for it.
 
 It is a large coordinator on purpose. The decision and domain logic live in their
 own pure modules (`Router`, `IQ`, `Login`, the message and signal layers).

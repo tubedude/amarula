@@ -10,6 +10,8 @@ defmodule Amarula.Conn do
     * `:storage` — the resolved `Amarula.Storage.Scope` (adapter + state). Passed,
       with `:profile`, to every storage operation.
     * `:retry_cache` — the resolved `Amarula.RetryCache.Scope`.
+    * `:message_secret_store` — the resolved `Amarula.MessageSecretStore.Scope`
+      (inbound message secrets for decrypting newer-client edit envelopes, #30).
     * `:send_steps` / `:recv_steps` — the plugin pipelines (lists of step funs).
       A step is `fn ctx -> {:cont, ctx} | {:halt, reason}`; `attach/2` on a
       plugin appends to these (Req-style). The send pipeline runs before encrypt;
@@ -21,6 +23,7 @@ defmodule Amarula.Conn do
   struct — so a backend can't reach the socket pid or creds.
   """
 
+  alias Amarula.MessageSecretStore
   alias Amarula.RetryCache
   alias Amarula.Storage
 
@@ -32,6 +35,7 @@ defmodule Amarula.Conn do
     :profile,
     :storage,
     :retry_cache,
+    :message_secret_store,
     :config,
     send_steps: [],
     recv_steps: []
@@ -41,6 +45,7 @@ defmodule Amarula.Conn do
           profile: Storage.profile(),
           storage: Storage.Scope.t(),
           retry_cache: RetryCache.Scope.t() | nil,
+          message_secret_store: MessageSecretStore.Scope.t() | nil,
           config: map(),
           send_steps: [step()],
           recv_steps: [step()]
@@ -68,6 +73,7 @@ defmodule Amarula.Conn do
       profile: profile,
       storage: Storage.scope(storage_spec(config)),
       retry_cache: RetryCache.scope(config),
+      message_secret_store: MessageSecretStore.scope(config),
       config: config,
       send_steps: default_send_steps(),
       recv_steps: []

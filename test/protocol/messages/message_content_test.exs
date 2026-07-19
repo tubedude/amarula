@@ -171,6 +171,48 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     assert {:list_response, _} = MessageContent.classify(list)
   end
 
+  test "message_secret/1 reads the secret off the outer or wrapped message" do
+    secret = :crypto.strong_rand_bytes(32)
+    info = %Proto.MessageContextInfo{messageSecret: secret}
+
+    assert MessageContent.message_secret(%Proto.Message{messageContextInfo: info}) == secret
+
+    wrapped = %Proto.Message{
+      ephemeralMessage: %Proto.Message.FutureProofMessage{
+        message: %Proto.Message{conversation: "hi", messageContextInfo: info}
+      }
+    }
+
+    assert MessageContent.message_secret(wrapped) == secret
+
+    assert MessageContent.message_secret(%Proto.Message{conversation: "hi"}) == nil
+    empty = %Proto.Message{messageContextInfo: %Proto.MessageContextInfo{messageSecret: ""}}
+    assert MessageContent.message_secret(empty) == nil
+  end
+
+  test "secret_envelope/1 finds the envelope plain and wrapped; raw envelopes stay {:other}" do
+    env = %Proto.Message.SecretEncryptedMessage{
+      targetMessageKey: @key,
+      encPayload: <<1, 2, 3>>,
+      encIv: <<0::96>>,
+      secretEncType: :MESSAGE_EDIT
+    }
+
+    plain = %Proto.Message{secretEncryptedMessage: env}
+    assert MessageContent.secret_envelope(plain) == env
+
+    wrapped = %Proto.Message{
+      ephemeralMessage: %Proto.Message.FutureProofMessage{message: plain}
+    }
+
+    assert MessageContent.secret_envelope(wrapped) == env
+
+    assert MessageContent.secret_envelope(%Proto.Message{conversation: "x"}) == nil
+
+    # An envelope that reaches classify undecrypted still falls through.
+    assert {:other, _} = MessageContent.classify(plain)
+  end
+
   test "classifies a member-tag change, including removal (empty label, #2502)" do
     set = MessageEncoder.member_label("VIP")
     assert {:member_tag, %{label: "VIP", timestamp: ts}} = MessageContent.classify(set)

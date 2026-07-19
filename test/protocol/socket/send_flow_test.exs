@@ -140,6 +140,13 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     with_id(Node.create("iq", %{"type" => "result"}, [Node.create("list", %{}, users)]), id)
   end
 
+  # A bundle IQ result whose <list> carries NO <user> for the requested jid — the
+  # round-trip succeeds but the server omitted the bundle (not on WhatsApp, lid/pn
+  # mismatch). SessionInjector then stores nothing, so the session stays missing.
+  defp empty_bundle_reply(id) do
+    with_id(Node.create("iq", %{"type" => "result"}, [Node.create("list", %{}, [])]), id)
+  end
+
   defp bundle_user_node(jid) do
     bundle = @bundle_path |> File.read!() |> JSON.decode!()
 
@@ -686,6 +693,45 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
       |> NodeUtils.get_binary_node_child("enc")
 
     assert is_binary(enc.content) and byte_size(enc.content) > 0
+  end
+
+  test "fails the send cleanly (no crash) when the bundle fetch omits a device", ctx do
+    # Regression for #32: a successful bundle IQ round-trip can still omit the
+    # bundle for a requested jid, leaving the session missing. ensure_sessions must
+    # re-check and fail the pipe with {:no_bundle, jids} rather than proceeding into
+    # encrypt and crashing the sender on {:error, :no_session}.
+    import ExUnit.CaptureLog
+
+    ref = attach_telemetry([[:amarula, :send, :stop]])
+
+    log =
+      capture_log(fn ->
+        task = send_text_async(ctx, @jid, "to a device with no bundle")
+
+        usync_iq = recv_frame()
+        assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
+        inject(ctx, usync_devices_reply(attr(usync_iq, "id")))
+
+        # The bundle IQ went out; answer it with an empty <list> (no bundle).
+        bundle_iq = recv_frame()
+        assert attr(bundle_iq, "xmlns") == "encrypt"
+        inject(ctx, empty_bundle_reply(attr(bundle_iq, "id")))
+
+        # Clean error to the caller — not a {:sender_crashed, %MatchError{}}.
+        assert {:error, {:no_bundle, [@device0_jid]}} = await_send_result(task)
+
+        # The pipe failed before encrypt, so no <message> is relayed.
+        refute_receive {:frame_out, %{tag: "message"}}, 100
+      end)
+
+    assert log =~ "ensure_sessions"
+
+    # Telemetry: tagged :error at the ensure_sessions stage. The reason is a tuple
+    # (may carry a jid), so error_reason is privacy-stripped to nil.
+    assert_receive {[:amarula, :send, :stop], ^ref, %{duration: _}, metadata}
+    assert metadata.result == :error
+    assert metadata.error_stage == :ensure_sessions
+    assert metadata.error_reason == nil
   end
 
   test "persists the LID↔PN mapping when the USync result carries a lid", ctx do

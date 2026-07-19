@@ -542,19 +542,34 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   # Step 2: ensure a Signal session per device, fetching bundles for any missing.
   defp ensure_sessions(%{devices: devices} = ctx) do
-    missing = Enum.filter(devices, fn %{jid: jid} -> is_nil(load_session(ctx, jid)) end)
+    devices
+    |> Enum.filter(fn %{jid: jid} -> is_nil(load_session(ctx, jid)) end)
+    |> ensure_missing(ctx)
+  end
 
-    if missing == [] do
+  defp ensure_missing([], ctx), do: {:ok, ctx}
+
+  defp ensure_missing(missing, ctx) do
+    Logger.debug("Fetching bundles for #{length(missing)} device(s)")
+
+    # :if_absent — a concurrent inbound pkmsg may have established the session
+    # while we were fetching; the custodian re-checks and keeps the live one.
+    #
+    # A successful IQ round-trip does not guarantee a bundle for every jid: the
+    # reply can omit one (not on WhatsApp, lid/pn mismatch), leaving that session
+    # still missing. Re-check after injection and fail the pipe cleanly rather
+    # than proceeding into encrypt/1 and crashing on {:error, :no_session}.
+    with {:ok, reply} <- fetch_bundles(ctx, Enum.map(missing, & &1.jid)),
+         _injected =
+           SessionInjector.inject(reply, ctx.creds, ctx.conn, ctx.instance_id, :if_absent),
+         [] <- Enum.filter(missing, fn %{jid: jid} -> is_nil(load_session(ctx, jid)) end) do
       {:ok, ctx}
     else
-      Logger.debug("Fetching bundles for #{length(missing)} device(s)")
+      {:error, _} = err ->
+        err
 
-      with {:ok, reply} <- fetch_bundles(ctx, Enum.map(missing, & &1.jid)) do
-        # :if_absent — a concurrent inbound pkmsg may have established the session
-        # while we were fetching; the custodian re-checks and keeps the live one.
-        SessionInjector.inject(reply, ctx.creds, ctx.conn, ctx.instance_id, :if_absent)
-        {:ok, ctx}
-      end
+      still_missing ->
+        {:error, {:ensure_sessions, {:no_bundle, Enum.map(still_missing, & &1.jid)}}}
     end
   end
 

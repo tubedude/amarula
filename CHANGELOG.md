@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.1]
+## [0.5.1] - 2026-07-18
 
 ### Added
 
@@ -56,6 +56,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control frames, but the WebSocket layer already demultiplexes control frames — so
   the match ran against decoded message payloads and would silently swallow a
   legitimate one. Narrowed to exact single-byte matches.
+- **A send to a contact whose prekey bundle can't be fetched now fails cleanly
+  instead of crashing the sender** (#32). `ensure_sessions/1` reported success
+  even when the bundle IQ round-trip returned no usable bundle for a device (the
+  number isn't on WhatsApp, or a LID/PN mismatch queried the wrong wire JID),
+  leaving the Signal session missing; the pipeline then crashed the per-recipient
+  `ConversationSender` with a `MatchError` on `{:error, :no_session}`. It now
+  re-checks for still-missing sessions after bundle injection and returns a clean
+  `{:error, {:no_bundle, jids}}` through the normal send-failure path — no process
+  crash, and the send `:stop` telemetry span is tagged `error_stage:
+  :ensure_sessions`.
 
 ## [0.5.0] - 2026-07-11
 

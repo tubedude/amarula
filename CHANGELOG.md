@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] - 2026-07-21
+
+### Fixed
+
+- **Redelivery of an already-consumed group sender-key message no longer
+  triggers an uncapped retry/nack loop** (#35). `GroupCipher`'s "old counter"
+  condition was plain error prose, so `duplicate_decrypt_error?/1` (which only
+  matched `%DecryptError{reason: :key_unavailable}`) never recognized it as a
+  duplicate. Every occurrence fell through to retry + nack, which correlated
+  with WhatsApp tearing down the whole stream (`code=500 reason=ack`) after
+  repeated hits on the same `(group, sender)` pair. That one condition is now
+  tagged `%DecryptError{reason: :key_unavailable}` at its source, matching the
+  1:1 session path's vocabulary, so it's ack'd as delivered instead of retried
+  forever.
+
 ## [0.5.1] - 2026-07-18
 
 ### Added

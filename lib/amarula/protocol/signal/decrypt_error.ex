@@ -17,4 +17,6 @@ defmodule Amarula.Protocol.Signal.DecryptError do
   (bad MAC, closed/sending chain, version mismatch).
   """
   defexception [:message, :reason]
+
+  @type t :: %__MODULE__{message: String.t() | nil, reason: :key_unavailable | nil}
 end

@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tagged `%DecryptError{reason: :key_unavailable}` at its source, matching the
   1:1 session path's vocabulary, so it's ack'd as delivered instead of retried
   forever.
+- **A single corrupt app-state record no longer permanently freezes that
+  collection's sync.** `Sync.decode_collection/5` used to abort an entire
+  collection (chats/contacts/mute/pin/archive) when one patch's aggregate
+  snapshot/patch MAC didn't verify, discarding every patch decoded in the same
+  batch and keeping the old local version — so the next resync re-requested the
+  same version and hit the same mismatch, silently freezing that collection's
+  updates for good if the cause didn't self-resolve. A patch's *individual*
+  record MACs already authenticate it (same app-state-sync key material), so an
+  aggregate mismatch is now reported (not fatal) — mutations and the version
+  still apply, matching Baileys' own resilience fix (`chat-utils.ts`).
 
 ## [0.5.1] - 2026-07-18
 

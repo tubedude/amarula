@@ -70,17 +70,31 @@ defmodule Amarula.Protocol.AppState.Sync do
 
   @doc """
   Decode a collection's patches against `state` with `get_key`, returning
-  `{:ok, changes, new_state}` where `changes` are `SyncAction.decode/1` results
-  (`{:chat, _}` / `{:contact, _}` / …).
+  `{:ok, changes, new_state, mismatches}` — `changes` are `SyncAction.decode/1`
+  results (`{:chat, _}` / `{:contact, _}` / …); `mismatches` is a list of
+  `{:snapshot_mac_mismatch | :patch_mac_mismatch, name}`, one per patch whose
+  aggregate collection MAC didn't verify.
 
   `name` is the collection name — it feeds the snapshot/patch MACs. With
   `validate_macs: true` (default), each patch's **patch MAC** (authenticating the
   patch's mutations) and **snapshot MAC** (authenticating the resulting LTHash) are
-  verified against the app-state-sync key, in addition to the per-record value/index
-  MACs. A patch whose MAC doesn't match is rejected — decoding stops and returns
-  `{:error, {:snapshot_mac_mismatch | :patch_mac_mismatch, name}}` without applying
-  it (the caller should skip the collection and re-sync). A patch whose key isn't
-  available yet decodes to no mutations, so there is nothing to authenticate.
+  checked against the app-state-sync key, in addition to the per-record value/index
+  MACs `Patch.decode_mutations/4` already enforces per record.
+
+  A mismatch here is reported, not rejected: every record's *individual* value/index
+  MAC uses the same app-state-sync key material, so a record that decoded this far
+  already authenticated on its own — the aggregate check mainly confirms the
+  rolling LTHash matches the server's bookkeeping, not a second, independent
+  security boundary. Ported from Baileys' resilience fix (`chat-utils.ts`
+  `decodeSyncdPatch`): aborting the whole collection on an aggregate mismatch used
+  to mean one persistently-corrupt record could freeze that collection's sync
+  forever — the prior local state was kept, so the next resync re-requested the
+  exact same version and hit the exact same mismatch, with `chats`/`contacts`/
+  mute/pin/archive updates silently stuck. Now a patch's mutations and version
+  still apply regardless; the caller decides what to do with `mismatches`
+  (logging, telemetry) — see `Amarula.Connection.apply_app_state_reply/2`. A patch
+  whose key isn't available yet decodes to no mutations, so there is nothing to
+  authenticate (not a mismatch).
   """
   @spec decode_collection(
           [Proto.SyncdPatch.t()],
@@ -88,23 +102,29 @@ defmodule Amarula.Protocol.AppState.Sync do
           (String.t() -> map() | nil),
           String.t(),
           keyword()
-        ) :: {:ok, [SyncAction.result()], Patch.state()} | {:error, term()}
+        ) :: {:ok, [SyncAction.result()], Patch.state(), [{atom(), String.t()}]}
   def decode_collection(patches, state, get_key, name, opts \\ []) do
     validate? = Keyword.get(opts, :validate_macs, true)
 
-    Enum.reduce_while(patches, {:ok, [], state}, fn patch, {:ok, acc, st} ->
-      st = bump(st, patch)
+    {changes, new_state, mismatches} =
+      Enum.reduce(patches, {[], state, []}, fn patch, {acc, st, mismatches} ->
+        st = bump(st, patch)
 
-      {:ok, muts, new_st} =
-        Patch.decode_mutations(patch.mutations, st, get_key, validate_macs: validate?)
+        {:ok, muts, new_st} =
+          Patch.decode_mutations(patch.mutations, st, get_key, validate_macs: validate?)
 
-      changes = acc ++ Enum.map(muts, &SyncAction.decode/1)
+        changes = acc ++ Enum.map(muts, &SyncAction.decode/1)
 
-      case verify_patch_macs(validate?, patch, new_st, name, get_key) do
-        :ok -> {:cont, {:ok, changes, new_st}}
-        {:error, _} = err -> {:halt, err}
-      end
-    end)
+        mismatches =
+          case verify_patch_macs(validate?, patch, new_st, name, get_key) do
+            :ok -> mismatches
+            {:error, reason} -> [reason | mismatches]
+          end
+
+        {changes, new_st, mismatches}
+      end)
+
+    {:ok, changes, new_state, Enum.reverse(mismatches)}
   end
 
   # --- internals ---

@@ -1,6 +1,8 @@
 defmodule Amarula.Protocol.Signal.Group.GroupCipherTest do
   use ExUnit.Case, async: true
 
+  alias Amarula.Protocol.Signal.DecryptError
+
   alias Amarula.Protocol.Signal.Group.{
     GroupCipher,
     GroupSessionBuilder,
@@ -148,6 +150,30 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipherTest do
       {:ok, _} = GroupCipher.decrypt(receiver_store, name, ct)
 
       assert {:error, _} = GroupCipher.decrypt(receiver_store, name, ct)
+    end
+
+    test "replaying a message whose skipped key was already consumed reports :key_unavailable (#35)",
+         %{dir: dir, name: name} do
+      {sender_store, receiver_store} = paired_stores(dir, name)
+
+      {:ok, ct1} = GroupCipher.encrypt(sender_store, name, "one")
+      {:ok, ct2} = GroupCipher.encrypt(sender_store, name, "two")
+
+      # Receiving ct2 first caches ct1's key as a skipped message key; decrypting
+      # ct1 then consumes and removes it from the cache.
+      {:ok, "two"} = GroupCipher.decrypt(receiver_store, name, ct2)
+      {:ok, "one"} = GroupCipher.decrypt(receiver_store, name, ct1)
+
+      # Redelivery of ct1: the ratchet has advanced past its iteration and the
+      # skipped-key cache no longer has it — GroupCipher tags this structurally
+      # as %DecryptError{reason: :key_unavailable}, the same signal the 1:1
+      # session path uses, so connection.ex's duplicate_decrypt_error?/1 can
+      # recognize it as a harmless redelivery instead of nacking + retrying
+      # forever (the failure mode reported in #35).
+      assert {:error, %DecryptError{reason: :key_unavailable, message: message}} =
+               GroupCipher.decrypt(receiver_store, name, ct1)
+
+      assert message =~ "Received message with old counter"
     end
 
     test "tampered signature fails verification", %{dir: dir, name: name} do

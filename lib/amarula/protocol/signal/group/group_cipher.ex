@@ -6,6 +6,8 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipher do
   managing sender keys and coordinating with the sender key store.
   """
 
+  alias Amarula.Protocol.Signal.DecryptError
+
   alias Amarula.Protocol.Signal.Group.{
     SenderKeyName,
     SenderKeyRecord,
@@ -53,9 +55,16 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipher do
 
   ## Returns
   - `{:ok, plaintext}` - Success with decrypted message
-  - `{:error, reason}` - Error with reason
+  - `{:error, reason}` - Error with reason. `reason` is a `String.t()` for every
+    genuine failure (parse, signature, padding, ...); the one exception is a
+    `%DecryptError{reason: :key_unavailable}` when the sender-key ratchet
+    already advanced past this message's iteration and the skipped key isn't
+    cached — a structural signal, matching the 1:1 session path, that a retry
+    can never succeed (almost always a redelivery of an already-consumed
+    message).
   """
-  @spec decrypt(map(), SenderKeyName.t(), binary()) :: {:ok, binary()} | {:error, String.t()}
+  @spec decrypt(map(), SenderKeyName.t(), binary()) ::
+          {:ok, binary()} | {:error, String.t() | DecryptError.t()}
   def decrypt(sender_key_store, sender_key_name, encrypted_message) do
     case sender_key_store.load_sender_key.(sender_key_name) do
       {:ok, record} ->
@@ -104,7 +113,7 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipher do
   end
 
   @spec decrypt_with_record(SenderKeyRecord.t(), map(), SenderKeyName.t(), binary()) ::
-          {:ok, binary()} | {:error, String.t()}
+          {:ok, binary()} | {:error, String.t() | DecryptError.t()}
   defp decrypt_with_record(record, sender_key_store, sender_key_name, encrypted_message) do
     with {:ok, sender_key_message} <- parse_sender_key_message(encrypted_message),
          {:ok, sender_key_state} <-
@@ -141,7 +150,8 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipher do
   end
 
   @spec get_sender_key(SenderKeyState.t(), non_neg_integer()) ::
-          {:ok, SenderMessageKey.t(), SenderKeyState.t()} | {:error, String.t()}
+          {:ok, SenderMessageKey.t(), SenderKeyState.t()}
+          | {:error, String.t() | DecryptError.t()}
   defp get_sender_key(sender_key_state, iteration) do
     sender_chain_key = SenderKeyState.get_sender_chain_key(sender_key_state)
     current_iteration = SenderChainKey.get_iteration(sender_chain_key)
@@ -158,7 +168,17 @@ defmodule Amarula.Protocol.Signal.Group.GroupCipher do
               {:error, "No sender message key found for iteration"}
           end
         else
-          {:error, "Received message with old counter: #{current_iteration}, #{iteration}"}
+          # The ratchet already advanced past this iteration and the skipped
+          # message key isn't cached — the key material is gone, so a retry
+          # can never succeed. Same "already consumed" condition
+          # %DecryptError{reason: :key_unavailable} flags for the 1:1 path
+          # (see its moduledoc); tagged structurally here, at the source,
+          # instead of leaving callers to pattern-match error prose.
+          {:error,
+           %DecryptError{
+             reason: :key_unavailable,
+             message: "Received message with old counter: #{current_iteration}, #{iteration}"
+           }}
         end
 
       # Handle future messages

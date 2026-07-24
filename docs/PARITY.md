@@ -13,9 +13,9 @@ This document tracks our current Baileys review watermark and serves as a runboo
 
 | Field | Value |
 | --- | --- |
-| Baileys version | `7.0.0-rc13` |
-| Commit | `8053b086ecc97ec3f78299561de11959bab05d39` |
-| Date | 2026-05-21 |
+| Baileys version | `7.0.0-rc13` (+3 commits) |
+| Commit | `731cd6b5d1` |
+| Date | 2026-07-20 |
 
 *(To re-verify: dereference `refs/tags/v7.0.0-rc13` on the real Baileys repo to get the commit the tag resolves to, rather than the tag object's own SHA.)*
 
@@ -107,3 +107,22 @@ Audited the rc12→rc13 diff and the notable open Baileys issues/PRs against Ama
   analog.
 - **#2640** LIDMappingStore unbounded cache — Amarula's LID/device stores are
   file-backed with lazy TTL, no in-memory map or per-entry timers.
+
+## Upstream review — 2026-07-20: app-state collection resilience
+
+From a reliability-focused pass over Baileys' `src/Utils/chat-utils.ts`
+(`decodeSyncdPatch`), targeting silent-failure-class gaps — protocol mechanisms
+whose *absence* looks like normal operation, not a crash.
+
+**Ported:**
+
+- **App-state collection resilience** — `Sync.decode_collection/5` used to abort
+  a whole collection's sync on one patch's aggregate MAC mismatch, discarding
+  every patch decoded in the same batch and keeping the old version — so the next
+  resync re-requested the exact same version and hit the exact same mismatch,
+  freezing `chats`/`contacts`/mute/pin/archive updates for that collection
+  permanently if the cause didn't self-resolve. A patch's *individual* record
+  MACs already authenticate it (same app-state-sync key), so an aggregate
+  mismatch is now reported (`mismatches` in the return tuple, logged by
+  `Connection.apply_app_state_reply/2`) rather than fatal — mutations and the
+  version still apply.

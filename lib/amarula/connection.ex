@@ -4041,17 +4041,21 @@ defmodule Amarula.Connection do
     |> Enum.each(fn %{name: name, patches: patches} ->
       prior = load_collection_state(state, name)
 
-      case Sync.decode_collection(patches, prior, get_key, name) do
-        {:ok, changes, new_state} ->
-          save_collection_state(state, name, new_state)
-          emit_app_state_changes(state, changes)
+      {:ok, changes, new_state, mismatches} =
+        Sync.decode_collection(patches, prior, get_key, name)
 
-        {:error, reason} ->
-          # A patch whose snapshot/patch MAC doesn't match is unauthenticated — drop
-          # it (don't persist the state or emit changes). Prior state is kept, so the
-          # next resync re-requests from the same version.
-          Logger.warning("app-state sync for #{name} rejected (#{inspect(reason)}); not applied")
-      end
+      # A patch's individual record MACs already authenticated it (see
+      # Sync.decode_collection/5 moduledoc) — an aggregate mismatch is logged, not
+      # a reason to drop the whole collection: doing that used to mean one
+      # persistently-corrupt record froze this collection's sync forever (state
+      # kept at the old version, next resync re-requests the same version, hits
+      # the same mismatch). Apply what decoded and move on.
+      Enum.each(mismatches, fn reason ->
+        Logger.warning("app-state sync for #{name}: #{inspect(reason)} (applying anyway)")
+      end)
+
+      save_collection_state(state, name, new_state)
+      emit_app_state_changes(state, changes)
     end)
   end
 

@@ -436,6 +436,27 @@ defmodule Amarula.Connection do
   def notify_lid_mappings(_pid, []), do: :ok
   def notify_lid_mappings(pid, pairs), do: GenServer.cast(pid, {:notify_lid_mappings, pairs})
 
+  @doc """
+  Force a fresh app-state resync for `names` (default: all collections), from a
+  clean snapshot rather than the locally stored version.
+
+  Every other app-state resync (`resync_app_state/2`) is server-triggered —
+  `server_sync`/`account_sync` notifications, or a freshly-shared sync key — and
+  resumes from whatever version is stored locally. This is the one
+  consumer-initiated path: it resets the named collections' stored state to
+  version 0 first, so the request the server sees is indistinguishable from a
+  first-ever sync (`return_snapshot: true`, matching Baileys' `resyncAppState`
+  with a fresh `LTHashState`) — the recovery lever for a collection whose local
+  state has drifted (e.g. after repeated snapshot-MAC mismatches truncated
+  batches; see `Sync.decode_collection/5`).
+
+  Fire-and-forget: results land as the usual `:chats_update`/`:contacts_update`
+  events once the reply decodes, same as any other resync.
+  """
+  @spec force_resync_app_state(GenServer.server(), [String.t()] | :all) :: :ok
+  def force_resync_app_state(pid, names \\ :all),
+    do: GenServer.cast(pid, {:force_resync_app_state, names})
+
   @doc "Send global presence (`:available`/`:unavailable`). Needs `me.name`."
   @spec set_presence(GenServer.server(), :available | :unavailable) :: :ok | {:error, term()}
   def set_presence(pid, type), do: GenServer.call(pid, {:set_presence, type})
@@ -972,6 +993,14 @@ defmodule Amarula.Connection do
 
     emit_to_subscribers(state, :lid_mapping_update, mappings)
     {:noreply, state}
+  end
+
+  @impl GenServer
+  def handle_cast({:force_resync_app_state, names}, state) do
+    names = if names == :all, do: Amarula.Protocol.AppState.Sync.collections(), else: names
+    Logger.debug("Force-resyncing app-state collection(s): #{inspect(names)}")
+    Enum.each(names, &reset_collection_state(state, &1))
+    {:noreply, resync_app_state(state, names)}
   end
 
   # Ignore events from a websocket we've already replaced (e.g. after a 515
@@ -4073,6 +4102,13 @@ defmodule Amarula.Connection do
 
   defp save_collection_state(state, name, st) do
     Amarula.Storage.put(scope(state), profile(state), :app_state_version, name, st)
+  end
+
+  # Drop a collection's stored version/hash so the next resync_app_state/2 call
+  # requests from version 0 — the server sees the same shape of request as a
+  # first-ever sync (return_snapshot: true) and sends a full snapshot.
+  defp reset_collection_state(state, name) do
+    save_collection_state(state, name, Patch.new_state())
   end
 
   defp scope(state), do: state.conn.storage

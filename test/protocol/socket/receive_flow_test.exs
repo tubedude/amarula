@@ -922,12 +922,58 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
     end
   end
 
+  describe "history-sync LID↔PN mappings" do
+    test "persists the pairs and emits :lid_mapping_update", ctx do
+      pairs = [{"111@lid", "5511999999999@s.whatsapp.net"}]
+      send(ctx.pid, {:history_sync_result, history_result(lid_mappings: pairs)})
+
+      assert_receive {:amarula, :history_sync, _}
+
+      assert_receive {:amarula, :lid_mapping_update,
+                      [%{lid: %Amarula.Address{user: "111"}, pn: %Amarula.Address{}}]}
+
+      # Persisted, so a later send resolves the LID without a server query.
+      conn = Connection.get_conn(ctx.pid)
+      assert LidMappingFileStore.lid_for_pn(conn, "5511999999999@s.whatsapp.net") == "111"
+
+      # Store-and-emit only: a history blob names every contact you've ever
+      # chatted with, so asserting sessions here would fetch a prekey bundle for
+      # each one. Sends establish them lazily instead.
+      refute_receive {:frame_out, _}, 100
+    end
+
+    test "does not re-emit a mapping already known", ctx do
+      pairs = [{"222@lid", "5511888888888@s.whatsapp.net"}]
+
+      send(ctx.pid, {:history_sync_result, history_result(lid_mappings: pairs)})
+      assert_receive {:amarula, :lid_mapping_update, [_]}
+
+      # The same blob arriving again (a re-sync) is not news to the consumer.
+      send(ctx.pid, {:history_sync_result, history_result(lid_mappings: pairs)})
+      assert_receive {:amarula, :history_sync, _}
+      refute_receive {:amarula, :lid_mapping_update, _}, 100
+    end
+
+    test "survives a result map that carries no mappings key", ctx do
+      # A partial result (an older HistorySync, or a plugin-built map) must not
+      # take the connection down.
+      partial = %{sync_type: :PUSH_NAME, chats: [], contacts: [], push_names: []}
+      send(ctx.pid, {:history_sync_result, partial})
+
+      assert_receive {:amarula, :history_sync, _}
+      assert Process.alive?(ctx.pid)
+    end
+  end
+
   defp history_result(opts) do
     %{
       sync_type: :PUSH_NAME,
       chats: [],
       contacts: [],
-      push_names: Keyword.fetch!(opts, :push_names)
+      push_names: Keyword.get(opts, :push_names, []),
+      messages: [],
+      status_messages: [],
+      lid_mappings: Keyword.get(opts, :lid_mappings, [])
     }
   end
 

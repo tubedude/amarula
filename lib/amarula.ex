@@ -198,8 +198,9 @@ defmodule Amarula do
       state (`:composing`/`:recording`) — `Amarula.Protocol.Presence`
     * `:blocklist_update`  — `[%{jid, action}]` block/unblock changes
     * `:lid_mapping_update` — `[%{lid: Address, pn: Address}]` newly-learned LID↔PN
-      mappings (from the send pipeline / group metadata). React to these to map a
-      group member's LID back to a PN without a server query (see
+      mappings (from the send pipeline / group metadata, and from history sync —
+      a first link learns every synced chat's pair at once). React to these to map
+      a group member's LID back to a PN without a server query (see
       `Amarula.Contacts.pn_for_lid/2`).
     * `:pairing_code`      — `%{code: code}` the 8-char link-code (phone-number)
       pairing code to display (from `request_pairing_code/3`)
@@ -212,8 +213,19 @@ defmodule Amarula do
       `status` is `:offer` (ringing), `:terminate`, `:timeout` (unanswered),
       `:reject`, `:accept`, or `:ringing`. Use `id` to correlate a call's
       `:offer` with its later `:terminate`.
-    * `:history_sync`      — a batch of synced history (chats/contacts/messages)
-      delivered asynchronously after connect (`Amarula.Protocol.Messages.HistorySync`)
+    * `:history_sync`      — a batch of synced history delivered asynchronously
+      after connect: `%{sync_type, chats, contacts, push_names, messages,
+      status_messages, lid_mappings}`. `lid_mappings` are also persisted and
+      re-emitted as `:lid_mapping_update`, so most consumers can ignore them
+      here. `messages` and `status_messages` are `%Amarula.Msg{}`
+      lists — the same view `:messages_upsert` delivers, so `download_media/1` and
+      the `send_*` helpers work on them. This is the only way to recover a message
+      the live path never delivers (e.g. one you sent from your phone while this
+      device was offline). A history `%Msg{}` has less envelope than a live one:
+      `to` is always `nil` and `from` is `nil` when `from_me` is true, so branch
+      on `from_me` before reading `from`. A message may also arrive both here and
+      on `:messages_upsert` — dedup by `msg.id`.
+      See `Amarula.Protocol.Messages.HistorySync`.
     * `:error`             — a connection error term
 
   Credentials are persisted by Amarula itself (scoped to the connection's

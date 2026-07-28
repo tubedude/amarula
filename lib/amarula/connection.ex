@@ -1018,14 +1018,25 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_info({:history_sync_result, result}, state) do
+    # Read the optional keys defensively: this handler must not crash the whole
+    # connection over an unexpected result shape (a partial map from a plugin or
+    # an older HistorySync). The chats/contacts/sync_type keys predate that
+    # concern and stay direct.
+    messages = Map.get(result, :messages, [])
+    lid_mappings = Map.get(result, :lid_mappings, [])
+
     Logger.debug(
       "history sync (#{inspect(result.sync_type)}): #{length(result.chats)} chats, " <>
-        "#{length(result.contacts)} contacts"
+        "#{length(result.contacts)} contacts, " <>
+        "#{length(messages)} messages, " <>
+        "#{length(lid_mappings)} lid mappings"
     )
 
     if result.chats != [], do: emit_to_subscribers(state, :chats_update, result.chats)
     if result.contacts != [], do: emit_to_subscribers(state, :contacts_update, result.contacts)
     emit_to_subscribers(state, :history_sync, result)
+
+    state = learn_lid_mappings(state, lid_mappings)
     {:noreply, learn_own_push_name(state, Map.get(result, :push_names, []))}
   end
 
@@ -2618,6 +2629,38 @@ defmodule Amarula.Connection do
         _ -> moved
       end
     end)
+  end
+
+  # Persist the LID↔PN pairs a history blob carried and surface the newly-learned
+  # ones to the consumer. A first link is the richest mapping source there is —
+  # the blob names every synced chat's LID and PN at once.
+  #
+  # Store-and-emit ONLY, deliberately: unlike the USync path
+  # (`ConversationSender.store_lid_mappings`) this does NOT migrate sessions or
+  # assert new ones. USync runs because a send to that contact is imminent, so a
+  # session is about to be needed; a history blob names every contact you have
+  # ever chatted with, and on a fresh link none of them has a session yet. Routing
+  # those through the migration would send one `<iq xmlns=encrypt>` fetching a
+  # prekey bundle for *every* contact in your history — burning a one-time prekey
+  # each and risking throttling — to build sessions nothing needs yet. Sends
+  # establish them lazily via `ensure_sessions`. Baileys does the same: its
+  # history path only calls `storeLIDPNMappings` (`Utils/process-message.ts`).
+  defp learn_lid_mappings(state, []), do: state
+
+  defp learn_lid_mappings(state, pairs) do
+    {count, newly} = LidMappingFileStore.store_mappings(conn(state), pairs)
+    if count > 0, do: Logger.debug("Stored #{count} LID↔PN mapping(s) from history sync")
+
+    unless newly == [] do
+      mappings =
+        Enum.map(newly, fn {lid, pn} ->
+          %{lid: Amarula.Address.parse(lid), pn: Amarula.Address.parse(pn)}
+        end)
+
+      emit_to_subscribers(state, :lid_mapping_update, mappings)
+    end
+
+    state
   end
 
   # Migrate one newly-mapped {lid, pn} pair (over the batch's pre-listed `keys`),

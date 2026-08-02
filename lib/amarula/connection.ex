@@ -1743,7 +1743,55 @@ defmodule Amarula.Connection do
     end
   end
 
+  # The caller gets the reason — `{:unsupported, "broadcast"}` says "this is a
+  # status post, you cannot reply to it", which is actionable in a way that a
+  # crashed-and-restarted connection is not.
+  defp refuse_send(state, from, shape, payload, reason) do
+    msg_id = Map.get(payload, :msg_id) || generate_message_id()
+
+    case from do
+      nil -> {:noreply, state}
+      _ -> {:reply, shape.({:error, reason}, msg_id), state}
+    end
+  end
+
   defp deliver_async(state, target, payload, from, shape \\ &SendOps.default_send_reply/2)
+
+  # A target we cannot turn into a jid must never reach `to_jid!/1` further down:
+  # that runs INSIDE the Connection GenServer, so it would not fail the caller's
+  # send — it would take the whole connection down and restart it (#50). Refuse
+  # and let the caller see why. Reached when a consumer sends to an address we
+  # cannot address: a `%Msg{}` channel of kind `:unsupported` (a status post), or
+  # the empty address.
+  #
+  # Ahead of the sandbox clause ON PURPOSE. Sandbox mode exists so a consumer can
+  # exercise bot logic without a socket; if it answered `{:ok, id}` here while the
+  # live path refuses, the sandbox would certify a bot that breaks in production.
+  # Both modes must agree on what is addressable.
+  defp deliver_async(state, target, payload, from, shape) do
+    case resolve_target(target) do
+      {:ok, jid} -> deliver_resolved(state, jid, payload, from, shape)
+      {:error, reason} -> refuse_send(state, from, shape, payload, reason)
+    end
+  end
+
+  # A raw jid STRING has to face the same check as a parsed `%Address{}`.
+  # `Address.to_jid/1` passes strings through untouched by design — it is the "I
+  # already hold a jid" path — but on the consumer send boundary that is a hole:
+  # `send_text(conn, "status@broadcast", …)` would post a status purely because
+  # the caller passed a string instead of `msg.channel` (#50).
+  #
+  # Only the unmodelled kind is refused; everything else returns the ORIGINAL
+  # string rather than a re-encoded one, so this cannot quietly rewrite a target
+  # (`@c.us` would otherwise normalize to `@s.whatsapp.net`).
+  defp resolve_target(target) when is_binary(target) do
+    case Amarula.Address.parse(target) do
+      %Amarula.Address{kind: :unsupported, server: server} -> {:error, {:unsupported, server}}
+      _ -> {:ok, target}
+    end
+  end
+
+  defp resolve_target(target), do: Amarula.Address.to_jid(target)
 
   # Sandbox (offline) mode: the connection has no socket and there is no peer to
   # reach, so a send must not run the real pipeline (USync/bundle fetch IQs would
@@ -1752,7 +1800,7 @@ defmodule Amarula.Connection do
   # `{:ok, id}`, or `{:ok, id, secret}` for a poll). Nothing is encrypted, no
   # frame leaves the process — the consumer's bot logic runs unchanged. A
   # fire-and-forget send (from == nil) simply does nothing.
-  defp deliver_async(%{config: %{offline: true}} = state, _target, payload, from, shape) do
+  defp deliver_resolved(%{config: %{offline: true}} = state, _jid, payload, from, shape) do
     msg_id = Map.get(payload, :msg_id) || generate_message_id()
 
     case from do
@@ -1761,8 +1809,7 @@ defmodule Amarula.Connection do
     end
   end
 
-  defp deliver_async(state, target, payload, from, shape) do
-    jid = Amarula.Address.to_jid!(target)
+  defp deliver_resolved(state, jid, payload, from, shape) do
     msg_id = Map.get(payload, :msg_id) || generate_message_id()
     instance_id = state.instance_id
 
@@ -1998,6 +2045,20 @@ defmodule Amarula.Connection do
 
   # Informational nodes that need no reply (thread_metadata, incoming <ack>).
   defp dispatch_node(state, :ignore, _node), do: state
+
+  # A message from a chat kind we cannot represent as an `Amarula.Address` yet —
+  # status@broadcast, @newsletter, @hosted (#50). Declined by `Router` rather
+  # than built into a `%Msg{}` with a nil channel. Logged, not silent: this IS a
+  # dropped message, and the log is how we find out which kinds actually show up
+  # in the wild and so which to implement next. `debug` because a busy account
+  # can receive a steady trickle of status posts.
+  defp dispatch_node(state, :unsupported_message, node) do
+    Logger.debug(fn ->
+      "dropping message from an unsupported chat kind: #{inspect(NodeUtils.get_attr(node, "from"))}"
+    end)
+
+    state
+  end
 
   # Unhandled nodes — log LOUDLY (with the full node) so a server frame we don't
   # yet handle is never silently dropped. Silent drops here hid the `ib,,dirty` /

@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`Amarula.Address.parse/1` no longer returns `nil` for a chat kind we don't
+  model** ([#50]). A jid like `status@broadcast`, `@newsletter` or `@hosted` now
+  parses to `kind: :unsupported` carrying a new `:server` field, so it can be
+  inspected and matched like any address. `nil` now means only "not a jid at all"
+  (no `@server` part). New `Amarula.Address.unsupported?/1`.
+
+  Such an address is deliberately **not addressable**: `to_jid/1` returns
+  `{:error, {:unsupported, server}}` rather than rebuilding the string. Rebuilding
+  would be worse than crashing — sending to `status@broadcast` is how one *posts*
+  a status, so an echo bot replying to a contact's story would publish a story to
+  all its contacts.
+
+  If you nil-checked `parse/1` to detect these, match `unsupported?/1` instead.
+
+### Fixed
+
+- **Replying to a status post no longer takes the connection down** ([#50]).
+  `status@broadcast` is ordinary traffic — any contact posting a Story produced a
+  `%Msg{channel: nil}`, and the documented reply (`send_text(conn, msg.channel, …)`)
+  hit `to_jid!/1` *inside* the Connection GenServer, so the socket died and
+  restarted rather than the send failing. Sends now refuse an unaddressable target
+  with `{:error, reason}`, in sandbox mode as well as live, and messages from a
+  kind we can't act on are declined at the router instead of being delivered with
+  a channel every send would reject.
+
+- **A `@hosted` group participant is no longer attributed to the group** ([#50]).
+  `from` fell back to the group address whenever the participant's jid didn't
+  parse, so every hosted member's message looked like the group had written it —
+  silently collapsing per-sender logic. Hosted business accounts are ordinary
+  group members. Mentions and quotes naming such a user no longer crash the
+  connection either; the jid annotation is dropped and the message still sends.
+
 ## [0.5.7] - 2026-08-05
 
 ### Changed
@@ -205,6 +239,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:chats_update`/`:contacts_update` events.
 
 [#59]: https://github.com/tubedude/amarula/issues/59
+[#50]: https://github.com/tubedude/amarula/issues/50
 [#61]: https://github.com/tubedude/amarula/pull/61
 [#62]: https://github.com/tubedude/amarula/issues/62
 [#64]: https://github.com/tubedude/amarula/issues/64

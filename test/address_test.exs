@@ -1,6 +1,11 @@
 defmodule Amarula.AddressTest do
   use ExUnit.Case, async: true
 
+  # The `@doc` examples are the first thing a consumer copies, and `parse/1`'s now
+  # carry the nil-vs-:unsupported distinction (#50) — worth having the suite prove
+  # they stay true.
+  doctest Amarula.Address
+
   alias Amarula.Address
 
   # The empty address, widened back to the full `Address.t()`. The compiler narrows a
@@ -107,8 +112,11 @@ defmodule Amarula.AddressTest do
       assert %Address{kind: :pn} = Address.parse("5511@c.us")
     end
 
-    test "unknown server → nil; passthrough an Address" do
-      assert Address.parse("x@newsletter") == nil
+    test "unmodelled server → :unsupported; non-jid → nil; passthrough an Address" do
+      assert %Address{kind: :unsupported, server: "newsletter", user: "x"} =
+               Address.parse("x@newsletter")
+
+      assert Address.parse("not-a-jid") == nil
       a = Address.pn("5511")
       assert Address.parse(a) == a
     end
@@ -188,7 +196,10 @@ defmodule Amarula.AddressTest do
       assert %Address{kind: :pn} = Address.parse!("5511@s.whatsapp.net")
       assert Address.parse!(Address.pn("5511")) == Address.pn("5511")
       assert Address.parse(Address.pn("5511")) == Address.pn("5511")
-      assert_raise ArgumentError, fn -> Address.parse!("x@newsletter") end
+      # `parse!/1` raises only on a non-jid now — an unmodelled server IS parseable,
+      # it just isn't addressable, and `to_jid!/1` is what refuses it.
+      assert_raise ArgumentError, fn -> Address.parse!("not-a-jid") end
+      assert_raise ArgumentError, fn -> Address.to_jid!(Address.parse("x@newsletter")) end
       assert Address.to_jid!("5511@s.whatsapp.net") == "5511@s.whatsapp.net"
       assert Address.to_jid!(Address.pn("5511")) == "5511@s.whatsapp.net"
     end

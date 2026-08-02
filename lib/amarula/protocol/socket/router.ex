@@ -57,7 +57,7 @@ defmodule Amarula.Protocol.Socket.Router do
       {"iq", "set", "pair-device", _} -> :pair_device
       {"iq", _, "pair-success", _} -> :pair_success
       {"success", _, _, _} -> :auth_success
-      {"message", _, _, _} -> :message
+      {"message", _, _, _} -> message_route(node)
       {"stream:error", _, _, _} -> :stream_error
       {"failure", _, _, _} -> :connection_failure
       {"iq", "get", _, "urn:xmpp:ping"} -> :server_ping
@@ -82,6 +82,26 @@ defmodule Amarula.Protocol.Socket.Router do
       {"receipt", _, _, _} -> :receipt_ack
       {"call", _, _, _} -> :call_ack
       _ -> :unhandled
+    end
+  end
+
+  # Decline messages from a chat kind we do not model yet (#50) — status@broadcast,
+  # @newsletter, @hosted. We can represent such a sender as an `Address` (kind
+  # `:unsupported`) but cannot act on it: there is no safe reply destination, so
+  # delivering it would hand the consumer a `%Msg{}` whose channel every send
+  # refuses. Drop at the boundary while support is incomplete.
+  #
+  # Keyed on `Address.parse/1` rather than a server list of our own so there is ONE
+  # source of truth: the moment a kind graduates out of `:unsupported` in
+  # `Amarula.Address`, its messages start routing here with no change to this file.
+  #
+  # Note the deliberate asymmetry with `nil`: a missing `from`, or a bare server jid
+  # like `"s.whatsapp.net"`, parses to nil — those are server-originated messages,
+  # not unsupported chats, and must keep routing as before.
+  defp message_route(node) do
+    case Amarula.Address.parse(NodeUtils.get_attr(node, "from")) do
+      %Amarula.Address{kind: :unsupported} -> :unsupported_message
+      _ -> :message
     end
   end
 end

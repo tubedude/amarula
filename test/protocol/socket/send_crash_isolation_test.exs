@@ -21,6 +21,66 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
   alias Amarula.Protocol.Messages.ConversationSender
   alias Amarula.Protocol.Socket.ConnectionSupervisor
 
+  describe "sending to an address we cannot address (#50)" do
+    # An offline connection: no socket, but a real Connection GenServer, which is
+    # what these assertions are about — it has to survive the refusal.
+    defp offline_conn do
+      profile = :"si_#{System.unique_integer([:positive])}"
+
+      auth =
+        Map.put(Amarula.Protocol.Auth.AuthUtils.init_auth_creds(), :me, %{
+          id: "10000000000@s.whatsapp.net",
+          lid: nil,
+          name: "SI Test"
+        })
+
+      dir = Path.join(System.tmp_dir!(), "amarula_si_#{profile}")
+
+      {:ok, pid} =
+        %{
+          profile: profile,
+          parent: self(),
+          offline: true,
+          connection_state: :connected,
+          auth: auth,
+          storage: {Amarula.Storage.File, root: dir}
+        }
+        |> Amarula.new()
+        |> Amarula.connect(parent: self())
+
+      on_exit(fn -> File.rm_rf(dir) end)
+      pid
+    end
+
+    test "a status-post channel is refused with a reason, and the connection lives" do
+      conn = offline_conn()
+      status = Amarula.Address.parse("status@broadcast")
+
+      assert {:error, {:unsupported, "broadcast"}} = Amarula.send_text(conn, status, "hi")
+
+      # THE assertion. Before #50 this raised inside the GenServer, so replying to
+      # a friend's story took the whole connection down and restarted it.
+      assert Process.alive?(conn)
+    end
+
+    test "the empty address is refused too, and the connection lives" do
+      conn = offline_conn()
+
+      assert {:error, :no_jid} = Amarula.send_text(conn, Amarula.Address.empty(), "hi")
+      assert Process.alive?(conn)
+    end
+
+    test "sandbox mode agrees with the live path instead of reporting a false :ok" do
+      conn = offline_conn()
+
+      # Offline sends normally short-circuit to {:ok, id}. The addressability check
+      # deliberately runs FIRST, so a bot exercised in the sandbox learns it cannot
+      # reply to a status rather than discovering it in production.
+      assert {:ok, _id} = Amarula.send_text(conn, Amarula.Address.pn("5511999"), "hi")
+      assert {:error, {:unsupported, _}} = Amarula.send_text(conn, "x@newsletter", "hi")
+    end
+  end
+
   describe "ConversationSender.deliver/2 start failure" do
     test "returns {:error, reason} instead of raising when the supervisor is full" do
       instance_id = make_ref()

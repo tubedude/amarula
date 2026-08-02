@@ -133,6 +133,20 @@ defmodule Amarula.Msg do
   creds. The one exception is a **nested quoted message** (`quoted.message`): it carries
   `channel`/`from` but `to: nil` (a quote isn't independently addressed to you).
 
+  > #### Non-nil is not the same as addressable {: .warning}
+  >
+  > An address can be present and still have nowhere to send: `Amarula.Address`
+  > parses a jid whose chat kind we don't model yet (`@hosted`, `status@broadcast`,
+  > `@newsletter`) to `kind: :unsupported`, carrying its raw `server`. You'll meet
+  > these mainly as `from` — a `@hosted` business account writing in an ordinary
+  > group — and on history-synced status posts.
+  >
+  > They compare and inspect like any address, but every send refuses them with
+  > `{:error, {:unsupported, server}}` rather than guessing a destination. Check
+  > `Amarula.Address.unsupported?/1` before replying to an address that came off
+  > the wire. Live messages *from* such a chat are not delivered at all (the router
+  > declines them) until the kind is implemented.
+
   ## `pushname`
 
   `pushname` is the sender's display name as it rides on the inbound stanza (the
@@ -351,8 +365,14 @@ defmodule Amarula.Msg do
   # a list (proto3 repeated field), so these two clauses are total.
   defp mentions(nil), do: []
 
+  # Unparseable mentions are dropped rather than carried as nil (#50). A mention of
+  # a `@hosted` user arrives inside an ordinary group message, so the router gate
+  # never sees it — and a nil in this list is a live grenade: the documented
+  # round-trip `send_text(conn, chan, text, mentions: msg.mentions)` feeds it to
+  # `to_jid!/1` inside the Connection GenServer. Dropping also makes the list match
+  # its declared `[Address.t()]` type.
   defp mentions(%Proto.ContextInfo{mentionedJid: jids}) when is_list(jids),
-    do: Enum.map(jids, &Address.parse/1)
+    do: jids |> Enum.map(&Address.parse/1) |> Enum.reject(&is_nil/1)
 
   # Whether the message was forwarded (ContextInfo.isForwarded, field 22). The
   # proto3-optional field is nil when unset, so only an explicit `true` counts.

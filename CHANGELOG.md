@@ -23,6 +23,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   If you nil-checked `parse/1` to detect these, match `unsupported?/1` instead.
 
+### Removed
+
+- **The bare `{jid, msg_id}` message ref is gone; passing one now raises
+  `ArgumentError`** ([#46], [#47]). Deprecated with a runtime warning since 0.5.4
+  and dropped from the published type in 0.5.7, as promised there.
+
+  > **If your project was written against `usage-rules.md` from 0.5.6 or earlier,
+  > this is likely to hit you — and you will not have seen a deprecation warning.**
+  > That file listed the 2-tuple as a first-class option and never mentioned
+  > `from_me`, from 0.5.4 (when the library started warning) through 0.5.6. It ships
+  > inside the package and consumers **copy it locally** via
+  > `mix usage_rules.sync`, so a stale synced copy keeps teaching the removed form
+  > no matter which Amarula version you upgrade to. Re-sync it, and grep your
+  > project for 2-element message refs. This was reported from the field, not
+  > theorised: a consumer's reaction bug traced back to exactly this guidance.
+
+  It raises from a dedicated clause rather than falling through to a
+  `FunctionClauseError` on a private function — the error names the form to use and
+  echoes your own jid and id back, since a no-clause error would have told you
+  nothing about what to change.
+
+  `message_key/2`'s `default_from_me` argument went with it: it existed only to
+  guess the missing `from_me` (`true` for self-ops like `send_edit`, `false`
+  elsewhere), and that guess was the whole problem — get it wrong and an edit or
+  revoke silently matches nothing, because the payload is E2E-encrypted and the
+  server cannot reject it.
+
+  Pass `{jid, msg_id, from_me}`, or the `%Amarula.Msg{}` / `content.key` you
+  received, which carries `from_me` already remapped to your perspective.
+
 ### Fixed
 
 - **Replying to a status post no longer takes the connection down** ([#50]).
@@ -167,27 +197,6 @@ API change.
   `%Amarula.Msg{}` / `content.key`, which carry `from_me` for you. Also fixed a
   leftover in `usage-rules.md` still teaching the 2-tuple for `fetch_history/4`
   ([#81] cleaned up the others).
-
-### Removed
-
-- **The bare `{jid, msg_id}` message ref is gone; passing one now raises
-  `ArgumentError`** ([#46], [#47]). Deprecated with a runtime warning since 0.5.4
-  and dropped from the published type in 0.5.7 (see **Deprecated** above), as
-  promised there.
-
-  It raises from a dedicated clause rather than falling through to a
-  `FunctionClauseError` on a private function — the error names the form to use and
-  echoes your own jid and id back, since a no-clause error would have told you
-  nothing about what to change.
-
-  `message_key/2`'s `default_from_me` argument went with it: it existed only to
-  guess the missing `from_me` (`true` for self-ops like `send_edit`, `false`
-  elsewhere), and that guess was the whole problem — get it wrong and an edit or
-  revoke silently matches nothing, because the payload is E2E-encrypted and the
-  server cannot reject it.
-
-  Pass `{jid, msg_id, from_me}`, or the `%Amarula.Msg{}` / `content.key` you
-  received, which carries `from_me` already remapped to your perspective.
 
 ### Fixed
 

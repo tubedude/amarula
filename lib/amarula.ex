@@ -170,19 +170,16 @@ defmodule Amarula do
       chat, the message id, and whether *you* sent it (add a 4th `participant` jid
       for a group target).
 
-  > #### The bare `{jid, msg_id}` tuple is deprecated {: .warning}
+  > #### The bare `{jid, msg_id}` tuple was removed in 0.6.0 {: .warning}
   >
-  > It can't say whether the message is yours, so it assumes a per-operation default
-  > (`from_me: true` for `send_edit`/`send_revoke`/`pin_message`/`keep_message`, which
-  > act on **your own** messages; `false` elsewhere). A wrong `from_me` makes an
-  > edit/revoke silently match nothing (the payload is E2E-encrypted, so the server
-  > can't reject it). Pass the explicit `{jid, msg_id, from_me}` form instead.
+  > It could not say whether the message was yours, so it guessed a per-operation
+  > default — and a wrong `from_me` makes an edit or revoke silently match nothing,
+  > because the payload is E2E-encrypted and the server cannot reject it. Passing it
+  > now raises `ArgumentError` with the form to use instead.
   >
-  > It is **no longer part of this type**, so `mix dialyzer` reports it at every call
-  > site — deliberately, because the runtime `IO.warn` only fires on a path you
-  > actually execute, and a stderr line is easy to lose in a running app while the
-  > failure itself is silent. It still works at runtime (with that warning) and will
-  > be **removed in 0.6.0**.
+  > It warned at runtime from 0.5.4 and left this type in 0.5.7 (so `mix dialyzer`
+  > reported it). Migrate by passing `from_me` explicitly, or by handing over the
+  > `%Amarula.Msg{}` / `content.key` you received, which carries it for you.
 
   (Quote *replies* use the `:quoted` opt on `send_text`, which takes the
   `%Amarula.Msg{}` directly.)
@@ -1012,7 +1009,7 @@ defmodule Amarula do
   """
   @spec send_edit(conn(), message_ref(), String.t()) :: send_result()
   def send_edit(conn, ref, new_text) do
-    {jid, key} = message_key(ref, true)
+    {jid, key} = message_key(ref)
     send_built(conn, jid, MessageEncoder.edit(key, new_text))
   end
 
@@ -1022,7 +1019,7 @@ defmodule Amarula do
   """
   @spec send_revoke(conn(), message_ref()) :: send_result()
   def send_revoke(conn, ref) do
-    {jid, key} = message_key(ref, true)
+    {jid, key} = message_key(ref)
     send_built(conn, jid, MessageEncoder.revoke(key))
   end
 
@@ -1046,7 +1043,7 @@ defmodule Amarula do
   @doc "Pin a message for everyone in the chat. `ref` is a `%Amarula.Msg{}` or a `{jid, msg_id, from_me}` tuple."
   @spec pin_message(conn(), message_ref()) :: send_result()
   def pin_message(conn, ref) do
-    {jid, key} = message_key(ref, true)
+    {jid, key} = message_key(ref)
     send_built(conn, jid, MessageEncoder.pin(key, true))
   end
 
@@ -1150,7 +1147,7 @@ defmodule Amarula do
   @doc "Unpin a previously pinned message. `ref` is a `%Amarula.Msg{}` or a `{jid, msg_id, from_me}` tuple."
   @spec unpin_message(conn(), message_ref()) :: send_result()
   def unpin_message(conn, ref) do
-    {jid, key} = message_key(ref, true)
+    {jid, key} = message_key(ref)
     send_built(conn, jid, MessageEncoder.pin(key, false))
   end
 
@@ -1160,14 +1157,14 @@ defmodule Amarula do
   """
   @spec keep_message(conn(), message_ref()) :: send_result()
   def keep_message(conn, ref) do
-    {jid, key} = message_key(ref, true)
+    {jid, key} = message_key(ref)
     send_built(conn, jid, MessageEncoder.keep(key, true))
   end
 
   @doc "Undo a previous keep (let the message disappear again). `ref` is a `%Amarula.Msg{}` or a `{jid, msg_id, from_me}` tuple."
   @spec unkeep_message(conn(), message_ref()) :: send_result()
   def unkeep_message(conn, ref) do
-    {jid, key} = message_key(ref, true)
+    {jid, key} = message_key(ref)
     send_built(conn, jid, MessageEncoder.keep(key, false))
   end
 
@@ -1338,13 +1335,13 @@ defmodule Amarula do
     do: GenServer.call(conn, {:send_message, jid, message}, send_call_timeout())
 
   # Resolve a public message_ref into the chat jid + the %Proto.MessageKey{} the
-  # encoders need. A %Amarula.Msg{} and the widened `{jid, id, from_me[, participant]}`
-  # tuples carry `fromMe` explicitly; the deprecated bare `{jid, id}` tuple can't, so
-  # it takes the operation's `default_from_me` (self-ops pass `true`). All jids are
+  # encoders need. Every accepted form carries `fromMe` explicitly. All jids are
   # normalized to account-level via `key_jid/1`.
-  defp message_key(ref, default_from_me \\ false)
-
-  defp message_key(%Amarula.Msg{} = msg, _default) do
+  #
+  # The `default_from_me` second argument is gone with the bare `{jid, id}` tuple in
+  # 0.6.0 — it existed only to guess that tuple's missing `fromMe` (self-ops passed
+  # `true`), and a guess is exactly what made the old form unsafe.
+  defp message_key(%Amarula.Msg{} = msg) do
     jid = key_jid(msg.channel)
 
     key = %Proto.MessageKey{
@@ -1357,13 +1354,13 @@ defmodule Amarula do
     {jid, key}
   end
 
-  defp message_key({jid, msg_id, from_me}, _default)
+  defp message_key({jid, msg_id, from_me})
        when is_binary(msg_id) and is_boolean(from_me) do
     jid = key_jid(jid)
     {jid, %Proto.MessageKey{remoteJid: jid, id: msg_id, fromMe: from_me}}
   end
 
-  defp message_key({jid, msg_id, from_me, participant}, _default)
+  defp message_key({jid, msg_id, from_me, participant})
        when is_binary(msg_id) and is_boolean(from_me) do
     jid = key_jid(jid)
 
@@ -1376,13 +1373,25 @@ defmodule Amarula do
      }}
   end
 
-  defp message_key({jid, msg_id}, default_from_me) when is_binary(msg_id) do
-    IO.warn(
-      "the {jid, msg_id} message_ref is deprecated (it can't say whether the message " <>
-        "is yours, so it assumes from_me: #{default_from_me}). Pass {jid, msg_id, from_me} instead."
-    )
+  # Removed in 0.6.0, having warned since 0.5.4. A dedicated clause rather than
+  # letting it fall through to FunctionClauseError: this is reached from a public
+  # send helper, so a no-clause error on a private function would tell the consumer
+  # nothing about what to change.
+  defp message_key({jid, msg_id}) when is_binary(msg_id) do
+    raise ArgumentError, """
+    the {jid, msg_id} message_ref was removed in 0.6.0 (deprecated since 0.5.4).
 
-    message_key({jid, msg_id, default_from_me}, default_from_me)
+    It could not say whether the target message is yours, so it guessed — and a wrong
+    guess makes an edit or revoke silently match nothing, because the payload is
+    E2E-encrypted and the server cannot reject it.
+
+    Pass from_me explicitly:
+
+        {#{inspect(jid)}, #{inspect(msg_id)}, from_me}
+
+    Or hand over what you received — a %Amarula.Msg{} or its content.key — which
+    already carries from_me, remapped to your perspective.
+    """
   end
 
   # A jid as it appears in a `%Proto.MessageKey{}`: ACCOUNT-level, never

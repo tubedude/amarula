@@ -68,6 +68,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leftover in `usage-rules.md` still teaching the 2-tuple for `fetch_history/4`
   ([#81] cleaned up the others).
 
+### Removed
+
+- **The bare `{jid, msg_id}` message ref is gone; passing one now raises
+  `ArgumentError`** ([#46], [#47]). Deprecated with a runtime warning since 0.5.4
+  and dropped from the published type in 0.5.7 (see **Deprecated** above), as
+  promised there.
+
+  It raises from a dedicated clause rather than falling through to a
+  `FunctionClauseError` on a private function — the error names the form to use and
+  echoes your own jid and id back, since a no-clause error would have told you
+  nothing about what to change.
+
+  `message_key/2`'s `default_from_me` argument went with it: it existed only to
+  guess the missing `from_me` (`true` for self-ops like `send_edit`, `false`
+  elsewhere), and that guess was the whole problem — get it wrong and an edit or
+  revoke silently matches nothing, because the payload is E2E-encrypted and the
+  server cannot reject it.
+
+  Pass `{jid, msg_id, from_me}`, or the `%Amarula.Msg{}` / `content.key` you
+  received, which carries `from_me` already remapped to your perspective.
+
 ### Fixed
 
 - **Windows desktop pairing advertised the retired `WIN32` web sub-platform;

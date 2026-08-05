@@ -149,10 +149,9 @@ Amarula.send_contact(conn, jid, display_name, vcard)
 Reactions/edits/deletes — and `fetch_history/4` — point at a message via a
 **`message_ref`**: pass either the **`%Amarula.Msg{}` you received** as-is, a
 received `content.key`, or a **`{jid, msg_id, from_me}` tuple** (`from_me` = did
-*you* send the target). The bare `{jid, msg_id}` 2-tuple still works but is
-deprecated — it can't say whose message it is, so it guesses, and a wrong guess makes
-an edit/revoke silently match nothing. It is out of the published type (so
-`mix dialyzer` flags it) and is **removed in 0.6.0** — always pass `from_me`.
+*you* send the target). The bare `{jid, msg_id}` 2-tuple was **removed in 0.6.0** and
+now raises — it couldn't say whose message it was, so it guessed, and a wrong guess
+makes an edit/revoke silently match nothing. Always pass `from_me`.
 (`mark_read/4` is different — it takes a list of plain
 message-id strings, not a `message_ref`.)
 

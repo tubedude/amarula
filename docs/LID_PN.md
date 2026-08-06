@@ -90,6 +90,32 @@ works; this document only covers which address (PN or LID) a given layer uses.
 `send_flow_test.exs` pins exactly this: the session lives at the LID address while
 `<to>` is still the PN.
 
+### Overriding the envelope (`resolve_pn_to_lid`)
+
+The table above describes the **default**. There is now an opt-in that changes the
+first row: with `resolve_pn_to_lid: true`, a 1:1 send to a phone number is
+re-addressed to that contact's LID when the mapping is already known, so the envelope
+carries the LID too.
+
+Why you might want it: WhatsApp appears to evaluate the trusted-contact gate against
+the LID identity, so a PN-addressed stanza to a LID-mapped contact can be accepted by
+the socket and then discarded with ack `463` no matter what token rides along
+([Baileys#2683](https://github.com/WhiskeySockets/Baileys/issues/2683)). If sends to
+a phone number fail repeatably for someone you know is reachable, this is the lever.
+
+Why it is off by default: the direction of travel is clear — WhatsApp has begun
+omitting `*_pn` attributes entirely, so clients reconstruct phone numbers locally —
+but upstream has attempted this same change twice
+([#2711](https://github.com/WhiskeySockets/Baileys/pull/2711),
+[#2748](https://github.com/WhiskeySockets/Baileys/pull/2748)) and merged neither,
+with two LID-migration bugs still open. Default-on would mean following a change its
+own authors cannot land.
+
+Note the flag re-addresses the whole pipeline, not just the envelope: device
+resolution then queries USync by **LID**. If that comes back empty the send fails as
+`{:error, {:resolve_devices, :not_on_whatsapp}}` — right about the outcome, wrong
+about the cause. See `Amarula.Connection.resolve_pn_to_lid?/1`.
+
 ## What You Have to Keep to Address Properly (the 400)
 
 Amarula picks the *lock* (LID) for you. **You** are responsible for the *envelope* —

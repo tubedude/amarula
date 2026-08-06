@@ -35,7 +35,12 @@ Run these checks from the Baileys checkout (one level up from `amarula/`).
 ```bash
 # Fetch the latest upstream and see what landed since our pinned commit.
 git fetch origin
-PINNED=7e7b0757e3f9f3c7789fb1cfd2f241d5002a199a   # the commit pinned above
+# Read the watermark straight out of the table above, so there is only ONE copy of
+# it in this file. A hardcoded SHA here drifted out of step with the table and sent
+# anyone following this runbook diffing against the wrong base — which shows up as
+# phantom "unreviewed" commits.
+# (these commands run from the Baileys checkout, so amarula/ is one level up)
+PINNED=$(sed -n 's/^| Commit | `\(.*\)` |$/\1/p' ../amarula/docs/PARITY.md)
 
 # Commits we haven't reviewed yet:
 git log --oneline $PINNED..origin/master

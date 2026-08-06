@@ -54,13 +54,7 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
     origin = opts[:origin] || Application.get_env(:amarula, :origin, "https://web.whatsapp.com")
     agent = opts[:agent] || "Mozilla/5.0"
 
-    # Convert headers to list format
-    headers_list =
-      case headers do
-        h when is_map(h) -> Enum.map(h, fn {k, v} -> {k, v} end)
-        h when is_list(h) -> h
-        _ -> []
-      end
+    headers_list = build_headers(headers, origin, agent)
 
     # Build initial state struct
     state = %__MODULE__{
@@ -69,9 +63,11 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
       parent_pid: parent_pid
     }
 
-    # WebSockex options
+    # WebSockex options. `:socket_connect_timeout` defaults to 6s in WebSockex,
+    # which silently ignored the configured `:connect_timeout_ms` (default 30s).
     websocket_opts = [
       extra_headers: headers_list,
+      socket_connect_timeout: connect_timeout_ms,
       async: true
     ]
 
@@ -186,5 +182,39 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
 
     # Send termination event directly to parent
     send(state.parent_pid, {:ws_event, self(), {:close, %{reason: reason}}})
+  end
+
+  @doc false
+  # Normalise the caller's `:headers` and fold in `:origin`/`:agent`.
+  #
+  # These two are configuration, so they have to reach the handshake — WhatsApp
+  # Web sees the opening request, and a connection carrying neither header looks
+  # nothing like a browser. Caller-supplied headers win: an explicit
+  # `headers: [{"User-Agent", ...}]` is more specific than the `:agent` default.
+  def build_headers(headers, origin, agent) do
+    headers
+    |> case do
+      h when is_map(h) -> Enum.map(h, fn {k, v} -> {k, v} end)
+      h when is_list(h) -> h
+      _ -> []
+    end
+    |> put_new_header("Origin", origin)
+    |> put_new_header("User-Agent", agent)
+  end
+
+  # Append `{name, value}` unless the caller already supplied that header.
+  # HTTP header names are case-insensitive, so the comparison has to be too —
+  # otherwise a caller passing "user-agent" would get a duplicate header.
+  defp put_new_header(headers, name, value) do
+    downcased = String.downcase(name)
+
+    already_set? =
+      Enum.any?(headers, fn
+        {k, _v} when is_binary(k) -> String.downcase(k) == downcased
+        {k, _v} when is_atom(k) -> k |> Atom.to_string() |> String.downcase() == downcased
+        _ -> false
+      end)
+
+    if already_set?, do: headers, else: headers ++ [{name, value}]
   end
 end

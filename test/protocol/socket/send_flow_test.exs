@@ -182,6 +182,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
         auth: creds(context[:me_lid])
       }
       |> maybe_put(:ack_timeout_ms, context[:ack_timeout_ms])
+      |> maybe_put(:resolve_pn_to_lid, context[:resolve_pn_to_lid])
 
     # A real per-instance Registry + sender DynamicSupervisor, registered under the
     # names ConnectionSupervisor derives from instance_id — so Connection's
@@ -791,6 +792,52 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     assert lid_addr == "20000000001_1.0"
     refute is_nil(SessionStore.load_session(ctx.conn, lid_addr))
     assert is_nil(SessionStore.load_session(ctx.conn, "10000000001.0"))
+  end
+
+  # `resolve_pn_to_lid: true` re-addresses the ENVELOPE to the contact's LID when the
+  # mapping is already known — the opposite of the default pinned by the test below.
+  # Off by default because upstream has attempted the same change twice (Baileys
+  # #2711, #2748) and merged neither; see Connection.resolve_pn_to_lid?/1.
+  @tag resolve_pn_to_lid: true
+  test "with resolve_pn_to_lid on, a PN send is re-addressed to the known LID", ctx do
+    lid = "20000000001@lid"
+    {_n, _new} = LidMappingFileStore.store_mappings(ctx.conn, [{lid, @jid}])
+
+    send_text(ctx, @jid, "lid envelope")
+    usync_iq = recv_frame()
+
+    # The rewrite lands before the recipient key is derived, so device resolution
+    # queries for the LID too — assert it rather than assume, since the canned reply
+    # correlates by IQ id and would be accepted either way.
+    assert inspect(usync_iq) =~ lid
+
+    inject(ctx, usync_devices_reply(attr(usync_iq, "id"), lid))
+    message = drain_until_message(ctx)
+
+    assert NodeUtils.get_attr(message, "to") == lid
+  end
+
+  @tag resolve_pn_to_lid: true
+  test "with the flag on, an UNMAPPED PN is left alone rather than failing", ctx do
+    send_text(ctx, @jid, "no mapping")
+    usync_iq = recv_frame()
+    inject(ctx, usync_devices_reply(attr(usync_iq, "id")))
+    message = drain_until_message(ctx)
+
+    assert NodeUtils.get_attr(message, "to") == @jid
+  end
+
+  test "with the flag off (the default), a known LID mapping does not move the envelope",
+       ctx do
+    lid = "20000000001@lid"
+    {_n, _new} = LidMappingFileStore.store_mappings(ctx.conn, [{lid, @jid}])
+
+    send_text(ctx, @jid, "default stays pn")
+    usync_iq = recv_frame()
+    inject(ctx, usync_devices_reply(attr(usync_iq, "id"), lid))
+    message = drain_until_message(ctx)
+
+    assert NodeUtils.get_attr(message, "to") == @jid
   end
 
   test "wire <to jid> stays PN even when the session uses the LID address", ctx do

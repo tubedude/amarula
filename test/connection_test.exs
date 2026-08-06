@@ -74,6 +74,14 @@ defmodule Amarula.ConnectionTest do
       refute Connection.sync_app_state?(%{sync_app_state: false})
     end
 
+    test "resolve_pn_to_lid? defaults FALSE, honors true" do
+      # The one flag here that defaults off: it re-addresses the wire envelope, which
+      # docs/LID_PN.md documents as staying PN. Opt-in until upstream settles.
+      refute Connection.resolve_pn_to_lid?(%{})
+      refute Connection.resolve_pn_to_lid?(%{resolve_pn_to_lid: false})
+      assert Connection.resolve_pn_to_lid?(%{resolve_pn_to_lid: true})
+    end
+
     test "fire_init_queries? defaults true, honors false" do
       assert Connection.fire_init_queries?(%{})
       assert Connection.fire_init_queries?(%{fire_init_queries: true})

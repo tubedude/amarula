@@ -1762,7 +1762,7 @@ defmodule Amarula.Connection do
   end
 
   defp deliver_async(state, target, payload, from, shape) do
-    jid = Amarula.Address.to_jid!(target)
+    jid = lid_target(state, Amarula.Address.to_jid!(target))
     msg_id = Map.get(payload, :msg_id) || generate_message_id()
     instance_id = state.instance_id
 
@@ -4842,6 +4842,55 @@ defmodule Amarula.Connection do
   def sync_app_state?(config), do: Map.get(config, :sync_app_state, true)
   @doc false
   def fire_init_queries?(config), do: Map.get(config, :fire_init_queries, true)
+
+  @doc """
+  Whether to re-address a 1:1 send to the contact's LID when the mapping is known.
+
+  **Experimental, `false` by default.** With it off, the wire envelope carries
+  whatever you addressed — a PN stays a PN — which is the behaviour `docs/LID_PN.md`
+  documents and the rest of the send path assumes.
+
+  Turn it on if sends to a phone number are being rejected with
+  `{:error, {:send_rejected, "463"}}` for a contact you know is reachable. WhatsApp
+  appears to evaluate the trust gate against the LID identity, so a PN-addressed
+  stanza to a LID-mapped contact can read as an untrusted reachout no matter what
+  token is attached — see Baileys#2683.
+
+  Why this is a flag rather than the default: upstream has attempted the same change
+  twice (Baileys PRs #2711 and #2748) and merged neither, while two LID-migration
+  bugs sit open there. The direction of travel is clear — WhatsApp has begun omitting
+  `*_pn` attributes altogether — but the landing is not, so this stays opt-in until
+  upstream settles or field evidence accumulates.
+
+  One caveat while it is on: device resolution then queries USync by LID. If that
+  comes back empty for a contact, the send fails as
+  `{:error, {:resolve_devices, :not_on_whatsapp}}` — accurate about the outcome,
+  misleading about the cause.
+  """
+  @spec resolve_pn_to_lid?(map()) :: boolean()
+  def resolve_pn_to_lid?(config), do: Map.get(config, :resolve_pn_to_lid, false)
+
+  # Opt-in PN→LID re-addressing (see `resolve_pn_to_lid?/1`). Off by default: the
+  # envelope keeps whatever was addressed, which is what `docs/LID_PN.md` documents.
+  #
+  # Applied at THIS boundary and not inside `ConversationSender` on purpose. The
+  # sender's registry key IS `{instance_id, recipient_jid}`, so resolving any later
+  # would let a PN caller and a LID caller run two senders for the same person and
+  # fork the shared ratchet — precisely what the per-recipient lock exists to
+  # prevent. Rewriting before the key is derived keeps one sender per human.
+  #
+  # `jid_user?/1` excludes groups; a jid already on `@lid` is left alone; and an
+  # unmapped contact falls through unchanged rather than failing.
+  defp lid_target(state, jid) do
+    if resolve_pn_to_lid?(state.config) and JID.jid_user?(jid) and not JID.lid_user?(jid) do
+      case LidMappingFileStore.lid_for_pn(state.conn, JID.jid_normalized_user(jid)) do
+        lid when is_binary(lid) -> JID.encode(%{user: lid, server: "lid"})
+        _ -> jid
+      end
+    else
+      jid
+    end
+  end
 
   # Baileys sendPresenceUpdate('available'): <presence name={me.name} type="available"/>.
   defp send_presence_available(state) do

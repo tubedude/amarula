@@ -161,6 +161,23 @@ defmodule Amarula.Protocol.Binary.Decoder do
         jid = if device == 0, do: "#{user}@#{server}", else: "#{user}:#{device}@#{server}"
         {jid, index}
 
+      # FB_JID - user string, 2-byte device, server string.
+      # Matches Baileys readFbJid (src/WABinary/decode.ts:170).
+      tag == 246 ->
+        {user, index} = read_string(binary, index)
+        {device, index} = read_int(binary, index, 2)
+        {server, index} = read_string(binary, index)
+        {"#{user}:#{device}@#{server}", index}
+
+      # INTEROP_JID - user string, 2-byte device, 2-byte integrator, OPTIONAL server.
+      # Matches Baileys readInteropJid (src/WABinary/decode.ts:177).
+      tag == 245 ->
+        {user, index} = read_string(binary, index)
+        {device, index} = read_int(binary, index, 2)
+        {integrator, index} = read_int(binary, index, 2)
+        {server, index} = read_interop_server(binary, index)
+        {"#{integrator}-#{user}:#{device}@#{server}", index}
+
       # HEX_8 - packed hex string
       tag == 251 ->
         read_packed8(binary, index, :hex)
@@ -284,6 +301,41 @@ defmodule Amarula.Protocol.Binary.Decoder do
 
     :binary.at(binary, index)
   end
+
+  # The server on an INTEROP_JID is optional: the node may simply end after the
+  # integrator, in which case the server is implicitly "interop". Baileys reads it
+  # speculatively and rewinds on any throw (src/WABinary/decode.ts:180-187); we decide
+  # up front instead — out of bytes, or a byte that cannot begin a string, means no
+  # server. The index is left untouched in that case, so the caller resumes exactly
+  # where the server field would have started.
+  #
+  # This covers the three shapes a well-formed frame can present: server present,
+  # node ended, and next-byte-belongs-to-the-parent. It does NOT cover a *truncated*
+  # server — a valid opening tag with too few bytes after it still raises, and the
+  # frame is lost the way any malformed frame is. That is deliberate: such input is
+  # corrupt, not "serverless", and Baileys' catch would instead default to "interop"
+  # and carry on parsing from a cursor pointing into the middle of a field.
+  @spec read_interop_server(binary(), non_neg_integer()) :: {binary(), non_neg_integer()}
+  defp read_interop_server(binary, index) when byte_size(binary) <= index,
+    do: {"interop", index}
+
+  defp read_interop_server(binary, index) do
+    if string_tag?(:binary.at(binary, index)),
+      do: read_string(binary, index),
+      else: {"interop", index}
+  end
+
+  # Every tag `read_string/2` can decode. `240..244`, `248` and `249` are structural
+  # (list) tags, so meeting one means the interop jid had no server and the next byte
+  # belongs to the enclosing node.
+  #
+  # This must stay in step with the `cond` in `read_string/2`. It is not left to a
+  # comment: `decoder_test.exs` sweeps all 256 values and asserts every tag this
+  # rejects is one `read_string/2` also rejects, so widening one without the other
+  # fails the suite. Drifting the other way is the safe direction — we'd decline to
+  # read a server rather than crash mid-frame.
+  @spec string_tag?(non_neg_integer()) :: boolean()
+  defp string_tag?(tag), do: tag in 0..239 or tag in [245, 246, 247, 250, 251, 252, 253, 254, 255]
 
   # Packed string decoding (HEX_8 and NIBBLE_8)
   @spec read_packed8(binary(), non_neg_integer(), :hex | :nibble) :: {binary(), non_neg_integer()}

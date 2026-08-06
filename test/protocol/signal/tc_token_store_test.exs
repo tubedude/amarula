@@ -95,6 +95,94 @@ defmodule Amarula.Protocol.Signal.TcTokenStoreTest do
     end
   end
 
+  describe "store_message_node/2 — the proactive source" do
+    alias Amarula.Protocol.Binary.Node
+
+    defp msg_node(attrs, children),
+      do: %Node{tag: "message", attrs: attrs, content: children}
+
+    defp tctoken(token, ts),
+      do: %Node{tag: "tctoken", attrs: %{"t" => Integer.to_string(ts)}, content: token}
+
+    test "captures a token riding on an incoming message, keyed by the mapped LID",
+         %{conn: conn} do
+      ts = now()
+
+      :ok =
+        TcTokenStore.store_message_node(conn, msg_node(%{"from" => @pn}, [tctoken("ride", ts)]))
+
+      # Stored under the LID, so a PN-addressed send finds it too.
+      assert TcTokenStore.valid_entry(conn, @pn) == {"ride", ts}
+      assert TcTokenStore.valid_entry(conn, @lid) == {"ride", ts}
+    end
+
+    test "prefers sender_lid over the from attr when it is a real LID", %{conn: conn} do
+      ts = now()
+      other = "5559999@s.whatsapp.net"
+
+      :ok =
+        TcTokenStore.store_message_node(
+          conn,
+          msg_node(%{"from" => other, "sender_lid" => @lid}, [tctoken("by-lid", ts)])
+        )
+
+      assert TcTokenStore.valid_entry(conn, @lid) == {"by-lid", ts}
+    end
+
+    test "ignores a token with no `t` — a timestampless token reads as expired anyway",
+         %{conn: conn} do
+      node = msg_node(%{"from" => @pn}, [%Node{tag: "tctoken", attrs: %{}, content: "no-ts"}])
+
+      assert :ok = TcTokenStore.store_message_node(conn, node)
+      assert TcTokenStore.valid_entry(conn, @pn) == nil
+    end
+
+    test "never downgrades a token we already hold at the same or newer timestamp",
+         %{conn: conn} do
+      ts = now()
+      put_token(conn, %{token: "current", timestamp: ts})
+
+      :ok =
+        TcTokenStore.store_message_node(
+          conn,
+          msg_node(%{"from" => @pn}, [tctoken("older", ts - 1)])
+        )
+
+      assert TcTokenStore.valid_entry(conn, @pn) == {"current", ts}
+    end
+
+    test "preserves sender_timestamp, so post-send issuance dedupe survives capture",
+         %{conn: conn} do
+      put_token(conn, %{token: "old", timestamp: now() - 10, sender_timestamp: now()})
+
+      :ok =
+        TcTokenStore.store_message_node(
+          conn,
+          msg_node(%{"from" => @pn}, [tctoken("fresh", now())])
+        )
+
+      refute TcTokenStore.should_issue_new?(conn, @pn)
+    end
+
+    test "a message with no tctoken child is a no-op", %{conn: conn} do
+      assert :ok = TcTokenStore.store_message_node(conn, msg_node(%{"from" => @pn}, []))
+      assert TcTokenStore.valid_entry(conn, @pn) == nil
+    end
+
+    # isRegularUser: PSA and bots must not write a token under a nonsense key.
+    test "declines the PSA pseudo-contact and bot senders", %{conn: conn} do
+      for from <- ["0@s.whatsapp.net", "13135550002@bot"] do
+        assert :ok =
+                 TcTokenStore.store_message_node(
+                   conn,
+                   msg_node(%{"from" => from}, [tctoken("nope", now())])
+                 )
+
+        assert TcTokenStore.valid_entry(conn, from) == nil
+      end
+    end
+  end
+
   describe "store_history_sync/2" do
     test "persists a token the blob carried, keyed by the mapped LID", %{conn: conn} do
       ts = now()

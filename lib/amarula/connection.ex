@@ -3843,6 +3843,11 @@ defmodule Amarula.Connection do
     from = NodeUtils.get_attr(node, "from")
     own_sender? = own_sender?(state, node, from)
 
+    # Capture any `<tctoken>` the sender attached, BEFORE anything that can fail: a
+    # token is useful even when the body doesn't decrypt (we still want the next
+    # reply to carry it rather than eating a 463), and this path can end in a nack.
+    TcTokenStore.store_message_node(state.conn, node)
+
     # If the sender is PN-addressed but we now know their LID, move their Signal
     # session onto the LID address BEFORE decrypting — otherwise the LID-aware
     # address lookup in decrypt_node would miss the still-PN-keyed ratchet. #15.

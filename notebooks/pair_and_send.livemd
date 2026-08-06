@@ -1,0 +1,179 @@
+# Amarula — pair a phone & send a message
+
+## About
+
+A minimal [Livebook](https://livebook.dev) walkthrough of
+[Amarula](https://github.com/tubedude/amarula): link a WhatsApp account by
+scanning a QR code, then send a text message — all from a notebook, no local
+checkout required (it installs the package from Hex).
+
+> **⚠️ Unofficial — use at your own risk.** Amarula is not affiliated with,
+> endorsed by, or sponsored by WhatsApp or Meta. WhatsApp does not support
+> third-party clients, and automating an account can violate
+> [WhatsApp's Terms of Service](https://www.whatsapp.com/legal/terms-of-service) —
+> it may ban the number you use, with no warning and no appeal. Only link an
+> account you own and can afford to lose; never use this for spam or bulk
+> messaging.
+
+**Credentials get written to disk** at `amarula_data/livebook/`, next to
+wherever this notebook's runtime is working from — that's what lets
+re-running the pairing cell later reconnect without a new QR. It also means
+the linked device stays live until you unlink it. When you're done, delete
+that directory (or unlink the device from the phone: **WhatsApp → Settings →
+Linked Devices**) so a stale credential isn't left sitting on disk.
+
+## Setup
+
+```elixir
+Mix.install([
+  {:amarula, "~> 0.5"},
+  {:kino, "~> 0.14"}
+])
+
+Kino.nothing()
+```
+
+Amarula's shared supervision tree isn't auto-started (a real app starts this
+once, itself, before any connection) — a notebook is no different:
+
+```elixir
+case Amarula.Supervisor.start_link() do
+  {:ok, _pid} -> :ok
+  {:error, {:already_started, _pid}} -> :ok
+end
+
+Kino.nothing()
+```
+
+## 1. Connect
+
+```elixir
+{:ok, conn} =
+  Amarula.new(%{profile: :livebook})
+  |> Amarula.connect(parent: self())
+
+Kino.nothing()
+```
+
+## 2. Pair (scan the QR)
+
+Run this cell and scan the code with **WhatsApp → Settings → Linked Devices →
+Link a device**. It rotates every ~20s while unscanned; the frame below
+updates in place each time. If this notebook already paired on a previous run,
+this skips straight to "connected".
+
+```elixir
+frame = Kino.Frame.new() |> Kino.render()
+
+render_qr = fn qr_string ->
+  case QRCode.create(qr_string) |> QRCode.render(:svg) do
+    {:ok, svg} -> Kino.Frame.render(frame, Kino.Image.new(svg, :svg))
+    {:error, reason} -> Kino.Frame.render(frame, Kino.Markdown.new("QR render failed: #{inspect(reason)}"))
+  end
+end
+
+wait_for_connection = fn wait_for_connection ->
+  receive do
+    {:amarula, :connection_update, %{connection: :open}} ->
+      Kino.Frame.render(frame, Kino.Markdown.new("✅ **Connected.**"))
+      :open
+
+    {:amarula, :connection_update, %{qr: qr}} when is_binary(qr) ->
+      render_qr.(qr)
+      wait_for_connection.(wait_for_connection)
+
+    {:amarula, :pairing_success, _data} ->
+      Kino.Frame.render(frame, Kino.Markdown.new("📱 Paired — completing login…"))
+      wait_for_connection.(wait_for_connection)
+
+    {:amarula, :error, reason} ->
+      Kino.Frame.render(frame, Kino.Markdown.new("❌ Connection error: `#{inspect(reason)}`"))
+      {:error, reason}
+  after
+    180_000 ->
+      Kino.Frame.render(frame, Kino.Markdown.new("⏱️ Timed out waiting to connect."))
+      {:error, :timeout}
+  end
+end
+
+wait_for_connection.(wait_for_connection)
+Kino.nothing()
+```
+
+## 3. Send a message
+
+A bare number becomes a PN address; anything with an `@` is parsed as-is.
+
+```elixir
+to_input = Kino.Input.text("Recipient (phone number or JID)") |> Kino.render()
+text_input = Kino.Input.text("Message", default: "hello from Amarula 👋") |> Kino.render()
+
+Kino.nothing()
+```
+
+```elixir
+to_raw = Kino.Input.read(to_input)
+text = Kino.Input.read(text_input)
+
+address = if String.contains?(to_raw, "@"), do: Amarula.Address.parse(to_raw), else: Amarula.Address.pn(to_raw)
+
+case Amarula.send_text(conn, address, text) do
+  {:ok, id} -> Kino.Markdown.new("✅ sent (`#{id}`)")
+  {:error, reason} -> Kino.Markdown.new("❌ failed: `#{inspect(reason)}`")
+end
+```
+
+## 4. (Optional) watch incoming messages live
+
+Spawns a background listener so the notebook keeps responding while it
+watches — click **Stop listening** to end it. This re-points the connection's
+event sink at the listener task, so run it after you're done pairing above.
+
+```elixir
+messages_frame = Kino.Frame.new() |> Kino.render()
+stop_button = Kino.Control.button("Stop listening") |> Kino.render()
+
+Kino.nothing()
+```
+
+```elixir
+listen = fn listen ->
+  receive do
+    :stop ->
+      Kino.Frame.append(messages_frame, Kino.Markdown.new("🛑 Stopped."))
+
+    {:amarula, :messages_upsert, %{from: from, messages: messages}} ->
+      Enum.each(messages, fn msg ->
+        Kino.Frame.append(
+          messages_frame,
+          Kino.Markdown.new("**#{inspect(from)}** — `#{msg.type}`: #{inspect(msg.content)}")
+        )
+      end)
+
+      listen.(listen)
+  end
+end
+
+listener =
+  Task.async(fn ->
+    Amarula.set_parent(conn, self())
+    Kino.Frame.append(messages_frame, Kino.Markdown.new("👂 Listening…"))
+    listen.(listen)
+  end)
+
+Kino.listen(stop_button, fn _event -> send(listener.pid, :stop) end)
+
+Kino.nothing()
+```
+
+## 5. Clean up
+
+When you're done, unlink the device and wipe its stored credentials
+(`amarula_data/livebook/`) rather than leaving them on disk:
+
+```elixir
+case Amarula.wipe_credentials(conn) do
+  :ok -> Kino.Markdown.new("🧹 Credentials wiped — device unlinked.")
+  {:error, reason} -> Kino.Markdown.new("❌ failed: `#{inspect(reason)}`")
+end
+```

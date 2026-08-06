@@ -430,6 +430,12 @@ mix run examples/send_message.exs 5511999999999 "hello from amarula"
 [`examples/connection.ex`](https://github.com/tubedude/amarula/blob/main/examples/connection.ex) is a small supervised
 GenServer wrapper you can copy into a real app.
 
+Prefer a notebook? [`notebooks/pair_and_send.livemd`](https://github.com/tubedude/amarula/blob/main/notebooks/pair_and_send.livemd)
+pairs a phone and sends a message from [Livebook](https://livebook.dev) —
+installs Amarula from Hex, no local checkout needed:
+
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fgithub.com%2Ftubedude%2Famarula%2Fblob%2Fmain%2Fnotebooks%2Fpair_and_send.livemd)
+
 ## Configuration
 
 Most settings are **per-connection**, passed to `Amarula.new/1` (you usually only

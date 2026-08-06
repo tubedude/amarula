@@ -75,6 +75,10 @@ defmodule Amarula.Protocol.Binary.Decoder do
   end
 
   @spec read_string(binary(), non_neg_integer()) :: {binary(), non_neg_integer()}
+  # One clause per string tag in the WhatsApp binary format. The complexity IS the
+  # wire format's tag count; extracting clauses would only move the same dispatch
+  # somewhere less obvious. Kept together so it reads against Baileys' readString.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp read_string(binary, index) do
     tag = binary_at(binary, index)
     index = index + 1

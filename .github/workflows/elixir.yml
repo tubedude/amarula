@@ -97,12 +97,16 @@ jobs:
         if: ${{ !matrix.primary }}
         run: mix compile
 
-      # Informational — surfaces style/refactor suggestions without failing the
-      # build on the existing backlog. Tighten to a blocking `mix credo` (or
-      # `--strict`) once that backlog is cleared.
-      - name: Credo (non-blocking)
+      # Blocking, as of the 0.5.8 cleanup: the backlog referenced by the old
+      # non-blocking note is gone (`mix credo` reports no issues). `.credo.exs`
+      # excludes the generated protobuf module and raises the nesting limit to 3,
+      # both with reasons; every remaining complexity finding is disabled at its own
+      # call site with a justification. So a new finding means new code, and should
+      # fail rather than scroll past — the previous setup let `read_string`'s
+      # complexity drift from 22 to 26 unnoticed.
+      - name: Credo
         if: matrix.primary
-        run: mix credo --mute-exit-status
+        run: mix credo
 
       - name: Run tests
         run: mix test

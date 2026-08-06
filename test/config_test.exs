@@ -40,7 +40,7 @@ defmodule Amarula.ConfigTest do
 
     test "surrounding whitespace is tolerated" do
       System.put_env(@env, "  2.3000.12345  ")
-      assert Config.wa_version() == [2, 3000, 12345]
+      assert Config.wa_version() == [2, 3000, 12_345]
     end
   end
 end

@@ -3264,6 +3264,8 @@ defmodule Amarula.Connection do
   end
 
   # Mirrors Baileys getCompanionWebClientType: browser name → CompanionWebClientType
+  # A lookup table over browser names, mirroring Baileys' own flat mapping.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp companion_platform_id([os, browser_name | _]) do
     cond do
       browser_name == "Desktop" and os == "Windows" ->
@@ -3838,6 +3840,11 @@ defmodule Amarula.Connection do
     own_account?(state, participant || maybe_address(from))
   end
 
+  # The inbound message pipeline: token capture, session migration, decrypt, classify,
+  # emit, receipt-or-nack. Connection is the per-connection coordinator by design (see
+  # CLAUDE.md) and this is its hot path — the ORDER of these steps is load-bearing, so
+  # they stay in one readable sequence rather than being split for a metric.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp handle_message(state, node) do
     msg_id = NodeUtils.get_attr(node, "from") && NodeUtils.get_attr(node, "id")
     from = NodeUtils.get_attr(node, "from")

@@ -35,15 +35,17 @@ defmodule Amarula.Protocol.Groups.Notification do
   """
   @spec parse(Node.t()) :: {:ok, t()} | {:error, term()}
   def parse(%Node{} = node) do
-    with %Node{} = child <- first_child(node) do
-      {:ok,
-       %{
-         group: address(NodeUtils.get_attr(node, "from")),
-         author: address(NodeUtils.get_attr(node, "participant")),
-         action: action(child)
-       }}
-    else
-      _ -> {:error, :no_change_child}
+    case first_child(node) do
+      %Node{} = child ->
+        {:ok,
+         %{
+           group: address(NodeUtils.get_attr(node, "from")),
+           author: address(NodeUtils.get_attr(node, "participant")),
+           action: action(child)
+         }}
+
+      _ ->
+        {:error, :no_change_child}
     end
   end
 

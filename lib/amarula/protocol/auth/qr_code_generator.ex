@@ -108,7 +108,7 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
         ascii_qr =
           matrix
           |> Enum.chunk_every(2)
-          |> Enum.map(fn
+          |> Enum.map_join("\n", fn
             # Two rows - use half blocks
             [top_row, bottom_row] ->
               top_row
@@ -131,7 +131,6 @@ defmodule Amarula.Protocol.Auth.QRCodeGenerator do
                 0 -> " "
               end)
           end)
-          |> Enum.join("\n")
 
         {:ok, ascii_qr}
 

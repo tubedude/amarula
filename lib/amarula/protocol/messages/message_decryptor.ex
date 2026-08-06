@@ -135,10 +135,32 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
     msg = Proto.Message.decode(bytes)
 
     case msg.deviceSentMessage do
-      %{message: inner} when not is_nil(inner) -> inner
+      %{message: inner} when not is_nil(inner) -> carry_context_info(inner, msg)
       _ -> msg
     end
   end
+
+  # WhatsApp fans a message we sent out to our linked devices wrapped in
+  # `deviceSentMessage`, and the `messageContextInfo` can sit on the OUTER wrapper.
+  # It carries `messageSecret`, which is the only key a later `secretEncryptedMessage`
+  # edit of that message can be decrypted with — so unwrapping without carrying it
+  # over silently threw away the secret. Symptom: send from your phone, then edit it
+  # from your phone, and the edit arrived as `{:other, _}` instead of `{:edit, …}`.
+  #
+  # The inner value always wins; the outer only fills what the inner lacks. Mirrors
+  # the `decode-wa-message.ts` half of Baileys PR #2743.
+  defp carry_context_info(inner, %{messageContextInfo: nil}), do: inner
+
+  defp carry_context_info(%{messageContextInfo: nil} = inner, outer),
+    do: %{inner | messageContextInfo: outer.messageContextInfo}
+
+  defp carry_context_info(%{messageContextInfo: %{messageSecret: nil} = ctx} = inner, outer),
+    do: %{
+      inner
+      | messageContextInfo: %{ctx | messageSecret: outer.messageContextInfo.messageSecret}
+    }
+
+  defp carry_context_info(inner, _outer), do: inner
 
   # unpadRandomMax16: last byte is the pad length.
   defp unpad(<<>>), do: {:error, :empty_plaintext}

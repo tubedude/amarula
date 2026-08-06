@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Found by reviewing upstream Baileys for portable changes (see `docs/PARITY.md`).
+Three of the four are bugs Amarula had independently; none needed a consumer-visible
+API change.
+
+### Added
+
+- **`resolve_pn_to_lid` — opt-in PN→LID re-addressing for 1:1 sends**
+  ([Baileys#2683]). WhatsApp appears to evaluate the trusted-contact gate against the
+  **LID** identity, so a send addressed to a phone number can be accepted by the
+  socket and then discarded with ack `463` for a contact you know is reachable —
+  regardless of the token attached. With this on, a 1:1 send is re-addressed to the
+  contact's LID when the mapping is already known.
+
+  **Off by default**, and staying that way for now. The direction of travel is not in
+  doubt: WhatsApp has begun omitting `*_pn` attributes altogether, so clients now
+  reconstruct phone numbers locally. But upstream has attempted this exact change
+  twice ([Baileys#2711], [Baileys#2748]) and merged neither, while two LID-migration
+  bugs remain open there. Turning it on by default on that basis would be following a
+  change its own authors can't land.
+
+  Set `resolve_pn_to_lid: true` if you are seeing repeatable `463`s. One caveat:
+  device resolution then queries USync by LID, and an empty result surfaces as
+  `{:error, {:resolve_devices, :not_on_whatsapp}}` — accurate about the outcome,
+  misleading about the cause. See `Amarula.Connection.resolve_pn_to_lid?/1`.
+
+### Fixed
+
+- **A message containing a Facebook-interop jid no longer vanishes.** The binary
+  decoder had no clause for string tags `245` (INTEROP_JID) or `246` (FB_JID), so
+  either raised; the frame decoder rescues a decode failure and treats the frame as a
+  control frame, which **discarded the whole message**. One WA frame carries the
+  entire `<message>` node, so a single such jid anywhere inside it — including a
+  nested `<device>` — lost the message with no `:messages_upsert`, no receipt, and
+  **no ack or nack**, so the server never retransmitted. The only trace was one log
+  warning. Latent rather than reproducible: FB_JID is interop addressing WhatsApp
+  enables progressively.
+
+- **A trusted-contact token attached to an incoming message is no longer thrown
+  away.** Token ingestion had three sources, all reactive (our own issuance result, a
+  `privacy_token` notification, the history-sync blob). A contact could hand us their
+  token in the very message we were about to reply to, and the reply still went out
+  tokenless — accepted by the socket, dropped by the server with ack `463`. One
+  wasted send plus an issuance round-trip per warm contact, for a token already
+  present in the decoded node. Ported from [Baileys#2752].
+
+  Note this does not on its own eliminate `463`s; upstream shipped it alongside the
+  PN→LID change above, and their reports show LID-keyed tokens were not sufficient
+  by themselves.
+
+- **Editing your own message from your phone now surfaces as an edit.** A message you
+  send is fanned out to your linked devices wrapped in `deviceSentMessage`, and the
+  `messageContextInfo` — carrying the `messageSecret` — can sit on the **outer**
+  wrapper. Unwrapping dropped it, so a later `secretEncryptedMessage` edit had no key
+  and arrived as `{:other, _}` instead of `{:edit, key, text}`. Ported from
+  [Baileys#2743]. Still narrower than upstream there: Amarula tries two JID-form
+  combinations where upstream tries the full sender × editor product, so an edit whose
+  original was stored under a PN while the editor is LID-addressed can still fail.
+
 ## [0.5.7] - 2026-08-05
 
 ### Changed
@@ -214,6 +272,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#70]: https://github.com/tubedude/amarula/pull/70
 [#71]: https://github.com/tubedude/amarula/pull/71
 [#72]: https://github.com/tubedude/amarula/pull/72
+[Baileys#2683]: https://github.com/WhiskeySockets/Baileys/issues/2683
+[Baileys#2711]: https://github.com/WhiskeySockets/Baileys/pull/2711
+[Baileys#2743]: https://github.com/WhiskeySockets/Baileys/pull/2743
+[Baileys#2748]: https://github.com/WhiskeySockets/Baileys/pull/2748
+[Baileys#2752]: https://github.com/WhiskeySockets/Baileys/pull/2752
 [#81]: https://github.com/tubedude/amarula/pull/81
 
 ## [0.5.5] - 2026-07-30

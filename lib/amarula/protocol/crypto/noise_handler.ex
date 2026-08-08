@@ -277,11 +277,12 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
       data_length &&& 0xFF::8
     >>
 
+    # The routing header rides on the FIRST frame only.
     frame =
-      if not state.sent_intro do
-        header <> length_bytes <> processed_data
-      else
+      if state.sent_intro do
         length_bytes <> processed_data
+      else
+        header <> length_bytes <> processed_data
       end
 
     new_state = %{state | sent_intro: true}
@@ -324,25 +325,22 @@ defmodule Amarula.Protocol.Crypto.NoiseHandler do
       "Processing Noise frame: length=#{length}, remaining_bytes=#{byte_size(rest)}, frames_so_far=#{length(frames)}"
     )
 
-    cond do
-      byte_size(rest) < length ->
-        # Not enough data for complete frame
-        Logger.debug("Not enough data for complete frame, waiting for more")
-        {in_bytes, frames, state}
+    if byte_size(rest) < length do
+      # A partial frame: keep the bytes buffered and wait for the rest.
+      Logger.debug("Not enough data for complete frame, waiting for more")
+      {in_bytes, frames, state}
+    else
+      <<frame_data::binary-size(^length), remaining::binary>> = rest
 
-      true ->
-        # Extract frame data
-        <<frame_data::binary-size(^length), remaining::binary>> = rest
+      Logger.debug(
+        "Extracted frame data, remaining=#{byte_size(remaining)} bytes after this frame"
+      )
 
-        Logger.debug(
-          "Extracted frame data, remaining=#{byte_size(remaining)} bytes after this frame"
-        )
+      # Decrypt frame if in transport phase, thread state through
+      {processed_frame, updated_state} = decrypt_if_transport(state, frame_data)
 
-        # Decrypt frame if in transport phase, thread state through
-        {processed_frame, updated_state} = decrypt_if_transport(state, frame_data)
-
-        # Continue processing remaining frames with updated state
-        process_frames(remaining, [processed_frame | frames], updated_state)
+      # Continue processing remaining frames with updated state
+      process_frames(remaining, [processed_frame | frames], updated_state)
     end
   end
 

@@ -29,49 +29,47 @@ defmodule Amarula.Protocol.Signal.SessionBuilder do
   @spec init_incoming(SessionRecord.t(), map(), map()) ::
           {SessionRecord.t(), non_neg_integer() | nil}
   def init_incoming(record, message, store) do
-    cond do
-      SessionRecord.get_session(record, message.base_key) != nil ->
-        # Already have this session — we just haven't replied.
-        {record, message.pre_key_id}
+    if SessionRecord.get_session(record, message.base_key) != nil do
+      # Already have this session — we just haven't replied.
+      {record, message.pre_key_id}
+    else
+      pre_key_pair =
+        if message.pre_key_id, do: store.load_pre_key.(message.pre_key_id), else: nil
 
-      true ->
-        pre_key_pair =
-          if message.pre_key_id, do: store.load_pre_key.(message.pre_key_id), else: nil
+      if message.pre_key_id && is_nil(pre_key_pair) do
+        # The one-time prekey this pkmsg references isn't in our store — either
+        # consumed + deleted by a first decrypt (a redelivery), or an id that was
+        # never ours. We can't tell which, but a retry can't help either way (the
+        # sender can't re-encrypt to a prekey we don't hold), so flag it
+        # :key_unavailable so the receive path acks instead of retrying.
+        raise DecryptError, reason: :key_unavailable, message: "Invalid PreKey ID"
+      end
 
-        if message.pre_key_id && is_nil(pre_key_pair) do
-          # The one-time prekey this pkmsg references isn't in our store — either
-          # consumed + deleted by a first decrypt (a redelivery), or an id that was
-          # never ours. We can't tell which, but a retry can't help either way (the
-          # sender can't re-encrypt to a prekey we don't hold), so flag it
-          # :key_unavailable so the receive path acks instead of retrying.
-          raise DecryptError, reason: :key_unavailable, message: "Invalid PreKey ID"
+      signed_pre_key_pair = store.load_signed_pre_key.(message.signed_pre_key_id)
+
+      if is_nil(signed_pre_key_pair) do
+        raise "Missing SignedPreKey"
+      end
+
+      record =
+        case SessionRecord.get_open_session(record) do
+          nil -> record
+          open -> SessionRecord.close_session(record, open)
         end
 
-        signed_pre_key_pair = store.load_signed_pre_key.(message.signed_pre_key_id)
+      session =
+        init_session(
+          false,
+          pre_key_pair,
+          signed_pre_key_pair,
+          message.identity_key,
+          message.base_key,
+          nil,
+          message.registration_id,
+          store
+        )
 
-        if is_nil(signed_pre_key_pair) do
-          raise "Missing SignedPreKey"
-        end
-
-        record =
-          case SessionRecord.get_open_session(record) do
-            nil -> record
-            open -> SessionRecord.close_session(record, open)
-          end
-
-        session =
-          init_session(
-            false,
-            pre_key_pair,
-            signed_pre_key_pair,
-            message.identity_key,
-            message.base_key,
-            nil,
-            message.registration_id,
-            store
-          )
-
-        {SessionRecord.set_session(record, session), message.pre_key_id}
+      {SessionRecord.set_session(record, session), message.pre_key_id}
     end
   end
 
@@ -137,6 +135,11 @@ defmodule Amarula.Protocol.Signal.SessionBuilder do
   Build the session state (X3DH + initial ratchet). Mirrors libsignal initSession.
   Public keys are passed wire-form (33 bytes with 0x05 prefix); DH strips it.
   """
+  # The X3DH key agreement: which DH legs are computed, and in which order they are
+  # concatenated, differs by initiator/responder role. Mirrors libsignal's initSession
+  # step for step deliberately — the branching is the specification, and diverging from
+  # its shape to satisfy a metric would make it unverifiable against the reference.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def init_session(
         is_initiator,
         our_ephemeral_key,

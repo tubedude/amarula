@@ -366,6 +366,10 @@ defmodule Amarula.Msg do
   # Map the internal classify tuple to a {type, proto-free content} pair. Every
   # branch here MUST yield content with no `%Proto.*{}` value (the raw proto is on
   # `msg.raw`); see `Amarula.Content.*` and the guard test.
+  # One clause per message type WhatsApp defines — the table the `type`/`content`
+  # docs above describe. It grows by one branch per protocol feature, and keeping
+  # it in a single ordered pass is what makes the precedence auditable.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp classify(proto) do
     case MessageContent.classify(proto) do
       {:text, body} ->

@@ -41,6 +41,8 @@ defmodule Mix.Tasks.Amarula.Pair do
   @switches [phone: :string, timeout: :integer]
 
   @impl Mix.Task
+  # CLI entry point: argument parsing plus the pairing event loop's terminal states.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def run(argv) do
     {opts, args} = OptionParser.parse!(argv, strict: @switches)
 

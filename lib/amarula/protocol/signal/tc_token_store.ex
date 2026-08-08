@@ -212,6 +212,72 @@ defmodule Amarula.Protocol.Signal.TcTokenStore do
   end
 
   @doc """
+  Capture a `<tctoken>` riding along on an incoming `<message>` stanza.
+
+  The **proactive** source, ported from Baileys' `storeTcTokenFromMessageNode`
+  (mirroring WA Web's `WAWebSetTcTokenChatAction.handleIncomingTcToken`). The other
+  three sources are all reactive — our own issuance IQ result, a `privacy_token`
+  notification, and the history-sync blob — so without this one a contact can hand
+  us their token in the very message we're about to reply to, and we throw it away:
+  the reply then goes out tokenless, the socket accepts it, and the server discards
+  it with ack `463`. One wasted send plus an issuance round-trip per warm contact,
+  for a token we were already holding in the decoded node.
+
+  Keyed like `handle_privacy_token_notification`: the stanza's `sender_lid` when it
+  really is a LID, else the `from` resolved through `storage_jid/2`.
+
+  A token with no `t` attribute is ignored rather than stored — `expired?/1` treats a
+  missing timestamp as expired, so storing one would only occupy the key and mask a
+  later good token. Skips a token no newer than what we hold (`>=`, as
+  `store_history_sync/2` does, not the strict `>` of `store_token/3`: a replayed
+  stanza is not a genuine reissue).
+  """
+  @spec store_message_node(Conn.t(), Node.t()) :: :ok
+  def store_message_node(conn, %Node{} = node) do
+    with %Node{attrs: token_attrs, content: token} when is_binary(token) <-
+           NodeUtils.get_binary_node_child(node, "tctoken"),
+         t when is_binary(t) <- Map.get(token_attrs, "t"),
+         {ts, ""} <- Integer.parse(t),
+         from when is_binary(from) <- NodeUtils.get_attr(node, "from"),
+         true <- regular_user?(JID.jid_normalized_user(from)) do
+      key = message_token_key(conn, node, from)
+      existing = read(conn, key)
+      existing_ts = if is_map(existing), do: Map.get(existing, :timestamp, 0) || 0, else: 0
+
+      unless existing_ts > 0 and existing_ts >= ts do
+        write(conn, key, Map.merge(entry_map(existing), %{token: token, timestamp: ts}))
+      end
+    else
+      _ -> :ok
+    end
+
+    :ok
+  end
+
+  # `sender_lid` wins when present and genuinely a LID; otherwise fall back to the
+  # stanza `from`, which `storage_jid/2` maps through the LID mapping the same way
+  # every other token source does.
+  defp message_token_key(conn, node, from) do
+    with lid when is_binary(lid) <- NodeUtils.get_attr(node, "sender_lid"),
+         user = JID.jid_normalized_user(lid),
+         true <- JID.lid_user?(user) do
+      user
+    else
+      _ -> storage_jid(conn, from)
+    end
+  end
+
+  # Baileys' `isRegularUser` / WA Web's `Wid.isRegularUser()`: a real person, so not
+  # the PSA pseudo-contact (`0@`), not a bot by phone pattern, not Meta AI. Gates
+  # capture so a system-originated stanza cannot write a token under a nonsense key.
+  defp regular_user?(jid) do
+    user = jid |> String.split("@", parts: 2) |> hd()
+
+    user != "0" and not JID.jid_bot?(jid) and not JID.jid_meta_ai?(jid) and
+      (JID.jid_user?(jid) or String.ends_with?(jid, "@c.us"))
+  end
+
+  @doc """
   Persist the tokens a history-sync blob carried — ported from Baileys'
   `storeTcTokensFromHistorySync` (`Utils/process-message.ts`). Each entry is
   `%{jid, token, timestamp, sender_timestamp}` as decoded by

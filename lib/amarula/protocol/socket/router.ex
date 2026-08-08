@@ -48,6 +48,10 @@ defmodule Amarula.Protocol.Socket.Router do
   tag, `type`/`xmlns` attrs, and first-child tag — never on connection state.
   """
   @spec route(Node.t()) :: handler()
+  # A routing TABLE, not branching logic: one clause per node shape the server can
+  # send. Splitting it would scatter the wire vocabulary across functions and make
+  # "what does Amarula handle?" unanswerable from one place.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def route(%Node{} = node) do
     first_child = NodeUtils.get_first_child_tag(node)
     xmlns = NodeUtils.get_attr(node, "xmlns")

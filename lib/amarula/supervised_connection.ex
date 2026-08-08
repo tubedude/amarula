@@ -130,7 +130,7 @@ defmodule Amarula.SupervisedConnection do
   def terminate(reason, state) do
     # A deliberate shutdown (supervisor termination / normal stop) tears the
     # connection down too. A crash leaves it running so our restart re-adopts it.
-    if deliberate?(reason) and is_binary_or_atom(state.profile) do
+    if deliberate?(reason) and binary_or_atom?(state.profile) do
       Amarula.stop(state.profile)
     end
 
@@ -181,5 +181,5 @@ defmodule Amarula.SupervisedConnection do
   defp deliberate?({:shutdown, _}), do: true
   defp deliberate?(_), do: false
 
-  defp is_binary_or_atom(v), do: is_binary(v) or is_atom(v)
+  defp binary_or_atom?(v), do: is_binary(v) or is_atom(v)
 end

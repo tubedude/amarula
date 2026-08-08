@@ -174,6 +174,48 @@ defmodule Amarula.Protocol.Binary.DecoderTest do
 
       assert node.content == "user:5@s.whatsapp.net"
     end
+
+    # Before these were handled, an unknown string tag raised, `decode_frame/2`
+    # rescued it into `:control`, and the WHOLE frame was discarded — no
+    # messages_upsert, no receipt, and no ack or nack, so the server never
+    # retransmitted. One of these jids anywhere in a <message> lost the message
+    # silently. Baileys implements both (src/WABinary/decode.ts:214-217).
+    test "decodes FB_JID" do
+      # FB_JID (246) + user BINARY_8 "user" + device (2 bytes, 7) + server BINARY_8 "fb"
+      binary = <<248, 2, 19, 246, 252, 4, "user", 0, 7, 252, 2, "fb">>
+      node = Decoder.decode(binary)
+
+      assert node.content == "user:7@fb"
+    end
+
+    test "decodes INTEROP_JID with an explicit server" do
+      # INTEROP_JID (245) + user "user" + device (2B, 3) + integrator (2B, 9) + server "wa"
+      binary = <<248, 2, 19, 245, 252, 4, "user", 0, 3, 0, 9, 252, 2, "wa">>
+      node = Decoder.decode(binary)
+
+      assert node.content == "9-user:3@wa"
+    end
+
+    test "decodes INTEROP_JID whose server is absent, defaulting to interop" do
+      # Same, but the node ends right after the integrator. The server read must
+      # fail softly rather than taking the frame down.
+      binary = <<248, 2, 19, 245, 252, 4, "user", 0, 3, 0, 9>>
+      node = Decoder.decode(binary)
+
+      assert node.content == "9-user:3@interop"
+    end
+
+    # Guards `string_tag?/1` against drifting away from the `cond` in `read_string/2`.
+    # These are the structural (list) tags: meeting one in the server position means
+    # the interop jid had no server and this byte belongs to the enclosing node, so it
+    # must be declined WITHOUT being consumed and without raising.
+    for tag <- [240, 241, 242, 243, 244, 248, 249] do
+      test "INTEROP_JID declines structural tag #{tag} in the server position" do
+        binary = <<248, 2, 19, 245, 252, 4, "user", 0, 3, 0, 9, unquote(tag)>>
+
+        assert Decoder.decode(binary).content == "9-user:3@interop"
+      end
+    end
   end
 
   describe "decode/1 error handling" do

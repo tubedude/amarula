@@ -79,6 +79,98 @@ defmodule Amarula.Protocol.Messages.MessageDecryptorTest do
              MessageDecryptor.decrypt_node(node, store: store, conn: conn, instance_id: iid)
   end
 
+  describe "deviceSentMessage unwrap keeps the outer messageContextInfo (#2743)" do
+    # A message we sent is fanned out to our linked devices wrapped in
+    # deviceSentMessage, and the messageContextInfo — carrying messageSecret — can
+    # sit on the OUTER wrapper. Unwrapping used to drop it, so a later
+    # secretEncryptedMessage edit of that message had no key: the edit surfaced as
+    # {:other, _} instead of {:edit, ...}.
+    defp device_sent(inner_ctx, outer_ctx) do
+      %Proto.Message{
+        deviceSentMessage: %Proto.Message.DeviceSentMessage{
+          destinationJid: "15559998888@s.whatsapp.net",
+          message: %Proto.Message{conversation: "hi", messageContextInfo: inner_ctx}
+        },
+        messageContextInfo: outer_ctx
+      }
+    end
+
+    defp decode_via_plaintext(msg, conn, iid) do
+      enc = %Node{
+        tag: "enc",
+        attrs: %{"type" => "plaintext"},
+        content: Proto.Message.encode(msg)
+      }
+
+      node = %Node{
+        tag: "message",
+        attrs: %{"from" => "15550001234:0@s.whatsapp.net", "id" => "ABC", "t" => "1"},
+        content: [enc]
+      }
+
+      {:ok, [out], [], []} =
+        MessageDecryptor.decrypt_node(node,
+          store: SessionStore.build(@creds),
+          conn: conn,
+          instance_id: iid
+        )
+
+      out
+    end
+
+    test "the outer secret survives when the inner has no context info", %{
+      conn: conn,
+      instance_id: iid
+    } do
+      secret = :crypto.strong_rand_bytes(32)
+      msg = device_sent(nil, %Proto.MessageContextInfo{messageSecret: secret})
+
+      out = decode_via_plaintext(msg, conn, iid)
+
+      assert out.conversation == "hi"
+      assert out.messageContextInfo.messageSecret == secret
+    end
+
+    test "the inner secret wins when both carry one", %{conn: conn, instance_id: iid} do
+      inner = :crypto.strong_rand_bytes(32)
+      outer = :crypto.strong_rand_bytes(32)
+
+      msg =
+        device_sent(
+          %Proto.MessageContextInfo{messageSecret: inner},
+          %Proto.MessageContextInfo{messageSecret: outer}
+        )
+
+      assert decode_via_plaintext(msg, conn, iid).messageContextInfo.messageSecret == inner
+    end
+
+    test "an inner context info missing only the secret is filled from the outer", %{
+      conn: conn,
+      instance_id: iid
+    } do
+      secret = :crypto.strong_rand_bytes(32)
+
+      msg =
+        device_sent(
+          %Proto.MessageContextInfo{deviceListMetadataVersion: 2},
+          %Proto.MessageContextInfo{messageSecret: secret}
+        )
+
+      out = decode_via_plaintext(msg, conn, iid)
+
+      # The inner's own fields are kept, not replaced wholesale.
+      assert out.messageContextInfo.deviceListMetadataVersion == 2
+      assert out.messageContextInfo.messageSecret == secret
+    end
+
+    test "no outer context info is a plain unwrap", %{conn: conn, instance_id: iid} do
+      out = decode_via_plaintext(device_sent(nil, nil), conn, iid)
+
+      assert out.conversation == "hi"
+      assert out.messageContextInfo == nil
+    end
+  end
+
   test "a plaintext enc with undecodable bytes becomes an error entry, no raise", %{
     conn: conn,
     instance_id: iid

@@ -1261,11 +1261,18 @@ defmodule Amarula do
   *metadata* (directPath/mediaKey), not the bytes — call this to fetch them
   lazily, passing a `%Amarula.Msg{type: :media}` (or its `content`, an
   `%Amarula.Content.Media{}`). Returns `{:ok, bytes}` or `{:error, reason}`
-  (`:bad_mac` or `:bad_file_hash` on a failed integrity check, `:invalid_media` on
-  a malformed descriptor).
+  (`:bad_mac`, `:bad_padding` or `:bad_file_hash` on a failed integrity check,
+  `:invalid_media` on a malformed descriptor, `:untrusted_media_url` or
+  `:unsafe_direct_path` on one whose locator does not point at WhatsApp's CDN).
+  It never raises, so there is nothing to rescue at a transport boundary.
 
       %Amarula.Msg{type: :media} = msg
       {:ok, bytes} = Amarula.download_media(msg)
+
+  A descriptor that came off the socket is already trusted. One you persisted or
+  rebuilt from your own metadata is not — rehydrate it with
+  `Amarula.Content.Media.new/1`, which validates the fields and drops a locator
+  this would refuse to fetch anyway.
 
   > #### No live connection required {: .tip}
   >

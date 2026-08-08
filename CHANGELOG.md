@@ -7,11 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Found by reviewing upstream Baileys for portable changes (see `docs/PARITY.md`).
-Three of the four are bugs Amarula had independently; none needed a consumer-visible
-API change.
+Most of this cycle came from reviewing upstream Baileys for portable changes (see
+`docs/PARITY.md`); three of those four are bugs Amarula had independently, and none
+needed a consumer-visible API change. The media-descriptor work below is separate,
+prompted by a downstream consumer.
 
 ### Added
+
+- **`Amarula.Content.Media.new/1` — a validated constructor for a media descriptor
+  you did not get off the socket.** Inbound media arrives as a
+  `%Amarula.Content.Media{}` built by `from_proto/2`, which trusts its input because
+  the protobuf already guarantees the shape. A consumer that persists a descriptor,
+  sends it across a transport, or rebuilds it from its own normalized metadata had no
+  equivalent: it had to hand-roll the 32-byte key/hash checks, the kind enum, and the
+  "`direct_path` beats `url`" rule — Amarula's domain knowledge, reimplemented where
+  a mistake is likelier and unreviewed.
+
+  `new/1` takes a plain map with atom **or** string keys (a JSON round-trip needs no
+  glue), ignores unknown keys, and returns `{:ok, media}` or `{:error, {:invalid,
+  field}}` naming what failed. It requires a `:kind`, a raw 32-byte `:media_key`, and
+  a locator it is willing to fetch — see the security note below.
 
 - **`resolve_pn_to_lid` — opt-in PN→LID re-addressing for 1:1 sends**
   ([Baileys#2683]). WhatsApp appears to evaluate the trusted-contact gate against the
@@ -31,6 +46,35 @@ API change.
   device resolution then queries USync by LID, and an empty result surfaces as
   `{:error, {:resolve_devices, :not_on_whatsapp}}` — accurate about the outcome,
   misleading about the cause. See `Amarula.Connection.resolve_pn_to_lid?/1`.
+
+### Security
+
+- **`download_media/1` now only fetches from WhatsApp's own media domain.** The
+  descriptor's `:direct_path` was already safe — it is a path joined onto
+  `mmg.whatsapp.net`, so it names a file, not a server. But the `:url` fallback was
+  passed to `Req.get/2` verbatim, with no scheme or host check. For a descriptor
+  taken straight off the socket that is fine; for one rehydrated from storage or
+  received over a transport, an attacker-influenced `:url` made Amarula fetch from
+  any host it named (SSRF), which is why a consumer doing exactly that had to
+  sanitize descriptors before every call.
+
+  A `:url` is now used only when it is `https://` on `whatsapp.net` or a subdomain,
+  with no userinfo (`https://mmg.whatsapp.net@evil.example.com/x` names `evil.example.com`,
+  and is refused). `:direct_path` still wins when present, and must start at the root
+  with no whitespace or control bytes, so it cannot reach the authority either.
+  `Amarula.Content.Media.new/1` applies the same rule and keeps only the locator that
+  survives it. New error reasons: `:untrusted_media_url` and `:unsafe_direct_path`.
+
+  Consumers who pass descriptors straight from `:messages_upsert` — the normal case —
+  see no change.
+
+- **`download_media/1` no longer raises on a response that is not a media blob.** A
+  200 carrying a CDN error page or a truncated body reached `binary_part/3` and the
+  AES primitive with a length they reject, so an `ArgumentError` escaped a function
+  specced `{:ok, binary()} | {:error, term()}` — enough for a consumer to wrap the
+  call in a `rescue` at its transport boundary. Short, misaligned, and badly padded
+  blobs are now `{:error, :bad_mac}` / `{:error, :bad_padding}`, and an unknown media
+  type is `{:error, :invalid_media}` instead of a `KeyError` from key derivation.
 
 ### Fixed
 

@@ -198,6 +198,16 @@ lazily:
 {:ok, bytes} = Amarula.download_media(msg)   # {:error, :bad_mac | :bad_file_hash} on integrity failure
 ```
 
+`download_media/1` never raises, and only ever fetches from `*.whatsapp.net`. If you
+**stored** a descriptor or rebuilt one from your own metadata, rehydrate it with
+`Amarula.Content.Media.new/1` (atom or string keys) instead of `struct/2` — it validates
+the kind, the 32-byte key/hashes, and the locator:
+
+```elixir
+{:ok, media} = Amarula.Content.Media.new(stored)   # {:error, {:invalid, field}}
+{:ok, bytes} = Amarula.download_media(media)
+```
+
 ### Avoiding self-send feedback loops
 
 To ignore messages this app/device itself sent (e.g. an agent in a self-chat), read your

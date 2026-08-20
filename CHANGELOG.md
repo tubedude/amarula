@@ -65,6 +65,13 @@ API change.
   combinations where upstream tries the full sender × editor product, so an edit whose
   original was stored under a PN while the editor is LID-addressed can still fail.
 
+- **`Amarula.Content.Media.mimetype` no longer surfaces an explicit blank
+  string.** WhatsApp sometimes sends `mimetype` explicitly set to `""` (or
+  whitespace) rather than omitting the field, and `from_proto/2` passed that
+  through verbatim. `nil` is now the sole "no mimetype" value, matching the
+  moduledoc's contract. Found while reviewing a downstream consumer's own
+  workaround for the same gap.
+
 ## [0.5.7] - 2026-08-05
 
 ### Changed

@@ -10,8 +10,11 @@ defmodule Amarula.Content.Media do
 
     * `:kind` — `:image | :video | :audio | :document | :sticker`.
     * `:mimetype` — the content type (e.g. `"image/jpeg"`, `"video/mp4"`,
-      `"image/webp"` for a sticker). **Use this** for the file extension / `<img>`
-      vs `<video>`, not `:kind` — WhatsApp sends webp stickers, mp4 "gifs", etc.
+      `"image/webp"` for a sticker), or `nil` if WhatsApp didn't send one (it
+      sometimes sends an explicit blank rather than omitting the field — either
+      case normalizes to `nil` here). **Use this** for the file extension /
+      `<img>` vs `<video>`, not `:kind` — WhatsApp sends webp stickers, mp4
+      "gifs", etc.
     * `:caption` — text shown with the media (`nil` if none).
     * `:file_length` — size in bytes (`nil` if absent).
     * `:width` / `:height` — pixel dimensions for image/video/sticker (`nil` otherwise).
@@ -71,7 +74,7 @@ defmodule Amarula.Content.Media do
     # audio/video carry :seconds, etc.); the rest are absent and read as nil.
     %__MODULE__{
       kind: kind,
-      mimetype: Map.get(m, :mimetype),
+      mimetype: blank_to_nil(Map.get(m, :mimetype)),
       caption: Map.get(m, :caption),
       file_length: Map.get(m, :fileLength),
       width: Map.get(m, :width),
@@ -84,5 +87,13 @@ defmodule Amarula.Content.Media do
       file_sha256: Map.get(m, :fileSha256),
       file_enc_sha256: Map.get(m, :fileEncSha256)
     }
+  end
+
+  # WhatsApp occasionally sends an explicit "" (or whitespace) mimetype rather
+  # than omitting the field — collapse that to nil so absence is unambiguous.
+  defp blank_to_nil(nil), do: nil
+
+  defp blank_to_nil(value) when is_binary(value) do
+    if String.trim(value) == "", do: nil, else: value
   end
 end

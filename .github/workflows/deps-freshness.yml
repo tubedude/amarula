@@ -35,7 +35,7 @@ jobs:
     name: Newest allowed tree
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Single pair, not the full matrix: this job varies the DEPENDENCIES, not
       # the Elixir/OTP version. Cross-version coverage is elixir.yml's job.

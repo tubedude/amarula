@@ -34,5 +34,5 @@
   "telemetry": {:hex, :telemetry, "1.4.2", "a0cb522801dffb1c49fe6e30561badffc7b6d0e180db1300df759faa22062855", [:rebar3], [], "hexpm", "928f6495066506077862c0d1646609eed891a4326bee3126ba54b60af61febb1"},
   "uuid": {:hex, :uuid, "1.1.8", "e22fc04499de0de3ed1116b770c7737779f226ceefa0badb3592e64d5cfb4eb9", [:mix], [], "hexpm", "c790593b4c3b601f5dc2378baae7efaf5b3d73c4c6456ba85759905be792f2ac"},
   "websockex": {:hex, :websockex, "0.5.1", "9de28d37bbe34f371eb46e29b79c94c94fff79f93c960d842fbf447253558eb4", [:mix], [{:telemetry, "~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]}], "hexpm", "8ef39576ed56bc3804c9cd8626f8b5d6b5721848d2726c0ccd4f05385a3c9f14"},
-  "xml_builder": {:hex, :xml_builder, "2.4.0", "b20d23077266c81f593360dc037ea398461dddb6638a329743da6c73afa56725", [:mix], [], "hexpm", "833e325bb997f032b5a1b740d2fd6feed3c18ca74627f9f5f30513a9ae1a232d"},
+  "xml_builder": {:hex, :xml_builder, "2.4.1", "6f3c00f3651a87a1ec97c9889889137f14fec38bd592e7a2a96f839166be9544", [:mix], [], "hexpm", "1b9a1146feb1e6c94e29d8acad0c8e7bf7d6df0ec68eb8c3501e47708da9eb00"},
 }

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`xml_builder` lock raised to 2.4.1**, clearing the three LOW advisories that
+  have had the `audit` job — and so the whole build — red since 2026-08-22:
+  EEF-CVE-2026-47079 (round-trip corruption via improper entity escaping),
+  -47080 (CDATA section breakout via unsanitised `]]>`), and -48590 (element and
+  attribute names injected verbatim).
+
+  **Not reachable from Amarula's own code paths.** `xml_builder` is a transitive
+  dependency, pulled by `qr_code`, and inside `qr_code` it is used by exactly one
+  module: `QRCode.Render.Svg`. Amarula never calls it — `QRCodeGenerator.render_ascii/1`
+  calls `QRCode.create/1` and reads `.matrix` directly, and the only `render/2` in
+  the tree is the `:png` example in `Amarula`'s docstring. A consumer that chooses
+  to render the pairing QR as SVG would reach it; the string it would pass is the
+  server-supplied ref plus our own public keys, not attacker-chosen markup.
+
+  So this is lock hygiene rather than a closed hole — but the `audit` job is
+  deliberately blocking precisely so an advisory "stops a release rather than
+  sitting in a report nobody reads", and it has been failing daily for five days.
+  A permanently red gate is one nobody reads either.
+
+  Lock-only change: `qr_code` requires `~> 2.3`, so 2.4.1 fits with no constraint
+  touched anywhere.
+
 ## [0.5.8] - 2026-08-20
 
 Found by reviewing upstream Baileys for portable changes (see `docs/PARITY.md`).

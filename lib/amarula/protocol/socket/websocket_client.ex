@@ -33,8 +33,18 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
     * `:parent_pid` - Required. PID of the Connection that will receive events.
     * `:url` - WebSocket URL (defaults to WhatsApp WebSocket URL)
     * `:headers` - List or map of HTTP headers
+    * `:origin` - `Origin` header for the handshake (defaults to WhatsApp Web's origin)
+    * `:connect_timeout_ms` - TCP connect deadline (defaults to `30_000`)
     * Other options for timeouts and configuration
 
+  `:origin` is sent as a real `Origin` header unless `:headers` already sets
+  one (case-insensitively), in which case the explicit `:headers` entry wins.
+  No `User-Agent` is sent — the same as Baileys and whatsmeow, which send only
+  `Origin`.
+
+  `:connect_timeout_ms` is passed to WebSockex as `:socket_connect_timeout`
+  (WebSockex's own option name) — leaving it unset would silently fall back
+  to WebSockex's 6-second default instead of this module's 30-second one.
   """
   def start_link(opts \\ []) do
     Logger.debug("Starting WebSocket client connection to WhatsApp server")
@@ -52,15 +62,12 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
 
     headers = opts[:headers] || []
     origin = opts[:origin] || Application.get_env(:amarula, :origin, "https://web.whatsapp.com")
-    agent = opts[:agent] || "Mozilla/5.0"
 
-    # Convert headers to list format
-    headers_list =
-      case headers do
-        h when is_map(h) -> Enum.map(h, fn {k, v} -> {k, v} end)
-        h when is_list(h) -> h
-        _ -> []
-      end
+    # `origin` was being computed (and logged) but never actually added to the
+    # request — the handshake went out with no Origin header at all unless the
+    # caller duplicated it into `:headers` manually. An explicit `:headers`
+    # entry still wins (matched case-insensitively, since HTTP header names are).
+    headers_list = build_headers(headers, origin)
 
     # Build initial state struct
     state = %__MODULE__{
@@ -69,18 +76,55 @@ defmodule Amarula.Protocol.Socket.WebSocketClient do
       parent_pid: parent_pid
     }
 
-    # WebSockex options
+    # WebSockex options. `:socket_connect_timeout` (not `:connect_timeout_ms`,
+    # which is this module's own option name) is what WebSockex actually
+    # reads for the TCP connect deadline — it defaults to 6s, so leaving it
+    # unset silently ignored the configured `connect_timeout_ms` (default
+    # 30s): every connection used WebSockex's 6s default regardless of config.
     websocket_opts = [
       extra_headers: headers_list,
+      socket_connect_timeout: connect_timeout_ms,
       async: true
     ]
 
     Logger.debug("Attempting to connect to WhatsApp WebSocket at: #{url}")
     Logger.debug("Connection timeout: #{connect_timeout_ms}ms")
     Logger.debug("Origin: #{origin}")
-    Logger.debug("User agent: #{agent}")
 
     WebSockex.start_link(url, __MODULE__, state, websocket_opts)
+  end
+
+  @doc """
+  Normalizes `headers` (a list or map — anything else becomes `[]`) and adds
+  `Origin`, unless it already has that key (matched case-insensitively), in
+  which case the explicit entry wins. Public so this can be unit-tested without
+  a live connection.
+  """
+  @spec build_headers(term(), String.t()) :: [{String.t() | atom(), String.t()}]
+  def build_headers(headers, origin) do
+    headers
+    |> case do
+      h when is_map(h) -> Map.to_list(h)
+      h when is_list(h) -> h
+      _ -> []
+    end
+    |> put_new_header("Origin", origin)
+  end
+
+  # Append `{name, value}` unless the caller already supplied that header.
+  # HTTP header names are case-insensitive, so the comparison has to be too —
+  # otherwise a caller passing "origin" would get a duplicate header.
+  defp put_new_header(headers, name, value) do
+    downcased = String.downcase(name)
+
+    already_set? =
+      Enum.any?(headers, fn
+        {k, _v} when is_binary(k) -> String.downcase(k) == downcased
+        {k, _v} when is_atom(k) -> k |> Atom.to_string() |> String.downcase() == downcased
+        _ -> false
+      end)
+
+    if already_set?, do: headers, else: headers ++ [{name, value}]
   end
 
   @doc """

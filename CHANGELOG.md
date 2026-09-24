@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The WebSocket handshake now actually sends `Origin`.** It was computed and logged
+  but never added to the request, so the handshake went out with no `Origin` header
+  unless the caller duplicated it into `:headers`. An explicit `:headers` entry still
+  wins, matched case-insensitively. No `User-Agent` is sent — the same as Baileys and
+  whatsmeow, which send only `Origin`.
+- **`connect_timeout_ms` is honoured.** It is now passed to WebSockex as
+  `:socket_connect_timeout`, the option WebSockex actually reads; before, every
+  connection used WebSockex's 6-second default regardless of config (default 30s).
+
 ## [0.5.8] - 2026-08-20
 
 Found by reviewing upstream Baileys for portable changes (see `docs/PARITY.md`).

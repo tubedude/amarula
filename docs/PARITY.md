@@ -241,27 +241,23 @@ Baileys and whatsmeow for anything unmerged but worth tracking.
 - The other master commit (`74af8eee`) only touches `Example/example.ts` —
   no source impact.
 
-**Watching (open upstream, not yet fixed anywhere — do not port speculatively):**
+**Ported from post-watermark upstream review (2026-09-28):**
 
-- **[Baileys #2737](https://github.com/WhiskeySockets/Baileys/issues/2737) —
-  potentially critical.** As of ~2026-07-28, WhatsApp began sending a
-  `<notification type="companion_reg_refresh">` to the companion client
-  immediately after a successful QR scan. Neither Baileys nor whatsmeow
-  (independently reproduced, `go.mau.fi/whatsmeow@e9a033b`) implement it; both
-  ack-and-discard it, `pair-success` never arrives, and the phone reports
-  "Couldn't link device — try connection again." Amarula has no handler for
-  `companion_reg_refresh` either (`Router`/`dispatch_notification` in
-  `connection.ex`), so it is presumptively exposed to the same failure — **new
-  QR-based device pairing may currently be broken industry-wide**, not just
-  for us. No open PR resolves the root cause yet (only server-side; no client
-  workaround identified). Re-check this issue before assuming a live pairing
-  failure is Amarula-specific. The #2737 thread also flagged a secondary,
-  independent bug in Baileys' `requestPairingCode()` (resolves before the
-  server responds) — Amarula had the same shape; see the Ported entry above
-  for our fix.
+- **[Baileys #2765](https://github.com/WhiskeySockets/Baileys/pull/2765) /
+  #2737 — `companion_reg_refresh`.** A valid refresh during QR pairing now
+  rotates and persists the 32-byte advertisement secret, then re-emits the QR
+  using the current ref without consuming the next ref or resetting its timer.
+  Malformed refreshes and refreshes after `me` is set are ignored.
+- **[Baileys #2779](https://github.com/WhiskeySockets/Baileys/pull/2779) —
+  undecryptable status queue stall.** A failed `status@broadcast` decrypt is
+  still sent a retry request, but the final error NACK is replaced with a plain
+  stanza ACK, preventing that status from remaining at the head of WhatsApp's
+  offline queue without giving up its recovery path.
+- **WA protocol version** bumped `1045692687` → `1048663002`, matching the live
+  WhatsApp Web service worker (and superseding Baileys' already-stale automated
+  version-update branch #2818).
 
-  Re-checked 2026-08-20: still open, still no fix from either side (server or
-  client), still active reports from users unable to complete pairing.
+**Watching (open upstream — do not port speculatively):**
 - **PR #2693** (closed 2026-08-20, stale-bot auto-close, never merged) —
   broader desktop-platform fix superseding #2741: also maps `Mac OS` +
   `Desktop` + `syncFullHistory` to `UserAgent.Platform.MACOS` (currently

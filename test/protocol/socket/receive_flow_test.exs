@@ -390,6 +390,31 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert_receive {[:amarula, :retry, :sent], ^ref, %{count: 1, attempt: 1}, _meta}
     end
 
+    test "an undecryptable status is retried then plain-acked without a nack", ctx do
+      ref = attach_telemetry([[:amarula, :decrypt, :exception], [:amarula, :retry, :sent]])
+      inject(ctx, undecryptable_message("STATUSFAIL1", "status@broadcast"))
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "id") == "STATUSFAIL1"
+      assert attr(receipt, "to") == "status@broadcast"
+      assert attr(receipt, "type") == "retry"
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "id") == "STATUSFAIL1"
+      assert attr(ack, "class") == "message"
+      assert attr(ack, "error") == nil
+
+      assert_receive {[:amarula, :decrypt, :exception], ^ref, %{count: 1},
+                      %{reason: :nothing_decrypted}}
+
+      assert_receive {[:amarula, :retry, :sent], ^ref, %{count: 1, attempt: 1}, _meta}
+
+      refute_receive {:frame_out, _}, 150
+      assert Process.alive?(ctx.pid)
+    end
+
     test "a second failure from the same peer escalates: count=2 with a <keys> bundle", ctx do
       ref = attach_telemetry([[:amarula, :retry, :sent]])
 

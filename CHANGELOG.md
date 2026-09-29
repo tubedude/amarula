@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-09-28
+
+### Fixed
+
+- **QR pairing now handles `companion_reg_refresh`.** When WhatsApp retires the
+  advertisement secret in the QR currently on screen, Amarula rotates and
+  persists the secret and re-emits that QR with the same ref, without consuming
+  another ref or resetting its expiry timer.
+- **An undecryptable `status@broadcast` no longer blocks the offline queue.**
+  Failed status decrypts still request a retry, but finish with a plain stanza
+  ACK instead of an error NACK, allowing ordinary queued messages behind them to
+  continue arriving without giving up the status recovery path.
+- **The development lock now resolves Mint 1.11.0** to address three HTTP/1 and
+  HTTP/2 security advisories affecting 1.10.1. Mint remains a transitive
+  Req/Finch dependency rather than part of Amarula's public dependency surface.
+
+### Changed
+
+- **Pinned WhatsApp Web version bumped to `2.3000.1048663002`.**
+
 ## [0.5.8] - 2026-08-20
 
 Found by reviewing upstream Baileys for portable changes (see `docs/PARITY.md`).
@@ -1297,7 +1317,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.8...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.9...HEAD
+[0.5.9]: https://github.com/tubedude/amarula/compare/v0.5.8...v0.5.9
 [0.5.8]: https://github.com/tubedude/amarula/compare/v0.5.7...v0.5.8
 [0.5.7]: https://github.com/tubedude/amarula/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/tubedude/amarula/compare/v0.5.5...v0.5.6

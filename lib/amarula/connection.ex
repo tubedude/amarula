@@ -114,6 +114,7 @@ defmodule Amarula.Connection do
     :waiting_for_server_response,
     :server_response_timeout_timer,
     :qr_refs,
+    :qr_ref,
     :qr_timer,
     :task_supervisor,
     pending_iqs: %{},
@@ -165,6 +166,7 @@ defmodule Amarula.Connection do
           waiting_for_server_response: boolean(),
           server_response_timeout_timer: reference() | nil,
           qr_refs: [String.t()],
+          qr_ref: String.t() | nil,
           qr_timer: reference() | nil,
           # Connection-owned Task.Supervisor (started linked in init) running the
           # off-process work — media prep and history-sync downloads. Linked, so it
@@ -667,6 +669,7 @@ defmodule Amarula.Connection do
       waiting_for_server_response: false,
       server_response_timeout_timer: nil,
       qr_refs: [],
+      qr_ref: nil,
       qr_timer: nil,
       task_supervisor: task_supervisor
     }
@@ -2428,6 +2431,36 @@ defmodule Amarula.Connection do
     end
   end
 
+  # companion_reg_refresh — while QR pairing is pending, WhatsApp can retire the
+  # advertisement secret currently shown in the QR. Rotate and persist that
+  # secret, then re-emit the current QR ref without consuming the next ref or
+  # touching its expiry timer. Once `me` exists the secret belongs to a completed
+  # or phone-code pairing and must not be rotated.
+  defp dispatch_notification(state, "companion_reg_refresh", node) do
+    valid_child? =
+      Enum.any?(["companion_reg_refresh", "pair-device-rotate-qr"], fn tag ->
+        not is_nil(NodeUtils.get_binary_node_child(node, tag))
+      end)
+
+    case {valid_child?, Map.get(state.auth_creds, :me), state.qr_ref} do
+      {true, nil, ref} when is_binary(ref) ->
+        adv_secret_key = Crypto.random_bytes(32) |> Base.encode64()
+        state = update_creds(state, %{state.auth_creds | adv_secret_key: adv_secret_key})
+        qr = generate_qr_code(ref, state.auth_creds, state.config)
+
+        emit_to_subscribers(state, :connection_update, %{
+          connection: :connecting,
+          qr: qr
+        })
+
+        state
+
+      _ ->
+        Logger.debug("companion_reg_refresh ignored outside active QR pairing")
+        state
+    end
+  end
+
   # mediaretry — the phone's reply to a server-error receipt we sent to re-request
   # an expired media blob. Decode it against the media_key we parked and reply to
   # the waiting retry_media/2 caller with {:ok, new_direct_path} or an error.
@@ -3039,7 +3072,7 @@ defmodule Amarula.Connection do
     })
 
     # First QR: full timeout; later refs: shorter. Only schedule if more remain.
-    state = %{state | qr_refs: rest}
+    state = %{state | qr_refs: rest, qr_ref: ref}
 
     if rest == [] do
       %{state | qr_timer: nil}
@@ -3386,6 +3419,7 @@ defmodule Amarula.Connection do
       | waiting_for_server_response: false,
         server_response_timeout_timer: nil,
         qr_refs: [],
+        qr_ref: nil,
         qr_timer: nil
     }
   end
@@ -4001,6 +4035,20 @@ defmodule Amarula.Connection do
         )
 
         send_delivery_receipt(state, node)
+
+      # An undecryptable status must not be NACKed. WhatsApp can otherwise keep
+      # it at the head of the offline queue and withhold every ordinary message
+      # behind it across reconnects. Keep the retry request so the sender can
+      # still recover it, but finish with a plain stanza ack so the queue drains.
+      JID.jid_status_broadcast?(from) ->
+        Logger.debug("Status #{msg_id}: nothing decrypted — retry + plain ack")
+
+        Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
+          reason: :nothing_decrypted
+        })
+
+        state = send_retry_request(state, node)
+        send_message_ack(state, node)
 
       true ->
         Logger.debug("Message #{msg_id} from #{from}: nothing decrypted — retry + nack")

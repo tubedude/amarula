@@ -29,7 +29,7 @@ defmodule Amarula.Protocol.Crypto.Constants do
 
   # WhatsApp Web protocol version. `Amarula.Config` is the source of truth for the
   # on-the-wire version (the connection's `:version`); keep this in sync with it.
-  @wa_version [2, 3000, 1_045_692_687]
+  @wa_version [2, 3000, 1_048_663_002]
 
   # Default origin for WebSocket connections
   @default_origin "https://web.whatsapp.com"

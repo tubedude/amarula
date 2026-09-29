@@ -12,7 +12,7 @@ defmodule Amarula.MixProject do
   def project do
     [
       app: :amarula,
-      version: "0.5.8",
+      version: "0.5.9",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),

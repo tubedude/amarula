@@ -2,6 +2,7 @@ defmodule Amarula.ConfigTest do
   use ExUnit.Case, async: false
 
   alias Amarula.Config
+  alias Amarula.Protocol.Crypto.Constants
 
   @env "AMARULA_WA_VERSION"
 
@@ -18,6 +19,7 @@ defmodule Amarula.ConfigTest do
       # defaults/0 and merge/1 reflect the same value
       assert Config.defaults().version == Config.wa_version()
       assert Config.merge(%{}).version == Config.wa_version()
+      assert Constants.wa_version() == Config.wa_version()
     end
 
     test "a valid dotted triple overrides the default" do

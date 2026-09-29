@@ -64,6 +64,91 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
     {:ok, pid: pid}
   end
 
+  describe "companion_reg_refresh notification" do
+    test "rotates the adv secret and re-emits the current QR without consuming a ref", %{
+      pid: pid
+    } do
+      first_qr = begin_qr_pairing(pid)
+
+      [first_ref, _noise, _identity, first_secret | _] = String.split(first_qr, ",")
+      assert String.ends_with?(first_ref, "#REF1")
+      before = :sys.get_state(pid)
+
+      notification =
+        Node.create(
+          "notification",
+          %{"type" => "companion_reg_refresh", "id" => "refresh-1"},
+          [Node.create("companion_reg_refresh", %{}, nil)]
+        )
+
+      send(pid, {:inject_node, notification})
+      assert recv_frame().tag == "ack"
+      assert_receive {:amarula, :connection_update, %{qr: refreshed_qr}}
+
+      [refreshed_ref, _noise, _identity, refreshed_secret | _] = String.split(refreshed_qr, ",")
+      assert refreshed_ref == first_ref
+      refute refreshed_secret == first_secret
+
+      after_refresh = :sys.get_state(pid)
+      assert after_refresh.qr_refs == ["REF2"]
+      assert after_refresh.qr_ref == "REF1"
+      assert after_refresh.qr_timer == before.qr_timer
+      assert after_refresh.auth_creds.adv_secret_key == refreshed_secret
+
+      assert {:ok, persisted_creds} =
+               Amarula.Storage.get(
+                 after_refresh.conn.storage,
+                 after_refresh.conn.profile,
+                 :creds,
+                 :self
+               )
+
+      assert persisted_creds.adv_secret_key == refreshed_secret
+    end
+
+    test "ignores a malformed refresh while QR pairing is active", %{pid: pid} do
+      _qr = begin_qr_pairing(pid)
+      before = :sys.get_state(pid)
+
+      notification =
+        Node.create(
+          "notification",
+          %{"type" => "companion_reg_refresh", "id" => "refresh-malformed"},
+          [Node.create("other", %{}, nil)]
+        )
+
+      send(pid, {:inject_node, notification})
+      assert recv_frame().tag == "ack"
+      refute_receive {:amarula, :connection_update, %{qr: _}}, 100
+
+      after_refresh = :sys.get_state(pid)
+      assert after_refresh.qr_refs == before.qr_refs
+      assert after_refresh.qr_ref == before.qr_ref
+      assert after_refresh.qr_timer == before.qr_timer
+      assert after_refresh.auth_creds.adv_secret_key == before.auth_creds.adv_secret_key
+    end
+
+    test "does not rotate the secret after phone-code pairing has set me", %{pid: pid} do
+      _qr = begin_qr_pairing(pid)
+      assert {:ok, _code} = Connection.request_pairing_code(pid, "15551234567")
+      assert_receive {:amarula, :pairing_code, _}
+      assert recv_frame().tag == "iq"
+      before = Connection.get_auth_creds(pid)
+
+      notification =
+        Node.create(
+          "notification",
+          %{"type" => "companion_reg_refresh", "id" => "refresh-registered"},
+          [Node.create("pair-device-rotate-qr", %{}, nil)]
+        )
+
+      send(pid, {:inject_node, notification})
+      assert recv_frame().tag == "ack"
+      refute_receive {:amarula, :connection_update, %{qr: _}}, 100
+      assert Connection.get_auth_creds(pid).adv_secret_key == before.adv_secret_key
+    end
+  end
+
   describe "request_pairing_code/3" do
     test "mints an 8-char code, sets me, and frames a companion_hello IQ", %{pid: pid} do
       assert {:ok, code} = Connection.request_pairing_code(pid, "15551234567")
@@ -210,6 +295,21 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
     after
       1000 -> flunk("timed out waiting for an outbound frame")
     end
+  end
+
+  defp begin_qr_pairing(pid) do
+    pair_device =
+      Node.create("iq", %{"id" => "pair-1", "type" => "set"}, [
+        Node.create("pair-device", %{}, [
+          Node.create("ref", %{}, "REF1"),
+          Node.create("ref", %{}, "REF2")
+        ])
+      ])
+
+    send(pid, {:inject_node, pair_device})
+    assert recv_frame().tag == "iq"
+    assert_receive {:amarula, :connection_update, %{qr: qr}}
+    qr
   end
 
   # Drain frames until an iq carrying a link_code_companion_reg at the given stage.

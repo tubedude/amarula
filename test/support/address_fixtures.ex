@@ -30,12 +30,12 @@ defmodule Amarula.AddressFixtures do
     {"clean LID", "#{@lid}@lid", :lid, "#{@lid}@lid"},
     {"LID + device", "#{@lid}:12@lid", :lid, "#{@lid}@lid"},
     {"group", "#{@group}@g.us", :group, "#{@group}@g.us"},
-    {"newsletter", "#{@group}@newsletter", :newsletter, "#{@group}@newsletter"}
+    {"newsletter", "#{@group}@newsletter", :newsletter, "#{@group}@newsletter"},
+    {"hosted PN device", "#{@pn}:99@hosted", :pn, "#{@pn}@hosted"},
+    {"hosted LID device", "#{@lid}:99@hosted.lid", :lid, "#{@lid}@hosted.lid"}
   ]
 
   @unresolvable [
-    {"hosted PN", "#{@pn}@hosted"},
-    {"hosted LID", "#{@lid}@hosted.lid"},
     {"broadcast list", "#{@pn}@broadcast"}
   ]
 

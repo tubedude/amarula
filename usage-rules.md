@@ -132,7 +132,6 @@ and compare, but **every send refuses them** with
 not silently retargeted.
 
 Where you'll meet one:
-- `msg.from` — a `@hosted` business account writing in an ordinary group.
 
 So don't assume `msg.channel` is a valid reply target. If you build a bot that
 replies to whatever arrives, guard it:
@@ -160,6 +159,13 @@ status-privacy setting, so pick the audience yourself.
 **Channel posts** (WhatsApp Channels) arrive with a `kind: :newsletter` channel
 (`Amarula.Address.newsletter?/1`) and `msg.server_id`. Sends to a channel are refused
 with `{:error, :newsletter_send_unsupported}`.
+**Hosted business devices** (Cloud API, `<n>:99@hosted` / `@hosted.lid`) are ordinary
+`:pn` / `:lid` devices of that account, with `server` set to the hosted server.
+`Amarula.Address.normalize/1` gives the plain account address, so replies work as usual.
+
+Do not try to reconstruct a jid string to get around the refusal. Sending to
+`status@broadcast` is how one *posts a status* — an echo bot that "helpfully" rebuilt
+that target would publish a story to all of the account's contacts.
 
 ## Sending
 

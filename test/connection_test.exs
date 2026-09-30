@@ -697,20 +697,23 @@ defmodule Amarula.ConnectionTest do
       assert Address.same_account?(msg.to, @own)
     end
 
-    test "a @hosted group participant is no longer misattributed to the group (#50)" do
+    test "a @hosted group participant is its PN account's hosted device (#50)" do
       # The second headline defect in #50. `from_addr` is
       # `participant |> maybe_address() || stanza_from`, and while an unmodelled
       # participant parsed to nil the `||` fell through to the GROUP — so every
       # hosted member's message looked like it was written by the group itself,
       # silently collapsing any per-sender logic a consumer had.
       group = "123456789@g.us"
-      node = msg_node(%{"from" => group, "participant" => "5511777@hosted", "id" => "M8"})
+      node = msg_node(%{"from" => group, "participant" => "5511777:99@hosted", "id" => "M8"})
 
       msg =
         Connection.build_msg(@state, %Proto.Message{conversation: "g"}, node, group, "M8", @own)
 
       assert %Address{kind: :group} = msg.channel
-      assert %Address{kind: :unsupported, server: "hosted", user: "5511777"} = msg.from
+      assert %Address{kind: :pn, server: "hosted", user: "5511777", device: 99} = msg.from
+      assert Address.to_jid(msg.from) == {:ok, "5511777:99@hosted"}
+      assert Address.normalize(msg.from) == Address.pn("5511777")
+      assert Address.same_account?(msg.from, Address.pn("5511777"))
       refute Address.group?(msg.from)
     end
 

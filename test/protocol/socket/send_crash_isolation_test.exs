@@ -83,7 +83,7 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
       # deliberately runs FIRST, so a bot exercised in the sandbox learns it cannot
       # reply to a status rather than discovering it in production.
       assert {:ok, _id} = Amarula.send_text(conn, Amarula.Address.pn("5511999"), "hi")
-      assert {:error, {:unsupported, _}} = Amarula.send_text(conn, "x@hosted", "hi")
+      assert {:error, {:unsupported, _}} = Amarula.send_text(conn, "x@call", "hi")
 
       assert {:error, :newsletter_send_unsupported} =
                Amarula.send_text(conn, "x@newsletter", "hi")

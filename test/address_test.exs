@@ -113,8 +113,8 @@ defmodule Amarula.AddressTest do
     end
 
     test "unmodelled server → :unsupported; non-jid → nil; passthrough an Address" do
-      assert %Address{kind: :unsupported, server: "hosted", user: "x"} =
-               Address.parse("x@hosted")
+      assert %Address{kind: :unsupported, server: "call", user: "x"} =
+               Address.parse("x@call")
 
       assert Address.parse("x@newsletter") == Address.newsletter("x")
       assert Address.newsletter?(Address.newsletter("x@newsletter"))
@@ -203,7 +203,7 @@ defmodule Amarula.AddressTest do
       # `parse!/1` raises only on a non-jid now — an unmodelled server IS parseable,
       # it just isn't addressable, and `to_jid!/1` is what refuses it.
       assert_raise ArgumentError, fn -> Address.parse!("not-a-jid") end
-      assert_raise ArgumentError, fn -> Address.to_jid!(Address.parse("x@hosted")) end
+      assert_raise ArgumentError, fn -> Address.to_jid!(Address.parse("x@call")) end
       assert Address.to_jid!("5511@s.whatsapp.net") == "5511@s.whatsapp.net"
       assert Address.to_jid!(Address.pn("5511")) == "5511@s.whatsapp.net"
     end

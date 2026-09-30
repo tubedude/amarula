@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   child, not `<enc>`, so Amarula found nothing to decrypt and answered every one with
   a retry request and an error NACK. They are now decoded, and acked without a
   delivery receipt, as in Baileys. An undecodable one gets a plain ack.
+- **Cloud API (hosted) business devices are addressed correctly.** A device list entry
+  flagged `is_hosted` now gets its `@hosted` / `@hosted.lid` jid instead of a plain
+  `@s.whatsapp.net` / `@lid` one; a hosted PN maps to the hosted LID domain; and hosted
+  devices are left out of group sender-key distribution, all as in Baileys.
+- **A `@hosted` / `@hosted.lid` jid is a PN / LID device, not an unsupported kind.** It
+  parses to `kind: :pn` / `:lid` with `server` set to the hosted server, is the same
+  account as the plain PN/LID, and normalizes to it — so a hosted business writing in
+  a group or 1:1 can be replied to and mentioned.
 
 ### Changed
 
@@ -83,15 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `%Msg{channel: nil}`, and the documented reply (`send_text(conn, msg.channel, …)`)
   hit `to_jid!/1` *inside* the Connection GenServer, so the socket died and
   restarted rather than the send failing. Sends now refuse an unaddressable target
-  with `{:error, reason}`, in sandbox mode as well as live. Status, newsletter and
-  hosted messages are still delivered on `:messages_upsert`, with a
+  with `{:error, reason}`, in sandbox mode as well as live. Status and newsletter
+  messages are still delivered on `:messages_upsert`, with a
   `kind: :unsupported` channel.
 
 - **A `@hosted` group participant is no longer attributed to the group** ([#50]).
   `from` fell back to the group address whenever the participant's jid didn't
   parse, so every hosted member's message looked like the group had written it —
   silently collapsing per-sender logic. Hosted business accounts are ordinary
-  group members. Mentions and quotes naming such a user no longer crash the
+  group members. Mentions and quotes naming an unaddressable user no longer crash the
   connection either; the jid annotation is dropped and the message still sends.
 
 ## [0.5.10] - 2026-09-29

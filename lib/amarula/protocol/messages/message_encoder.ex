@@ -70,7 +70,7 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
             %Proto.ContextInfo{
               stanzaId: msg.id,
               # Same reasoning as `mentionedJid` below: quoting a message whose
-              # sender we cannot address (a @hosted group participant) must not
+              # sender we cannot address (an unmodelled chat kind) must not
               # raise in the Connection process. The quote still carries stanzaId.
               participant: msg.from |> addressable_jid() |> List.first(),
               # A status reply goes 1:1 to the author, so the quote has to name the
@@ -89,7 +89,7 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
             %Proto.ContextInfo{}
         end
 
-      # Skip mentions we cannot address (kind `:unsupported` — a @hosted user, say).
+      # Skip mentions we cannot address (kind `:unsupported`).
       # `to_jid!/1` here would raise INSIDE the Connection GenServer, so the
       # documented round-trip `send_text(conn, chan, text, mentions: msg.mentions)`
       # would take the connection down over a mention we merely failed to model

@@ -137,9 +137,7 @@ defmodule Amarula.Msg do
   >
   > An address can be present and still have nowhere to send: `Amarula.Address`
   > parses a jid whose server Amarula does not model to `kind: :unsupported`,
-  > carrying its raw `server`. You'll meet
-  > these mainly as `from` — a `@hosted` business account writing in an ordinary
-  > group.
+  > carrying its raw `server`.
   >
   > They compare and inspect like any address, but every send refuses them with
   > `{:error, {:unsupported, server}}` rather than guessing a destination. Check
@@ -380,7 +378,7 @@ defmodule Amarula.Msg do
   defp mentions(nil), do: []
 
   # Unparseable mentions are dropped rather than carried as nil (#50). A mention of
-  # a `@hosted` user arrives inside an ordinary group message — and a nil in this
+  # an unmodelled kind arrives inside an ordinary group message — and a nil in this
   # list is a live grenade: the documented
   # round-trip `send_text(conn, chan, text, mentions: msg.mentions)` feeds it to
   # `to_jid!/1` inside the Connection GenServer. Dropping also makes the list match

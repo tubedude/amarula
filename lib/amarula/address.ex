@@ -27,6 +27,11 @@ defmodule Amarula.Address do
   `:device` is the device number (`nil` = account-level / primary). An address
   with `device: nil` names the whole account; with a device it names one client.
 
+  A device on Meta's hosting (a Cloud API business, `<n>:99@hosted` /
+  `<n>:99@hosted.lid`) is a `:pn` / `:lid` device like any other, with `:server`
+  set to `"hosted"` / `"hosted.lid"` so its jid round-trips. It is the same
+  account as the plain PN/LID, and `normalize/1` returns that plain address.
+
   ## Parsed-only
 
   An `Address` is a **pure value** — only what's deterministic from the string.
@@ -55,9 +60,9 @@ defmodule Amarula.Address do
         }
 
   @enforce_keys [:user, :kind]
-  # `server` is the raw server string, and is set ONLY for `:unsupported` — for the
-  # known kinds the server is implied by `kind` (see `@server` below), so carrying it
-  # twice would just be a second source of truth to keep in sync.
+  # `server` is the raw server string, set ONLY for `:unsupported` and for a hosted
+  # PN/LID device — otherwise the server is implied by `kind` (see `@server` below),
+  # so carrying it twice would just be a second source of truth to keep in sync.
   defstruct [:user, :kind, :device, :server]
 
   @server %{
@@ -123,6 +128,7 @@ defmodule Amarula.Address do
 
         case kind_of(user, server) do
           nil -> %__MODULE__{user: user, kind: :unsupported, device: device, server: server}
+          {k, hosted} -> %__MODULE__{user: user, kind: k, device: device, server: hosted}
           k -> %__MODULE__{user: user, kind: k, device: device}
         end
 
@@ -161,8 +167,8 @@ defmodule Amarula.Address do
   # `parse/1` yields nil only for a string that is not a jid at all.
   def to_jid(nil), do: {:error, :no_jid}
 
-  def to_jid(%__MODULE__{user: user, kind: kind, device: device}) do
-    {:ok, JID.encode(%{user: user, server: Map.fetch!(@server, kind), device: device})}
+  def to_jid(%__MODULE__{user: user, kind: kind, device: device, server: server}) do
+    {:ok, JID.encode(%{user: user, server: server || Map.fetch!(@server, kind), device: device})}
   end
 
   def to_jid(jid) when is_binary(jid), do: {:ok, jid}
@@ -196,9 +202,10 @@ defmodule Amarula.Address do
     end
   end
 
-  @doc "The account-level address (device stripped)."
+  @doc "The account-level address (device stripped; a hosted device becomes its plain PN/LID)."
   @spec normalize(t()) :: t()
-  def normalize(%__MODULE__{} = a), do: %{a | device: nil}
+  def normalize(%__MODULE__{kind: :unsupported} = a), do: %{a | device: nil}
+  def normalize(%__MODULE__{} = a), do: %{a | device: nil, server: nil}
 
   @doc """
   Whether two addresses name the same account (same user+kind, ignoring device). The
@@ -211,7 +218,7 @@ defmodule Amarula.Address do
 
   # Two unsupported addresses match only if the SERVER matches too — `kind` alone
   # is `:unsupported` for every unmodelled server, so the generic user+kind clause
-  # below would equate `5@hosted` with `5@newsletter`.
+  # below would equate `5@broadcast` with `5@newsletter`.
   def same_account?(
         %__MODULE__{kind: :unsupported, user: u, server: s},
         %__MODULE__{kind: :unsupported, user: u, server: s}
@@ -268,6 +275,8 @@ defmodule Amarula.Address do
   defp kind_of(_user, "lid"), do: :lid
   defp kind_of(_user, "g.us"), do: :group
   defp kind_of(_user, "newsletter"), do: :newsletter
+  defp kind_of(_user, "hosted"), do: {:pn, "hosted"}
+  defp kind_of(_user, "hosted.lid"), do: {:lid, "hosted.lid"}
   # Only the status feed; any other `@broadcast` is a broadcast list.
   defp kind_of("status", "broadcast"), do: :status
   defp kind_of(_user, _server), do: nil

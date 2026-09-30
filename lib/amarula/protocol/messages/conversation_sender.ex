@@ -685,7 +685,12 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     # our sender key (Baileys senderKeyMsg).
     skdm_plaintext = MessageEncoder.encode(skdm_message(ctx.target_jid, skdm))
 
-    participants = Enum.map(ctx.devices, &encrypt_for_device(ctx, &1, skdm_plaintext))
+    # Hosted devices (Cloud API businesses) never receive our sender key, as in
+    # Baileys: Meta's hosting does not take a sender-key distribution from us.
+    participants =
+      ctx.devices
+      |> Enum.reject(&hosted_device?/1)
+      |> Enum.map(&encrypt_for_device(ctx, &1, skdm_plaintext))
 
     {:ok, %{ctx | participants: participants, skmsg: skmsg}}
   end
@@ -850,6 +855,11 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   # The per-device message that distributes our sender key — SKDM only, no body
   # (Baileys senderKeyMsg). Members read the actual text from the group skmsg.
+  @doc false
+  def hosted_device?(%{server: server}) when server in ["hosted", "hosted.lid"], do: true
+  def hosted_device?(%{device: 99}), do: true
+  def hosted_device?(_device), do: false
+
   defp skdm_message(group_jid, skdm) do
     %Proto.Message{
       senderKeyDistributionMessage: %Proto.Message.SenderKeyDistributionMessage{

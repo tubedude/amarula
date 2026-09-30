@@ -162,6 +162,9 @@ with `{:error, :newsletter_send_unsupported}`.
 **Hosted business devices** (Cloud API, `<n>:99@hosted` / `@hosted.lid`) are ordinary
 `:pn` / `:lid` devices of that account, with `server` set to the hosted server.
 `Amarula.Address.normalize/1` gives the plain account address, so replies work as usual.
+**Broadcast lists** (`<id>@broadcast`) appear only as the `channel` of a message your
+own phone sent to one (`Amarula.Address.broadcast?/1`). Sends to a list are refused with
+`{:error, :broadcast_list_send_unsupported}`.
 
 Do not try to reconstruct a jid string to get around the refusal. Sending to
 `status@broadcast` is how one *posts a status* — an echo bot that "helpfully" rebuilt

@@ -17,6 +17,10 @@ defmodule Amarula.Address do
     * `:newsletter` — a WhatsApp Channel (`<id>@newsletter`). Its posts arrive with
       it as their `channel`. Followers can't post to it, and Amarula does not send
       as a channel admin yet, so sends refuse it.
+    * `:broadcast` — a broadcast list (`<id>@broadcast`, not `status@broadcast`).
+      You only see one as the `channel` of a message your own phone sent to it
+      (recipients get an ordinary 1:1). Its members are unknown here, so sends
+      refuse it.
     * `:none`  — the **empty** address (`empty/0`): "no identity". A stand-in for
       "we don't have one yet" (e.g. `Amarula.own_address/1` before login) — returned
       instead of `nil`, so you never have to nil-check. It names nothing: every
@@ -51,7 +55,8 @@ defmodule Amarula.Address do
 
   alias Amarula.Protocol.Binary.JID
 
-  @type kind :: :pn | :lid | :group | :status | :newsletter | :none | :unsupported
+  @type kind ::
+          :pn | :lid | :group | :status | :newsletter | :broadcast | :none | :unsupported
   @type t :: %__MODULE__{
           user: String.t(),
           kind: kind(),
@@ -70,7 +75,8 @@ defmodule Amarula.Address do
     lid: "lid",
     group: "g.us",
     status: "broadcast",
-    newsletter: "newsletter"
+    newsletter: "newsletter",
+    broadcast: "broadcast"
   }
 
   @doc "A PN address from a bare number or full jid string."
@@ -245,6 +251,9 @@ defmodule Amarula.Address do
   @spec newsletter?(t()) :: boolean()
   def newsletter?(%__MODULE__{kind: :newsletter}), do: true
   def newsletter?(_), do: false
+  @spec broadcast?(t()) :: boolean()
+  def broadcast?(%__MODULE__{kind: :broadcast}), do: true
+  def broadcast?(_), do: false
 
   @spec group?(t()) :: boolean()
   def group?(%__MODULE__{kind: :group}), do: true
@@ -277,8 +286,9 @@ defmodule Amarula.Address do
   defp kind_of(_user, "newsletter"), do: :newsletter
   defp kind_of(_user, "hosted"), do: {:pn, "hosted"}
   defp kind_of(_user, "hosted.lid"), do: {:lid, "hosted.lid"}
-  # Only the status feed; any other `@broadcast` is a broadcast list.
+  # The status feed; any other `@broadcast` is a broadcast list.
   defp kind_of("status", "broadcast"), do: :status
+  defp kind_of(_user, "broadcast"), do: :broadcast
   defp kind_of(_user, _server), do: nil
 
   # The user part of a bare id or full jid: strip @server, then the `:device` and

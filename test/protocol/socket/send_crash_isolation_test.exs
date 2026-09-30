@@ -90,6 +90,12 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
 
       assert {:error, :newsletter_send_unsupported} =
                Amarula.send_text(conn, Amarula.Address.newsletter("x"), "hi")
+
+      assert {:error, :broadcast_list_send_unsupported} =
+               Amarula.send_text(conn, "1700@broadcast", "hi")
+
+      assert {:error, :broadcast_list_send_unsupported} =
+               Amarula.send_text(conn, Amarula.Address.parse("1700@broadcast"), "hi")
     end
   end
 

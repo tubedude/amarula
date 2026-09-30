@@ -32,11 +32,12 @@ defmodule Amarula.AddressFixtures do
     {"group", "#{@group}@g.us", :group, "#{@group}@g.us"},
     {"newsletter", "#{@group}@newsletter", :newsletter, "#{@group}@newsletter"},
     {"hosted PN device", "#{@pn}:99@hosted", :pn, "#{@pn}@hosted"},
-    {"hosted LID device", "#{@lid}:99@hosted.lid", :lid, "#{@lid}@hosted.lid"}
+    {"hosted LID device", "#{@lid}:99@hosted.lid", :lid, "#{@lid}@hosted.lid"},
+    {"broadcast list", "#{@pn}@broadcast", :broadcast, "#{@pn}@broadcast"}
   ]
 
   @unresolvable [
-    {"broadcast list", "#{@pn}@broadcast"}
+    {"call", "#{@pn}@call"}
   ]
 
   @doc "Address shapes `Amarula.Address` resolves — `{label, jid, kind, account_jid}`."

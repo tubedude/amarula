@@ -473,6 +473,30 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert Process.alive?(ctx.pid)
     end
 
+    test "our own broadcast-list send is delivered on the list, with a plain sender receipt",
+         ctx do
+      list = "1700000000@broadcast"
+
+      inject(
+        ctx,
+        plaintext_message("BL1", list, %Proto.Message{conversation: "to all"}, %{
+          "participant" => @me_jid
+        })
+      )
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert msg.channel == Amarula.Address.parse(list)
+      assert Amarula.Address.broadcast?(msg.channel)
+      assert msg.from_me
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "to") == list
+      assert attr(receipt, "participant") == @me_jid
+      assert attr(receipt, "recipient") == nil
+      assert attr(receipt, "type") == "sender"
+    end
+
     test "an undecryptable status is retried then plain-acked without a nack", ctx do
       ref = attach_telemetry([[:amarula, :decrypt, :exception], [:amarula, :retry, :sent]])
       inject(ctx, undecryptable_message("STATUSFAIL1", "status@broadcast"))

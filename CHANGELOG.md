@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `kind: :newsletter` (`Amarula.Address.newsletter/1`, `newsletter?/1`), and
   `%Amarula.Msg{}` gains `server_id`, the channel's id for the post. Sends to a
   channel are refused with `{:error, :newsletter_send_unsupported}`.
+- **Broadcast lists are a modelled chat kind.** `<id>@broadcast` (other than
+  `status@broadcast`) parses to `kind: :broadcast` (`Amarula.Address.broadcast?/1`).
+  It is the `channel` of a message your phone sent to a list; sends to it are refused
+  with `{:error, :broadcast_list_send_unsupported}`. Our own-device receipt for such a
+  message now uses the plain `to`/`participant` form, as in Baileys.
 
 ### Fixed
 

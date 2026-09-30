@@ -1806,6 +1806,7 @@ defmodule Amarula.Connection do
       %Amarula.Address{kind: :unsupported, server: server} -> {:error, {:unsupported, server}}
       %Amarula.Address{kind: :status} -> {:error, :status_post_unsupported}
       %Amarula.Address{kind: :newsletter} -> {:error, :newsletter_send_unsupported}
+      %Amarula.Address{kind: :broadcast} -> {:error, :broadcast_list_send_unsupported}
       _ -> {:ok, target}
     end
   end
@@ -1818,6 +1819,10 @@ defmodule Amarula.Connection do
   # not the Signal send pipeline. Refuse until that is implemented.
   defp resolve_target(%Amarula.Address{kind: :newsletter}),
     do: {:error, :newsletter_send_unsupported}
+
+  # Sending to a broadcast list means fanning out to members we do not know.
+  defp resolve_target(%Amarula.Address{kind: :broadcast}),
+    do: {:error, :broadcast_list_send_unsupported}
 
   defp resolve_target(target), do: Amarula.Address.to_jid(target)
 
@@ -4316,7 +4321,8 @@ defmodule Amarula.Connection do
       end
 
     # Baileys: for type="sender" on a 1:1 (pn/lid) jid, recipient=jid and
-    # to=participant; otherwise (a group, the status feed, no participant) the
+    # to=participant; otherwise (a group, the status feed, a broadcast list, no
+    # participant) the
     # plain to+participant form.
     to_attrs =
       if type == "sender" and is_binary(participant) and person_jid?(from) do

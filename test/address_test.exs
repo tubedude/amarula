@@ -112,6 +112,12 @@ defmodule Amarula.AddressTest do
       assert %Address{kind: :pn} = Address.parse("5511@c.us")
     end
 
+    test "Meta AI is kind :bot" do
+      assert %Address{kind: :bot, user: "13135550002"} = Address.parse("13135550002@bot")
+      assert Address.bot?(Address.parse("13135550002@bot"))
+      assert Address.to_jid(Address.parse("13135550002@bot")) == {:ok, "13135550002@bot"}
+    end
+
     test "unmodelled server → :unsupported; non-jid → nil; passthrough an Address" do
       assert %Address{kind: :unsupported, server: "newsletter", user: "x"} =
                Address.parse("x@newsletter")

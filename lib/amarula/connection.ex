@@ -1790,10 +1790,14 @@ defmodule Amarula.Connection do
   defp resolve_target(target) when is_binary(target) do
     case Amarula.Address.parse(target) do
       %Amarula.Address{kind: :unsupported, server: server} -> {:error, {:unsupported, server}}
+      %Amarula.Address{kind: :bot} -> {:error, :bot_send_unsupported}
       _ -> {:ok, target}
     end
   end
 
+  # Meta AI takes its own send protocol (bot USync profile, bot metadata), which is
+  # not implemented.
+  defp resolve_target(%Amarula.Address{kind: :bot}), do: {:error, :bot_send_unsupported}
   defp resolve_target(target), do: Amarula.Address.to_jid(target)
 
   # Sandbox (offline) mode: the connection has no socket and there is no peer to

@@ -4,13 +4,15 @@ defmodule Amarula.Address do
   for or from. A friendly value you can build, inspect, and pass to sends, instead
   of juggling raw `"user@server"` jid strings.
 
-  Four kinds, distinguished by `:kind`:
+  Distinguished by `:kind`:
 
     * `:pn`    — a phone-number identity (`<number>@s.whatsapp.net`).
     * `:lid`   — a privacy "Linked ID" (`<id>@lid`). WhatsApp's wire-preferred
       identity; the same person has both a PN and a LID.
     * `:group` — a group chat (`<id>@g.us`). A *container* of participants, not a
       person; its members are fetched separately (group metadata), not stored here.
+    * `:bot` — Meta AI (`<id>@bot`). Its messages are delivered with it as their
+      `channel`; sending to it is not implemented, so sends refuse it.
     * `:none`  — the **empty** address (`empty/0`): "no identity". A stand-in for
       "we don't have one yet" (e.g. `Amarula.own_address/1` before login) — returned
       instead of `nil`, so you never have to nil-check. It names nothing: every
@@ -40,7 +42,7 @@ defmodule Amarula.Address do
 
   alias Amarula.Protocol.Binary.JID
 
-  @type kind :: :pn | :lid | :group | :none | :unsupported
+  @type kind :: :pn | :lid | :group | :bot | :none | :unsupported
   @type t :: %__MODULE__{
           user: String.t(),
           kind: kind(),
@@ -54,7 +56,7 @@ defmodule Amarula.Address do
   # twice would just be a second source of truth to keep in sync.
   defstruct [:user, :kind, :device, :server]
 
-  @server %{pn: "s.whatsapp.net", lid: "lid", group: "g.us"}
+  @server %{pn: "s.whatsapp.net", lid: "lid", group: "g.us", bot: "bot"}
 
   @doc "A PN address from a bare number or full jid string."
   @spec pn(String.t()) :: t()
@@ -212,6 +214,10 @@ defmodule Amarula.Address do
   def lid?(%__MODULE__{kind: :lid}), do: true
   def lid?(_), do: false
 
+  @spec bot?(t()) :: boolean()
+  def bot?(%__MODULE__{kind: :bot}), do: true
+  def bot?(_), do: false
+
   @spec group?(t()) :: boolean()
   def group?(%__MODULE__{kind: :group}), do: true
   def group?(_), do: false
@@ -240,6 +246,7 @@ defmodule Amarula.Address do
   defp kind_of("c.us"), do: :pn
   defp kind_of("lid"), do: :lid
   defp kind_of("g.us"), do: :group
+  defp kind_of("bot"), do: :bot
   defp kind_of(_), do: nil
 
   # The user part of a bare id or full jid: strip @server, then the `:device` and

@@ -148,6 +148,9 @@ else
 end
 ```
 
+**Meta AI** (`<id>@bot`) messages arrive with a `kind: :bot` channel
+(`Amarula.Address.bot?/1`). Sends to it are refused with `{:error, :bot_send_unsupported}`.
+
 Do not try to reconstruct a jid string to get around the refusal. Sending to
 `status@broadcast` is how one *posts a status* — an echo bot that "helpfully" rebuilt
 that target would publish a story to all of the account's contacts.

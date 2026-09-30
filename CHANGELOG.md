@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Meta AI is a modelled chat kind.** `<id>@bot` parses to `kind: :bot`
+  (`Amarula.Address.bot?/1`); its messages are delivered with that `channel`. Sends to
+  it are refused with `{:error, :bot_send_unsupported}`.
+
 ### Changed
 
 - **`Amarula.Address.parse/1` no longer returns `nil` for a chat kind we don't

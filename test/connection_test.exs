@@ -715,9 +715,8 @@ defmodule Amarula.ConnectionTest do
     end
 
     test "a sender from an unmodelled chat kind carries an :unsupported channel (#50)" do
-      # Reaches build_msg only via a path the Router does not gate (history sync,
-      # a nested quote). It must still not raise, and — unlike the nil above — it
-      # keeps WHICH kind it was, so the channel is inspectable rather than absent.
+      # Delivered, not dropped. Unlike the nil above it keeps WHICH kind it was, so
+      # the channel is inspectable — and every send to it is refused.
       bad = "status@broadcast"
       node = msg_node(%{"from" => bad, "id" => "M7"})
 

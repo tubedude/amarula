@@ -23,32 +23,24 @@ defmodule Amarula.Protocol.Socket.RouterTest do
     assert Router.route(n("xmlstreamend")) == :xml_stream_end
   end
 
-  describe "message gating on unmodelled chat kinds (#50)" do
-    test "chats we model route as :message" do
-      for from <- ["5511@s.whatsapp.net", "5511@c.us", "5511@lid", "120@g.us"] do
-        assert Router.route(n("message", %{"from" => from})) == :message,
-               "expected #{from} to route as :message"
+  describe "messages route regardless of chat kind (#50)" do
+    # Unmodelled kinds (status, newsletter, hosted) are delivered, not declined:
+    # dropping one at the router left it un-acked in the server's queue.
+    test "every chat kind, and a missing or bare-server `from`, routes as :message" do
+      for from <- [
+            "5511@s.whatsapp.net",
+            "5511:3@s.whatsapp.net",
+            "5511@lid",
+            "120@g.us",
+            "status@broadcast",
+            "x@newsletter",
+            "5511@hosted",
+            "s.whatsapp.net"
+          ] do
+        assert Router.route(n("message", %{"from" => from})) == :message, from
       end
-    end
 
-    test "chats we do not model yet are declined, not built into a %Msg{}" do
-      for from <- ["status@broadcast", "x@newsletter", "5511@hosted", "5511@hosted.lid"] do
-        assert Router.route(n("message", %{"from" => from})) == :unsupported_message,
-               "expected #{from} to be declined"
-      end
-    end
-
-    test "a device suffix does not change the verdict" do
-      assert Router.route(n("message", %{"from" => "5511:3@s.whatsapp.net"})) == :message
-      assert Router.route(n("message", %{"from" => "5511:3@hosted"})) == :unsupported_message
-    end
-
-    # The gate keys on an unmodelled SERVER, not on "failed to parse" — server-sent
-    # messages have no user part and must keep flowing.
-    test "a missing or bare-server `from` still routes as :message" do
       assert Router.route(n("message")) == :message
-      assert Router.route(n("message", %{"from" => "s.whatsapp.net"})) == :message
-      assert Router.route(n("message", %{"from" => ""})) == :message
     end
   end
 

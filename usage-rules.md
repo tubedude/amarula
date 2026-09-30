@@ -134,7 +134,8 @@ not silently retargeted.
 
 Where you'll meet one:
 - `msg.from` — a `@hosted` business account writing in an ordinary group.
-- `msg.channel` on history-synced status posts.
+- `msg.channel` on status posts and channel (`@newsletter`) messages, live or
+  history-synced.
 
 So don't assume `msg.channel` is a valid reply target. If you build a bot that
 replies to whatever arrives, guard it:

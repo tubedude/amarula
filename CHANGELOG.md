@@ -60,9 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `%Msg{channel: nil}`, and the documented reply (`send_text(conn, msg.channel, …)`)
   hit `to_jid!/1` *inside* the Connection GenServer, so the socket died and
   restarted rather than the send failing. Sends now refuse an unaddressable target
-  with `{:error, reason}`, in sandbox mode as well as live, and messages from a
-  kind we can't act on are declined at the router instead of being delivered with
-  a channel every send would reject.
+  with `{:error, reason}`, in sandbox mode as well as live. Status, newsletter and
+  hosted messages are still delivered on `:messages_upsert`, with a
+  `kind: :unsupported` channel.
 
 - **A `@hosted` group participant is no longer attributed to the group** ([#50]).
   `from` fell back to the group address whenever the participant's jid didn't

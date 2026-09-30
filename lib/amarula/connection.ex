@@ -2050,20 +2050,6 @@ defmodule Amarula.Connection do
   # Informational nodes that need no reply (thread_metadata, incoming <ack>).
   defp dispatch_node(state, :ignore, _node), do: state
 
-  # A message from a chat kind we cannot represent as an `Amarula.Address` yet —
-  # status@broadcast, @newsletter, @hosted (#50). Declined by `Router` rather
-  # than built into a `%Msg{}` with a nil channel. Logged, not silent: this IS a
-  # dropped message, and the log is how we find out which kinds actually show up
-  # in the wild and so which to implement next. `debug` because a busy account
-  # can receive a steady trickle of status posts.
-  defp dispatch_node(state, :unsupported_message, node) do
-    Logger.debug(fn ->
-      "dropping message from an unsupported chat kind: #{inspect(NodeUtils.get_attr(node, "from"))}"
-    end)
-
-    state
-  end
-
   # Unhandled nodes — log LOUDLY (with the full node) so a server frame we don't
   # yet handle is never silently dropped. Silent drops here hid the `ib,,dirty` /
   # app-state `server_sync` gaps for a long time.

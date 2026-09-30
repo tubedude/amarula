@@ -144,8 +144,8 @@ defmodule Amarula.Msg do
   > They compare and inspect like any address, but every send refuses them with
   > `{:error, {:unsupported, server}}` rather than guessing a destination. Check
   > `Amarula.Address.unsupported?/1` before replying to an address that came off
-  > the wire. Live messages *from* such a chat are not delivered at all (the router
-  > declines them) until the kind is implemented.
+  > the wire. Messages *from* such a chat are delivered like any other, with that
+  > address as their `channel`.
 
   ## `pushname`
 
@@ -366,8 +366,8 @@ defmodule Amarula.Msg do
   defp mentions(nil), do: []
 
   # Unparseable mentions are dropped rather than carried as nil (#50). A mention of
-  # a `@hosted` user arrives inside an ordinary group message, so the router gate
-  # never sees it — and a nil in this list is a live grenade: the documented
+  # a `@hosted` user arrives inside an ordinary group message — and a nil in this
+  # list is a live grenade: the documented
   # round-trip `send_text(conn, chan, text, mentions: msg.mentions)` feeds it to
   # `to_jid!/1` inside the Connection GenServer. Dropping also makes the list match
   # its declared `[Address.t()]` type.

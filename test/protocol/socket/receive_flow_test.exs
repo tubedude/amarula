@@ -497,6 +497,19 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert attr(receipt, "type") == "sender"
     end
 
+    test "a Meta AI message is delivered on a :bot channel and receipted", ctx do
+      bot = "13135550002@bot"
+      inject(ctx, plaintext_message("BOT1", bot, %Proto.Message{conversation: "hello"}))
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert Amarula.Address.bot?(msg.channel)
+      assert msg.content == "hello"
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "to") == bot
+    end
+
     test "an undecryptable status is retried then plain-acked without a nack", ctx do
       ref = attach_telemetry([[:amarula, :decrypt, :exception], [:amarula, :retry, :sent]])
       inject(ctx, undecryptable_message("STATUSFAIL1", "status@broadcast"))

@@ -165,6 +165,8 @@ with `{:error, :newsletter_send_unsupported}`.
 **Broadcast lists** (`<id>@broadcast`) appear only as the `channel` of a message your
 own phone sent to one (`Amarula.Address.broadcast?/1`). Sends to a list are refused with
 `{:error, :broadcast_list_send_unsupported}`.
+**Meta AI** (`<id>@bot`) messages arrive with a `kind: :bot` channel
+(`Amarula.Address.bot?/1`). Sends to it are refused with `{:error, :bot_send_unsupported}`.
 
 Do not try to reconstruct a jid string to get around the refusal. Sending to
 `status@broadcast` is how one *posts a status* — an echo bot that "helpfully" rebuilt

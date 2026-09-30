@@ -21,6 +21,8 @@ defmodule Amarula.Address do
       You only see one as the `channel` of a message your own phone sent to it
       (recipients get an ordinary 1:1). Its members are unknown here, so sends
       refuse it.
+    * `:bot` — Meta AI (`<id>@bot`). Its messages are delivered with it as their
+      `channel`; sending to it is not implemented, so sends refuse it.
     * `:none`  — the **empty** address (`empty/0`): "no identity". A stand-in for
       "we don't have one yet" (e.g. `Amarula.own_address/1` before login) — returned
       instead of `nil`, so you never have to nil-check. It names nothing: every
@@ -56,7 +58,15 @@ defmodule Amarula.Address do
   alias Amarula.Protocol.Binary.JID
 
   @type kind ::
-          :pn | :lid | :group | :status | :newsletter | :broadcast | :none | :unsupported
+          :pn
+          | :lid
+          | :group
+          | :status
+          | :newsletter
+          | :broadcast
+          | :bot
+          | :none
+          | :unsupported
   @type t :: %__MODULE__{
           user: String.t(),
           kind: kind(),
@@ -76,7 +86,8 @@ defmodule Amarula.Address do
     group: "g.us",
     status: "broadcast",
     newsletter: "newsletter",
-    broadcast: "broadcast"
+    broadcast: "broadcast",
+    bot: "bot"
   }
 
   @doc "A PN address from a bare number or full jid string."
@@ -251,9 +262,14 @@ defmodule Amarula.Address do
   @spec newsletter?(t()) :: boolean()
   def newsletter?(%__MODULE__{kind: :newsletter}), do: true
   def newsletter?(_), do: false
+
   @spec broadcast?(t()) :: boolean()
   def broadcast?(%__MODULE__{kind: :broadcast}), do: true
   def broadcast?(_), do: false
+
+  @spec bot?(t()) :: boolean()
+  def bot?(%__MODULE__{kind: :bot}), do: true
+  def bot?(_), do: false
 
   @spec group?(t()) :: boolean()
   def group?(%__MODULE__{kind: :group}), do: true
@@ -284,6 +300,7 @@ defmodule Amarula.Address do
   defp kind_of(_user, "lid"), do: :lid
   defp kind_of(_user, "g.us"), do: :group
   defp kind_of(_user, "newsletter"), do: :newsletter
+  defp kind_of(_user, "bot"), do: :bot
   defp kind_of(_user, "hosted"), do: {:pn, "hosted"}
   defp kind_of(_user, "hosted.lid"), do: {:lid, "hosted.lid"}
   # The status feed; any other `@broadcast` is a broadcast list.

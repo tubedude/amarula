@@ -1807,6 +1807,7 @@ defmodule Amarula.Connection do
       %Amarula.Address{kind: :status} -> {:error, :status_post_unsupported}
       %Amarula.Address{kind: :newsletter} -> {:error, :newsletter_send_unsupported}
       %Amarula.Address{kind: :broadcast} -> {:error, :broadcast_list_send_unsupported}
+      %Amarula.Address{kind: :bot} -> {:error, :bot_send_unsupported}
       _ -> {:ok, target}
     end
   end
@@ -1824,6 +1825,9 @@ defmodule Amarula.Connection do
   defp resolve_target(%Amarula.Address{kind: :broadcast}),
     do: {:error, :broadcast_list_send_unsupported}
 
+  # Meta AI takes its own send protocol (bot USync profile, bot metadata), which is
+  # not implemented.
+  defp resolve_target(%Amarula.Address{kind: :bot}), do: {:error, :bot_send_unsupported}
   defp resolve_target(target), do: Amarula.Address.to_jid(target)
 
   # Account-level PN/LID jids for a status audience, deduped. Anything else (a group,

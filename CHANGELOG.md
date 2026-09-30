@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It is the `channel` of a message your phone sent to a list; sends to it are refused
   with `{:error, :broadcast_list_send_unsupported}`. Our own-device receipt for such a
   message now uses the plain `to`/`participant` form, as in Baileys.
+- **Meta AI is a modelled chat kind.** `<id>@bot` parses to `kind: :bot`
+  (`Amarula.Address.bot?/1`); its messages are delivered with that `channel`. Sends to
+  it are refused with `{:error, :bot_send_unsupported}`.
 
 ### Fixed
 

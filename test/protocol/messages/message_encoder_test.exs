@@ -246,6 +246,21 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
       assert ctx.quotedMessage == msg.raw
     end
 
+    test "quoting a status post names the status feed as the quote's chat" do
+      status =
+        Amarula.Msg.from_proto(%Proto.Message{conversation: "story"}, %{
+          id: "S1",
+          channel: Amarula.Address.status(),
+          from: Amarula.Address.parse("1@s.whatsapp.net")
+        })
+
+      ctx = MessageEncoder.context_info(quoted: status)
+      assert ctx.remoteJid == "status@broadcast"
+      assert ctx.participant == "1@s.whatsapp.net"
+
+      assert MessageEncoder.context_info(quoted: inbound_msg()).remoteJid == nil
+    end
+
     test "quoting a reply strips the nested contextInfo (no quote-chain growth)" do
       # The quoted message is ITSELF a reply: its extendedTextMessage carries a
       # contextInfo with its own quotedMessage. Inlining that verbatim would

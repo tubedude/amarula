@@ -390,6 +390,28 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert_receive {[:amarula, :retry, :sent], ^ref, %{count: 1, attempt: 1}, _meta}
     end
 
+    test "a status post is delivered on the status channel and receipted to the feed", ctx do
+      author = "5511777777777@s.whatsapp.net"
+
+      inject(
+        ctx,
+        plaintext_message("STATUS1", "status@broadcast", %Proto.Message{conversation: "story"}, %{
+          "participant" => author
+        })
+      )
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert msg.channel == Amarula.Address.status()
+      assert msg.from == Amarula.Address.parse(author)
+      assert msg.content == "story"
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "to") == "status@broadcast"
+      assert attr(receipt, "participant") == author
+      assert attr(receipt, "type") == nil
+    end
+
     test "an undecryptable status is retried then plain-acked without a nack", ctx do
       ref = attach_telemetry([[:amarula, :decrypt, :exception], [:amarula, :retry, :sent]])
       inject(ctx, undecryptable_message("STATUSFAIL1", "status@broadcast"))

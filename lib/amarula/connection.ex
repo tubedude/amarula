@@ -1784,16 +1784,21 @@ defmodule Amarula.Connection do
   # `send_text(conn, "status@broadcast", …)` would post a status purely because
   # the caller passed a string instead of `msg.channel` (#50).
   #
-  # Only the unmodelled kind is refused; everything else returns the ORIGINAL
-  # string rather than a re-encoded one, so this cannot quietly rewrite a target
-  # (`@c.us` would otherwise normalize to `@s.whatsapp.net`).
+  # Only unmodelled kinds and the status feed are refused; everything else returns
+  # the ORIGINAL string rather than a re-encoded one, so this cannot quietly
+  # rewrite a target (`@c.us` would otherwise normalize to `@s.whatsapp.net`).
   defp resolve_target(target) when is_binary(target) do
     case Amarula.Address.parse(target) do
       %Amarula.Address{kind: :unsupported, server: server} -> {:error, {:unsupported, server}}
+      %Amarula.Address{kind: :status} -> {:error, :status_post_unsupported}
       _ -> {:ok, target}
     end
   end
 
+  # `status@broadcast` is a real jid, but sending to it POSTS a status to every
+  # contact. A bot replying to `msg.channel` of a status post must not do that —
+  # the reply belongs to `msg.from`, the author.
+  defp resolve_target(%Amarula.Address{kind: :status}), do: {:error, :status_post_unsupported}
   defp resolve_target(target), do: Amarula.Address.to_jid(target)
 
   # Sandbox (offline) mode: the connection has no socket and there is no peer to
@@ -4252,9 +4257,10 @@ defmodule Amarula.Connection do
       end
 
     # Baileys: for type="sender" on a 1:1 (pn/lid) jid, recipient=jid and
-    # to=participant; without a participant fall back to the plain form.
+    # to=participant; otherwise (a group, the status feed, no participant) the
+    # plain to+participant form.
     to_attrs =
-      if type == "sender" and participant do
+      if type == "sender" and participant and person_jid?(from) do
         [{"recipient", from}, {"to", participant}]
       else
         [{"to", from}] ++ optional_attr("participant", participant)
@@ -4265,6 +4271,10 @@ defmodule Amarula.Connection do
 
     receipt = %Node{tag: "receipt", attrs: attrs, content: nil}
     send_binary_node(state, receipt)
+  end
+
+  defp person_jid?(jid) do
+    match?(%Amarula.Address{kind: kind} when kind in [:pn, :lid], Amarula.Address.parse(jid))
   end
 
   # Retry receipt for a message we failed to decrypt, ported from Baileys

@@ -136,16 +136,21 @@ defmodule Amarula.Msg do
   > #### Non-nil is not the same as addressable {: .warning}
   >
   > An address can be present and still have nowhere to send: `Amarula.Address`
-  > parses a jid whose chat kind we don't model yet (`@hosted`, `status@broadcast`,
-  > `@newsletter`) to `kind: :unsupported`, carrying its raw `server`. You'll meet
+  > parses a jid whose chat kind we don't model yet (`@hosted`, `@newsletter`, a
+  > broadcast list) to `kind: :unsupported`, carrying its raw `server`. You'll meet
   > these mainly as `from` — a `@hosted` business account writing in an ordinary
-  > group — and on history-synced status posts.
+  > group.
   >
   > They compare and inspect like any address, but every send refuses them with
   > `{:error, {:unsupported, server}}` rather than guessing a destination. Check
   > `Amarula.Address.unsupported?/1` before replying to an address that came off
   > the wire. Messages *from* such a chat are delivered like any other, with that
   > address as their `channel`.
+  >
+  > A status post has `channel` `Amarula.Address.status/0` and the author as
+  > `from`. Sends to the status channel are refused (`:status_post_unsupported`) —
+  > it would *post* a status. Reply to the author instead:
+  > `send_text(conn, msg.from, text, quoted: msg)`.
 
   ## `pushname`
 

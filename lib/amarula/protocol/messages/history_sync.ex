@@ -31,9 +31,8 @@ defmodule Amarula.Protocol.Messages.HistorySync do
       **Branch on `from_me` before reading `from`.** `from_me`, `id` and
       `timestamp` are always populated. `Amarula.own_chat?/2` does not work on a
       history message.
-    * **`channel` is `nil` on a status post.** `status_messages` are keyed
-      `status@broadcast`, which isn't an addressable jid — there's nothing to
-      reply to. Chat messages always have a `channel`.
+    * **A status post's `channel` is `Amarula.Address.status/0`** and its `from`
+      is the author. Reply to the author, not the channel (sends to it are refused).
     * **Overlap with `:messages_upsert` is possible** — a `RECENT` sync re-sends
       messages that also arrived live. Amarula keeps no inbound-message store, so
       it can't dedup for you: dedup by `msg.id` against your own store.
@@ -305,8 +304,8 @@ defmodule Amarula.Protocol.Messages.HistorySync do
     [
       Msg.from_proto(m, %{
         id: key.id,
-        # The room (reply handle): the group jid for a group, the peer for a DM.
-        # nil for a status post — `status@broadcast` is not an addressable jid.
+        # The room (reply handle): the group jid for a group, the peer for a DM,
+        # the status feed for a status post.
         channel: channel,
         from: from(key, channel, from_me?),
         # Not derivable here — this module has no access to our own creds.

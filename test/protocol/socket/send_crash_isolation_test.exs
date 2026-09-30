@@ -56,7 +56,10 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
       conn = offline_conn()
       status = Amarula.Address.parse("status@broadcast")
 
-      assert {:error, {:unsupported, "broadcast"}} = Amarula.send_text(conn, status, "hi")
+      assert {:error, :status_post_unsupported} = Amarula.send_text(conn, status, "hi")
+
+      assert {:error, :status_post_unsupported} =
+               Amarula.send_text(conn, "status@broadcast", "hi")
 
       # THE assertion. Before #50 this raised inside the GenServer, so replying to
       # a friend's story took the whole connection down and restarted it.

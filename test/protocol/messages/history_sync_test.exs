@@ -192,14 +192,7 @@ defmodule Amarula.Protocol.Messages.HistorySyncTest do
       assert [%Msg{id: "S1", type: :text, content: "my story"} = msg] = result.status_messages
       assert result.messages == []
 
-      # `status@broadcast` isn't an addressable jid — there's nothing to reply to.
-      # It is still a real address though (#50): the kind says we don't model it,
-      # the server says which kind, and `to_jid/1` refuses rather than handing back
-      # a destination that would POST a status.
-      assert %Amarula.Address{kind: :unsupported, server: "broadcast", user: "status"} =
-               msg.channel
-
-      assert Amarula.Address.to_jid(msg.channel) == {:error, {:unsupported, "broadcast"}}
+      assert msg.channel == Amarula.Address.status()
     end
 
     test "a HistorySyncMsg with no inner WebMessageInfo is skipped" do

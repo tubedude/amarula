@@ -717,13 +717,33 @@ defmodule Amarula.ConnectionTest do
     test "a sender from an unmodelled chat kind carries an :unsupported channel (#50)" do
       # Delivered, not dropped. Unlike the nil above it keeps WHICH kind it was, so
       # the channel is inspectable — and every send to it is refused.
-      bad = "status@broadcast"
+      bad = "5511777@broadcast"
       node = msg_node(%{"from" => bad, "id" => "M7"})
 
       msg = Connection.build_msg(@state, %Proto.Message{conversation: "?"}, node, bad, "M7", @own)
 
       assert %Address{kind: :unsupported, server: "broadcast"} = msg.channel
       assert Address.to_jid(msg.channel) == {:error, {:unsupported, "broadcast"}}
+    end
+
+    test "a status post: the channel is the status feed, from is the author" do
+      feed = "status@broadcast"
+      node = msg_node(%{"from" => feed, "participant" => "5511777@s.whatsapp.net", "id" => "S1"})
+
+      msg =
+        Connection.build_msg(
+          @state,
+          %Proto.Message{conversation: "story"},
+          node,
+          feed,
+          "S1",
+          @own
+        )
+
+      assert msg.channel == Address.status()
+      assert Address.status?(msg.channel)
+      assert %Address{kind: :pn, user: "5511777"} = msg.from
+      refute msg.from_me
     end
   end
 

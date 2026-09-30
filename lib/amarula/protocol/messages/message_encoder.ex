@@ -73,6 +73,9 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
               # sender we cannot address (a @hosted group participant) must not
               # raise in the Connection process. The quote still carries stanzaId.
               participant: msg.from |> addressable_jid() |> List.first(),
+              # A status reply goes 1:1 to the author, so the quote has to name the
+              # chat it came from (Baileys sets `remoteJid` whenever it differs).
+              remoteJid: if(Amarula.Address.status?(msg.channel), do: "status@broadcast"),
               quotedMessage: strip_quoted(msg.raw)
             }
 

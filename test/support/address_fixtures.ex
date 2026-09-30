@@ -35,7 +35,7 @@ defmodule Amarula.AddressFixtures do
   @unresolvable [
     {"hosted PN", "#{@pn}@hosted"},
     {"hosted LID", "#{@lid}@hosted.lid"},
-    {"broadcast", "status@broadcast"},
+    {"broadcast list", "#{@pn}@broadcast"},
     {"newsletter", "#{@group}@newsletter"}
   ]
 

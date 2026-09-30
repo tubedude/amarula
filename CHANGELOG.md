@@ -7,19 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Status posts are a modelled chat kind.** `status@broadcast` parses to
+  `kind: :status` (`Amarula.Address.status/0`, `status?/1`). A status post arrives
+  on `:messages_upsert` with that `channel` and the author as `from`; replying with
+  `send_text(conn, msg.from, text, quoted: msg)` quotes it the way WhatsApp does.
+  Sends *to* the status channel are refused with `{:error, :status_post_unsupported}`,
+  since that would post a status. Own-device status receipts now use the plain
+  `to`/`participant` form, as in Baileys.
+
 ### Changed
 
 - **`Amarula.Address.parse/1` no longer returns `nil` for a chat kind we don't
-  model** ([#50]). A jid like `status@broadcast`, `@newsletter` or `@hosted` now
+  model** ([#50]). A jid like `@newsletter`, `@hosted` or a broadcast list now
   parses to `kind: :unsupported` carrying a new `:server` field, so it can be
   inspected and matched like any address. `nil` now means only "not a jid at all"
   (no `@server` part). New `Amarula.Address.unsupported?/1`.
 
   Such an address is deliberately **not addressable**: `to_jid/1` returns
-  `{:error, {:unsupported, server}}` rather than rebuilding the string. Rebuilding
-  would be worse than crashing — sending to `status@broadcast` is how one *posts*
-  a status, so an echo bot replying to a contact's story would publish a story to
-  all its contacts.
+  `{:error, {:unsupported, server}}` rather than rebuilding the string: we cannot
+  know what a send to an unmodelled kind would do.
 
   If you nil-checked `parse/1` to detect these, match `unsupported?/1` instead.
 

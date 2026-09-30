@@ -125,8 +125,7 @@ WhatsApp multi-device uses both **LID** (`<n>@lid`) and **phone-number**
 resolves addressing for you on send, so you rarely need to convert by hand.
 
 **Not every address can be replied to (0.6.0+).** WhatsApp has chat kinds Amarula
-doesn't model yet — channels (`@newsletter`), hosted business accounts (`@hosted`),
-broadcast lists. `Amarula.Address.parse/1` gives those
+doesn't model yet (a server it does not know). `Amarula.Address.parse/1` gives those
 `kind: :unsupported` with the raw `server`, so they're real addresses you can inspect
 and compare, but **every send refuses them** with
 `{:error, {:unsupported, server}}`. They do NOT crash the connection, and they are
@@ -134,7 +133,6 @@ not silently retargeted.
 
 Where you'll meet one:
 - `msg.from` — a `@hosted` business account writing in an ordinary group.
-- `msg.channel` on channel (`@newsletter`) messages, live or history-synced.
 
 So don't assume `msg.channel` is a valid reply target. If you build a bot that
 replies to whatever arrives, guard it:
@@ -158,6 +156,10 @@ To **post** a status on purpose, use `Amarula.post_status(conn, text, to: audien
 `audience` is required: WhatsApp encrypts a status like a group message, and only the
 accounts you list (plus your own devices) get the key. Amarula cannot read the phone's
 status-privacy setting, so pick the audience yourself.
+
+**Channel posts** (WhatsApp Channels) arrive with a `kind: :newsletter` channel
+(`Amarula.Address.newsletter?/1`) and `msg.server_id`. Sends to a channel are refused
+with `{:error, :newsletter_send_unsupported}`.
 
 ## Sending
 

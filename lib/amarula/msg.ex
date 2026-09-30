@@ -136,8 +136,8 @@ defmodule Amarula.Msg do
   > #### Non-nil is not the same as addressable {: .warning}
   >
   > An address can be present and still have nowhere to send: `Amarula.Address`
-  > parses a jid whose chat kind we don't model yet (`@hosted`, `@newsletter`, a
-  > broadcast list) to `kind: :unsupported`, carrying its raw `server`. You'll meet
+  > parses a jid whose server Amarula does not model to `kind: :unsupported`,
+  > carrying its raw `server`. You'll meet
   > these mainly as `from` — a `@hosted` business account writing in an ordinary
   > group.
   >
@@ -152,6 +152,10 @@ defmodule Amarula.Msg do
   > it would *post* a status. Reply to the author instead:
   > `send_text(conn, msg.from, text, quoted: msg)`. To post a status on purpose, use
   > `Amarula.post_status/3`.
+  >
+  > A channel post has a `:newsletter` `channel` and carries `server_id`, the
+  > channel's own id for the post. Sends to a channel are refused
+  > (`:newsletter_send_unsupported`).
 
   ## `pushname`
 
@@ -218,6 +222,7 @@ defmodule Amarula.Msg do
           from_me: boolean(),
           pushname: String.t() | nil,
           timestamp: integer() | nil,
+          server_id: String.t() | nil,
           type: atom(),
           content: term(),
           quoted: quoted() | nil,
@@ -236,6 +241,7 @@ defmodule Amarula.Msg do
     :from_me,
     :pushname,
     :timestamp,
+    :server_id,
     :type,
     :content,
     :quoted,
@@ -251,7 +257,8 @@ defmodule Amarula.Msg do
   `meta` carries the stanza fields: `:id`, `:channel` (the room `Address`), `:from`
   (the writer `Address` — participant in a group, else the channel), `:to` (the
   addressed identity `Address`), `:from_me`, `:pushname` (the sender's display name
-  off the stanza, `nil` when absent), `:timestamp`.
+  off the stanza, `nil` when absent), `:timestamp`, `:server_id` (a channel post's
+  server-side id, `nil` elsewhere).
 
   `:channel` is normalized to its account-level address here (device stripped) — it
   is the reply handle, and a device-bound one is rejected on send. `:from` keeps its
@@ -271,6 +278,7 @@ defmodule Amarula.Msg do
       from_me: meta[:from_me] || false,
       pushname: meta[:pushname],
       timestamp: meta[:timestamp],
+      server_id: meta[:server_id],
       type: type,
       content: content,
       quoted: quoted(ctx, channel),

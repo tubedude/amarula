@@ -14,17 +14,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on `:messages_upsert` with that `channel` and the author as `from`; replying with
   `send_text(conn, msg.from, text, quoted: msg)` quotes it the way WhatsApp does.
   Sends *to* the status channel are refused with `{:error, :status_post_unsupported}`,
-  since that would post a status.
+  since that would post a status. Own-device status receipts now use the plain
+  `to`/`participant` form, as in Baileys.
 - **`Amarula.post_status/3` posts a text status** to an explicit audience
   (`to: [addresses]`). WhatsApp encrypts a status like a group message and its server
   does not know who may see it, so the sender must list the viewers (Baileys'
-  `statusJidList`). It is the only path that can send to `status@broadcast`. Own-device status receipts now use the plain
-  `to`/`participant` form, as in Baileys.
+  `statusJidList`). It is the only path that can send to `status@broadcast`.
+- **Channel (newsletter) posts are delivered.** `@newsletter` parses to
+  `kind: :newsletter` (`Amarula.Address.newsletter/1`, `newsletter?/1`), and
+  `%Amarula.Msg{}` gains `server_id`, the channel's id for the post. Sends to a
+  channel are refused with `{:error, :newsletter_send_unsupported}`.
+
+### Fixed
+
+- **Channel posts no longer fail to decrypt.** They arrive as a bare `<plaintext>`
+  child, not `<enc>`, so Amarula found nothing to decrypt and answered every one with
+  a retry request and an error NACK. They are now decoded, and acked without a
+  delivery receipt, as in Baileys. An undecodable one gets a plain ack.
 
 ### Changed
 
 - **`Amarula.Address.parse/1` no longer returns `nil` for a chat kind we don't
-  model** ([#50]). A jid like `@newsletter`, `@hosted` or a broadcast list now
+  model** ([#50]). A jid on a server Amarula does not know now
   parses to `kind: :unsupported` carrying a new `:server` field, so it can be
   inspected and matched like any address. `nil` now means only "not a jid at all"
   (no `@server` part). New `Amarula.Address.unsupported?/1`.

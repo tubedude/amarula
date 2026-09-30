@@ -124,6 +124,34 @@ WhatsApp multi-device uses both **LID** (`<n>@lid`) and **phone-number**
 (`<n>@s.whatsapp.net`) addresses for the same person. Amarula tracks the mapping and
 resolves addressing for you on send, so you rarely need to convert by hand.
 
+**Not every address can be replied to (0.6.0+).** WhatsApp has chat kinds Amarula
+doesn't model yet — status posts (`status@broadcast`), channels (`@newsletter`),
+hosted business accounts (`@hosted`). `Amarula.Address.parse/1` gives those
+`kind: :unsupported` with the raw `server`, so they're real addresses you can inspect
+and compare, but **every send refuses them** with
+`{:error, {:unsupported, server}}`. They do NOT crash the connection, and they are
+not silently retargeted.
+
+Where you'll meet one:
+- `msg.from` — a `@hosted` business account writing in an ordinary group.
+- `msg.channel` on status posts and channel (`@newsletter`) messages, live or
+  history-synced.
+
+So don't assume `msg.channel` is a valid reply target. If you build a bot that
+replies to whatever arrives, guard it:
+
+```elixir
+if Amarula.Address.unsupported?(msg.channel) do
+  :skip
+else
+  Amarula.send_text(conn, msg.channel, "pong")
+end
+```
+
+Do not try to reconstruct a jid string to get around the refusal. Sending to
+`status@broadcast` is how one *posts a status* — an echo bot that "helpfully" rebuilt
+that target would publish a story to all of the account's contacts.
+
 ## Sending
 
 All sends return `{:ok, msg_id}` or `{:error, reason}` (e.g. `:not_on_whatsapp`).
@@ -149,12 +177,18 @@ Amarula.send_contact(conn, jid, display_name, vcard)
 Reactions/edits/deletes — and `fetch_history/4` — point at a message via a
 **`message_ref`**: pass either the **`%Amarula.Msg{}` you received** as-is, a
 received `content.key`, or a **`{jid, msg_id, from_me}` tuple** (`from_me` = did
-*you* send the target). The bare `{jid, msg_id}` 2-tuple still works but is
-deprecated — it can't say whose message it is, so it guesses, and a wrong guess makes
-an edit/revoke silently match nothing. It is out of the published type (so
-`mix dialyzer` flags it) and is **removed in 0.6.0** — always pass `from_me`.
+*you* send the target). The bare `{jid, msg_id}` 2-tuple was **removed in 0.6.0** and
+now raises — it couldn't say whose message it was, so it guessed, and a wrong guess
+makes an edit/revoke silently match nothing. Always pass `from_me`.
 (`mark_read/4` is different — it takes a list of plain
 message-id strings, not a `message_ref`.)
+
+> **If you synced this file from Amarula 0.5.6 or earlier, it taught you the
+> 2-tuple.** Versions up to 0.5.6 listed `{jid, msg_id}` here as a first-class
+> option and never mentioned `from_me` at all, while the library had already been
+> warning about it since 0.5.4 — so code generated from that guidance is wrong and,
+> on 0.6.0, raises. Re-run `mix usage_rules.sync` and search your project for
+> 2-element message refs.
 
 Presence/typing: `set_presence/2` (`:available`/`:unavailable`),
 `send_chatstate/3` (`:composing`/`:recording`/`:paused`), `subscribe_presence/2`,

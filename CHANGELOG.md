@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`Amarula.Address.parse/1` no longer returns `nil` for a chat kind we don't
+  model** ([#50]). A jid like `status@broadcast`, `@newsletter` or `@hosted` now
+  parses to `kind: :unsupported` carrying a new `:server` field, so it can be
+  inspected and matched like any address. `nil` now means only "not a jid at all"
+  (no `@server` part). New `Amarula.Address.unsupported?/1`.
+
+  Such an address is deliberately **not addressable**: `to_jid/1` returns
+  `{:error, {:unsupported, server}}` rather than rebuilding the string. Rebuilding
+  would be worse than crashing — sending to `status@broadcast` is how one *posts*
+  a status, so an echo bot replying to a contact's story would publish a story to
+  all its contacts.
+
+  If you nil-checked `parse/1` to detect these, match `unsupported?/1` instead.
+
+### Removed
+
+- **The bare `{jid, msg_id}` message ref is gone; passing one now raises
+  `ArgumentError`** ([#46], [#47]). Deprecated with a runtime warning since 0.5.4
+  and dropped from the published type in 0.5.7, as promised there.
+
+  > **If your project was written against `usage-rules.md` from 0.5.6 or earlier,
+  > this is likely to hit you — and you will not have seen a deprecation warning.**
+  > That file listed the 2-tuple as a first-class option and never mentioned
+  > `from_me`, from 0.5.4 (when the library started warning) through 0.5.6. It ships
+  > inside the package and consumers **copy it locally** via
+  > `mix usage_rules.sync`, so a stale synced copy keeps teaching the removed form
+  > no matter which Amarula version you upgrade to. Re-sync it, and grep your
+  > project for 2-element message refs. This was reported from the field, not
+  > theorised: a consumer's reaction bug traced back to exactly this guidance.
+
+  It raises from a dedicated clause rather than falling through to a
+  `FunctionClauseError` on a private function — the error names the form to use and
+  echoes your own jid and id back, since a no-clause error would have told you
+  nothing about what to change.
+
+  `message_key/2`'s `default_from_me` argument went with it: it existed only to
+  guess the missing `from_me` (`true` for self-ops like `send_edit`, `false`
+  elsewhere), and that guess was the whole problem — get it wrong and an edit or
+  revoke silently matches nothing, because the payload is E2E-encrypted and the
+  server cannot reject it.
+
+  Pass `{jid, msg_id, from_me}`, or the `%Amarula.Msg{}` / `content.key` you
+  received, which carries `from_me` already remapped to your perspective.
+
+### Fixed
+
+- **Replying to a status post no longer takes the connection down** ([#50]).
+  `status@broadcast` is ordinary traffic — any contact posting a Story produced a
+  `%Msg{channel: nil}`, and the documented reply (`send_text(conn, msg.channel, …)`)
+  hit `to_jid!/1` *inside* the Connection GenServer, so the socket died and
+  restarted rather than the send failing. Sends now refuse an unaddressable target
+  with `{:error, reason}`, in sandbox mode as well as live. Status, newsletter and
+  hosted messages are still delivered on `:messages_upsert`, with a
+  `kind: :unsupported` channel.
+
+- **A `@hosted` group participant is no longer attributed to the group** ([#50]).
+  `from` fell back to the group address whenever the participant's jid didn't
+  parse, so every hosted member's message looked like the group had written it —
+  silently collapsing per-sender logic. Hosted business accounts are ordinary
+  group members. Mentions and quotes naming such a user no longer crash the
+  connection either; the jid annotation is dropped and the message still sends.
+
 ## [0.5.10] - 2026-09-29
 
 ### Fixed
@@ -305,6 +369,7 @@ API change.
   `:chats_update`/`:contacts_update` events.
 
 [#59]: https://github.com/tubedude/amarula/issues/59
+[#50]: https://github.com/tubedude/amarula/issues/50
 [#61]: https://github.com/tubedude/amarula/pull/61
 [#62]: https://github.com/tubedude/amarula/issues/62
 [#64]: https://github.com/tubedude/amarula/issues/64

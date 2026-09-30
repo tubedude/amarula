@@ -23,6 +23,27 @@ defmodule Amarula.Protocol.Socket.RouterTest do
     assert Router.route(n("xmlstreamend")) == :xml_stream_end
   end
 
+  describe "messages route regardless of chat kind (#50)" do
+    # Unmodelled kinds (status, newsletter, hosted) are delivered, not declined:
+    # dropping one at the router left it un-acked in the server's queue.
+    test "every chat kind, and a missing or bare-server `from`, routes as :message" do
+      for from <- [
+            "5511@s.whatsapp.net",
+            "5511:3@s.whatsapp.net",
+            "5511@lid",
+            "120@g.us",
+            "status@broadcast",
+            "x@newsletter",
+            "5511@hosted",
+            "s.whatsapp.net"
+          ] do
+        assert Router.route(n("message", %{"from" => from})) == :message, from
+      end
+
+      assert Router.route(n("message")) == :message
+    end
+  end
+
   test "ping is disambiguated by xmlns / direction" do
     assert Router.route(n("iq", %{"type" => "get", "xmlns" => "urn:xmpp:ping"})) == :server_ping
     assert Router.route(n("iq", %{}, [child("ping")])) == :ping_response

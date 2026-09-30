@@ -148,6 +148,10 @@ else
 end
 ```
 
+**Broadcast lists** (`<id>@broadcast`) appear only as the `channel` of a message your
+own phone sent to one (`Amarula.Address.broadcast?/1`). Sends to a list are refused with
+`{:error, :broadcast_list_send_unsupported}`.
+
 Do not try to reconstruct a jid string to get around the refusal. Sending to
 `status@broadcast` is how one *posts a status* — an echo bot that "helpfully" rebuilt
 that target would publish a story to all of the account's contacts.

@@ -4,13 +4,17 @@ defmodule Amarula.Address do
   for or from. A friendly value you can build, inspect, and pass to sends, instead
   of juggling raw `"user@server"` jid strings.
 
-  Four kinds, distinguished by `:kind`:
+  Distinguished by `:kind`:
 
     * `:pn`    — a phone-number identity (`<number>@s.whatsapp.net`).
     * `:lid`   — a privacy "Linked ID" (`<id>@lid`). WhatsApp's wire-preferred
       identity; the same person has both a PN and a LID.
     * `:group` — a group chat (`<id>@g.us`). A *container* of participants, not a
       person; its members are fetched separately (group metadata), not stored here.
+    * `:broadcast` — a broadcast list (`<id>@broadcast`, not `status@broadcast`).
+      You only see one as the `channel` of a message your own phone sent to it
+      (recipients get an ordinary 1:1). Its members are unknown here, so sends
+      refuse it.
     * `:none`  — the **empty** address (`empty/0`): "no identity". A stand-in for
       "we don't have one yet" (e.g. `Amarula.own_address/1` before login) — returned
       instead of `nil`, so you never have to nil-check. It names nothing: every
@@ -40,7 +44,7 @@ defmodule Amarula.Address do
 
   alias Amarula.Protocol.Binary.JID
 
-  @type kind :: :pn | :lid | :group | :none | :unsupported
+  @type kind :: :pn | :lid | :group | :broadcast | :none | :unsupported
   @type t :: %__MODULE__{
           user: String.t(),
           kind: kind(),
@@ -54,7 +58,7 @@ defmodule Amarula.Address do
   # twice would just be a second source of truth to keep in sync.
   defstruct [:user, :kind, :device, :server]
 
-  @server %{pn: "s.whatsapp.net", lid: "lid", group: "g.us"}
+  @server %{pn: "s.whatsapp.net", lid: "lid", group: "g.us", broadcast: "broadcast"}
 
   @doc "A PN address from a bare number or full jid string."
   @spec pn(String.t()) :: t()
@@ -98,7 +102,7 @@ defmodule Amarula.Address do
       %{user: user, server: server} = decoded ->
         device = Map.get(decoded, :device)
 
-        case kind_of(server) do
+        case kind_of(user, server) do
           nil -> %__MODULE__{user: user, kind: :unsupported, device: device, server: server}
           k -> %__MODULE__{user: user, kind: k, device: device}
         end
@@ -212,6 +216,10 @@ defmodule Amarula.Address do
   def lid?(%__MODULE__{kind: :lid}), do: true
   def lid?(_), do: false
 
+  @spec broadcast?(t()) :: boolean()
+  def broadcast?(%__MODULE__{kind: :broadcast}), do: true
+  def broadcast?(_), do: false
+
   @spec group?(t()) :: boolean()
   def group?(%__MODULE__{kind: :group}), do: true
   def group?(_), do: false
@@ -236,11 +244,14 @@ defmodule Amarula.Address do
 
   # --- internals ---
 
-  defp kind_of("s.whatsapp.net"), do: :pn
-  defp kind_of("c.us"), do: :pn
-  defp kind_of("lid"), do: :lid
-  defp kind_of("g.us"), do: :group
-  defp kind_of(_), do: nil
+  defp kind_of(_user, "s.whatsapp.net"), do: :pn
+  defp kind_of(_user, "c.us"), do: :pn
+  defp kind_of(_user, "lid"), do: :lid
+  defp kind_of(_user, "g.us"), do: :group
+  # `status@broadcast` is the status feed, not a list.
+  defp kind_of("status", "broadcast"), do: nil
+  defp kind_of(_user, "broadcast"), do: :broadcast
+  defp kind_of(_user, _server), do: nil
 
   # The user part of a bare id or full jid: strip @server, then the `:device` and
   # `_agent` segments, in that order.

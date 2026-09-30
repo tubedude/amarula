@@ -78,6 +78,12 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
       # reply to a status rather than discovering it in production.
       assert {:ok, _id} = Amarula.send_text(conn, Amarula.Address.pn("5511999"), "hi")
       assert {:error, {:unsupported, _}} = Amarula.send_text(conn, "x@newsletter", "hi")
+
+      assert {:error, :broadcast_list_send_unsupported} =
+               Amarula.send_text(conn, "1700@broadcast", "hi")
+
+      assert {:error, :broadcast_list_send_unsupported} =
+               Amarula.send_text(conn, Amarula.Address.parse("1700@broadcast"), "hi")
     end
   end
 

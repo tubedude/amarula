@@ -112,6 +112,12 @@ defmodule Amarula.AddressTest do
       assert %Address{kind: :pn} = Address.parse("5511@c.us")
     end
 
+    test "a broadcast list is kind :broadcast; the status feed is not" do
+      assert %Address{kind: :broadcast, user: "1700"} = Address.parse("1700@broadcast")
+      assert Address.to_jid(Address.parse("1700@broadcast")) == {:ok, "1700@broadcast"}
+      refute Address.broadcast?(Address.parse("status@broadcast"))
+    end
+
     test "unmodelled server → :unsupported; non-jid → nil; passthrough an Address" do
       assert %Address{kind: :unsupported, server: "newsletter", user: "x"} =
                Address.parse("x@newsletter")

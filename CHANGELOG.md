@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Broadcast lists are a modelled chat kind.** `<id>@broadcast` (other than
+  `status@broadcast`) parses to `kind: :broadcast` (`Amarula.Address.broadcast?/1`).
+  It is the `channel` of a message your phone sent to a list; sends to it are refused
+  with `{:error, :broadcast_list_send_unsupported}`. Our own-device receipt for such a
+  message now uses the plain `to`/`participant` form, as in Baileys.
+
 ### Changed
 
 - **`Amarula.Address.parse/1` no longer returns `nil` for a chat kind we don't

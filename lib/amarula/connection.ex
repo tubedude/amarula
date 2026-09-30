@@ -1790,9 +1790,14 @@ defmodule Amarula.Connection do
   defp resolve_target(target) when is_binary(target) do
     case Amarula.Address.parse(target) do
       %Amarula.Address{kind: :unsupported, server: server} -> {:error, {:unsupported, server}}
+      %Amarula.Address{kind: :broadcast} -> {:error, :broadcast_list_send_unsupported}
       _ -> {:ok, target}
     end
   end
+
+  # Sending to a broadcast list means fanning out to members we do not know.
+  defp resolve_target(%Amarula.Address{kind: :broadcast}),
+    do: {:error, :broadcast_list_send_unsupported}
 
   defp resolve_target(target), do: Amarula.Address.to_jid(target)
 
@@ -4252,9 +4257,10 @@ defmodule Amarula.Connection do
       end
 
     # Baileys: for type="sender" on a 1:1 (pn/lid) jid, recipient=jid and
-    # to=participant; without a participant fall back to the plain form.
+    # to=participant; otherwise (a group, a broadcast list, no participant) the
+    # plain to+participant form.
     to_attrs =
-      if type == "sender" and participant do
+      if type == "sender" and is_binary(participant) and person_jid?(from) do
         [{"recipient", from}, {"to", participant}]
       else
         [{"to", from}] ++ optional_attr("participant", participant)
@@ -4265,6 +4271,10 @@ defmodule Amarula.Connection do
 
     receipt = %Node{tag: "receipt", attrs: attrs, content: nil}
     send_binary_node(state, receipt)
+  end
+
+  defp person_jid?(jid) do
+    match?(%Amarula.Address{kind: kind} when kind in [:pn, :lid], Amarula.Address.parse(jid))
   end
 
   # Retry receipt for a message we failed to decrypt, ported from Baileys

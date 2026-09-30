@@ -4260,7 +4260,7 @@ defmodule Amarula.Connection do
     # to=participant; otherwise (a group, the status feed, no participant) the
     # plain to+participant form.
     to_attrs =
-      if type == "sender" and participant and person_jid?(from) do
+      if type == "sender" and is_binary(participant) and person_jid?(from) do
         [{"recipient", from}, {"to", participant}]
       else
         [{"to", from}] ++ optional_attr("participant", participant)

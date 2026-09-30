@@ -7,7 +7,7 @@ and receive messages from Elixir.
 These rules describe how to **use** the `Amarula.*` public API correctly. They are for
 agents writing consumer code against the library, not for working on the library itself.
 
-These rules track Amarula **0.5.10**. They are a curated subset, not the full API — do
+These rules track Amarula **0.6.0-rc.1**. They are a curated subset, not the full API — do
 not assume an undocumented function exists. When a signature, return shape, or option is
 unclear, **read the `@doc`/`@spec` on the relevant `Amarula.*` module (hexdocs) before
 calling it** rather than guessing.
@@ -124,53 +124,38 @@ WhatsApp multi-device uses both **LID** (`<n>@lid`) and **phone-number**
 (`<n>@s.whatsapp.net`) addresses for the same person. Amarula tracks the mapping and
 resolves addressing for you on send, so you rarely need to convert by hand.
 
-**Not every address can be replied to (0.6.0+).** WhatsApp has chat kinds Amarula
-doesn't model yet (a server it does not know). `Amarula.Address.parse/1` gives those
-`kind: :unsupported` with the raw `server`, so they're real addresses you can inspect
-and compare, but **every send refuses them** with
-`{:error, {:unsupported, server}}`. They do NOT crash the connection, and they are
-not silently retargeted.
+**Not every chat can be replied to in the same way (0.6.0+).** `msg.channel` has a
+`kind`, and some kinds refuse sends with `{:error, reason}` (never a crash, never a
+silent retarget):
 
-Where you'll meet one:
+| kind | what it is | sends |
+|---|---|---|
+| `:status` | status posts (`status@broadcast`); the author is `msg.from` | refused: `:status_post_unsupported` |
+| `:newsletter` | WhatsApp Channel posts; carry `msg.server_id` | refused: `:newsletter_send_unsupported` |
+| `:broadcast` | a broadcast list your own phone sent to | refused: `:broadcast_list_send_unsupported` |
+| `:bot` | Meta AI (`<id>@bot`) | refused: `:bot_send_unsupported` |
+| `:unsupported` | a server Amarula does not know; carries the raw `server` | refused: `{:unsupported, server}` |
 
-So don't assume `msg.channel` is a valid reply target. If you build a bot that
-replies to whatever arrives, guard it:
+Hosted business devices (Cloud API, `<n>:99@hosted` / `@hosted.lid`) are ordinary
+`:pn` / `:lid` devices of their account, so replies to them work as usual.
+
+If your bot replies to whatever arrives, branch on the kind:
 
 ```elixir
 cond do
-  Amarula.Address.unsupported?(msg.channel) -> :skip
   # A status post: reply privately to the author, quoting the status.
   Amarula.Address.status?(msg.channel) -> Amarula.send_text(conn, msg.from, "nice!", quoted: msg)
-  true -> Amarula.send_text(conn, msg.channel, "pong")
+  msg.channel.kind in [:pn, :lid, :group] -> Amarula.send_text(conn, msg.channel, "pong")
+  true -> :skip
 end
 ```
 
-**Status posts** arrive with `msg.channel == Amarula.Address.status()` and the author
-as `msg.from`. Sends to the status channel are refused with
-`{:error, :status_post_unsupported}`: sending to `status@broadcast` is how one *posts
-a status*, so an echo bot replying to `msg.channel` would publish a story to all of the
-account's contacts. Do not rebuild the jid string to get around the refusal.
-
-To **post** a status on purpose, use `Amarula.post_status(conn, text, to: audience)`.
-`audience` is required: WhatsApp encrypts a status like a group message, and only the
-accounts you list (plus your own devices) get the key. Amarula cannot read the phone's
-status-privacy setting, so pick the audience yourself.
-
-**Channel posts** (WhatsApp Channels) arrive with a `kind: :newsletter` channel
-(`Amarula.Address.newsletter?/1`) and `msg.server_id`. Sends to a channel are refused
-with `{:error, :newsletter_send_unsupported}`.
-**Hosted business devices** (Cloud API, `<n>:99@hosted` / `@hosted.lid`) are ordinary
-`:pn` / `:lid` devices of that account, with `server` set to the hosted server.
-`Amarula.Address.normalize/1` gives the plain account address, so replies work as usual.
-**Broadcast lists** (`<id>@broadcast`) appear only as the `channel` of a message your
-own phone sent to one (`Amarula.Address.broadcast?/1`). Sends to a list are refused with
-`{:error, :broadcast_list_send_unsupported}`.
-**Meta AI** (`<id>@bot`) messages arrive with a `kind: :bot` channel
-(`Amarula.Address.bot?/1`). Sends to it are refused with `{:error, :bot_send_unsupported}`.
-
-Do not try to reconstruct a jid string to get around the refusal. Sending to
-`status@broadcast` is how one *posts a status* — an echo bot that "helpfully" rebuilt
-that target would publish a story to all of the account's contacts.
+Do not rebuild a jid string to get around a refusal. Sending to `status@broadcast` is
+how one *posts a status* — an echo bot that did that would publish a story to all of
+the account's contacts. To post a status on purpose, use
+`Amarula.post_status(conn, text, to: audience)`. `audience` is required: WhatsApp
+encrypts a status like a group message, and only the accounts you list (plus your own
+devices) get the key. Amarula cannot read the phone's status-privacy setting.
 
 ## Sending
 
@@ -250,6 +235,16 @@ lazily:
 ```elixir
 %Amarula.Msg{type: :media} = msg
 {:ok, bytes} = Amarula.download_media(msg)   # {:error, :bad_mac | :bad_file_hash} on integrity failure
+```
+
+`download_media/1` never raises, and only ever fetches from `*.whatsapp.net`. If you
+**stored** a descriptor or rebuilt one from your own metadata, rehydrate it with
+`Amarula.Content.Media.new/1` (atom or string keys) instead of `struct/2` — it validates
+the kind, the 32-byte key/hashes, and the locator:
+
+```elixir
+{:ok, media} = Amarula.Content.Media.new(stored)   # {:error, {:invalid, field}}
+{:ok, bytes} = Amarula.download_media(media)
 ```
 
 ### Avoiding self-send feedback loops

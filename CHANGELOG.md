@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.1] - 2026-09-30
+
+A release candidate: the chat kinds below need live traffic to confirm. Please report
+anything odd with status posts, channels, hosted businesses, broadcast lists or Meta AI.
+
 ### Added
 
 - **Status posts are a modelled chat kind.** `status@broadcast` parses to
@@ -32,21 +37,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Meta AI is a modelled chat kind.** `<id>@bot` parses to `kind: :bot`
   (`Amarula.Address.bot?/1`); its messages are delivered with that `channel`. Sends to
   it are refused with `{:error, :bot_send_unsupported}`.
+- **`Amarula.Content.Media.new/1` — a validated constructor for a media descriptor
+  you did not get off the socket.** Inbound media arrives as a
+  `%Amarula.Content.Media{}` built by `from_proto/2`, which trusts its input because
+  the protobuf already guarantees the shape. A consumer that persists a descriptor,
+  sends it across a transport, or rebuilds it from its own normalized metadata had no
+  equivalent: it had to hand-roll the 32-byte key/hash checks, the kind enum, and the
+  "`direct_path` beats `url`" rule — Amarula's domain knowledge, reimplemented where
+  a mistake is likelier and unreviewed.
 
-### Fixed
-
-- **Channel posts no longer fail to decrypt.** They arrive as a bare `<plaintext>`
-  child, not `<enc>`, so Amarula found nothing to decrypt and answered every one with
-  a retry request and an error NACK. They are now decoded, and acked without a
-  delivery receipt, as in Baileys. An undecodable one gets a plain ack.
-- **Cloud API (hosted) business devices are addressed correctly.** A device list entry
-  flagged `is_hosted` now gets its `@hosted` / `@hosted.lid` jid instead of a plain
-  `@s.whatsapp.net` / `@lid` one; a hosted PN maps to the hosted LID domain; and hosted
-  devices are left out of group sender-key distribution, all as in Baileys.
-- **A `@hosted` / `@hosted.lid` jid is a PN / LID device, not an unsupported kind.** It
-  parses to `kind: :pn` / `:lid` with `server` set to the hosted server, is the same
-  account as the plain PN/LID, and normalizes to it — so a hosted business writing in
-  a group or 1:1 can be replied to and mentioned.
+  `new/1` takes a plain map with atom **or** string keys (a JSON round-trip needs no
+  glue), ignores unknown keys, and returns `{:ok, media}` or `{:error, {:invalid,
+  field}}` naming what failed. It requires a `:kind`, a raw 32-byte `:media_key`, and
+  a locator it is willing to fetch — see Security below.
 
 ### Changed
 
@@ -94,21 +97,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Channel posts no longer fail to decrypt.** They arrive as a bare `<plaintext>`
+  child, not `<enc>`, so Amarula found nothing to decrypt and answered every one with
+  a retry request and an error NACK. They are now decoded, and acked without a
+  delivery receipt, as in Baileys. An undecodable one gets a plain ack.
+- **Cloud API (hosted) business devices are addressed correctly.** A device list entry
+  flagged `is_hosted` now gets its `@hosted` / `@hosted.lid` jid instead of a plain
+  `@s.whatsapp.net` / `@lid` one; a hosted PN maps to the hosted LID domain; and hosted
+  devices are left out of group sender-key distribution, all as in Baileys.
+- **A `@hosted` / `@hosted.lid` jid is a PN / LID device, not an unsupported kind.** It
+  parses to `kind: :pn` / `:lid` with `server` set to the hosted server, is the same
+  account as the plain PN/LID, and normalizes to it — so a hosted business writing in
+  a group or 1:1 can be replied to and mentioned.
 - **Replying to a status post no longer takes the connection down** ([#50]).
   `status@broadcast` is ordinary traffic — any contact posting a Story produced a
   `%Msg{channel: nil}`, and the documented reply (`send_text(conn, msg.channel, …)`)
   hit `to_jid!/1` *inside* the Connection GenServer, so the socket died and
   restarted rather than the send failing. Sends now refuse an unaddressable target
-  with `{:error, reason}`, in sandbox mode as well as live. Status and newsletter
-  messages are still delivered on `:messages_upsert`, with a
-  `kind: :unsupported` channel.
-
+  with `{:error, reason}`, in sandbox mode as well as live. Status posts now arrive
+  with a `:status` channel (see Added).
 - **A `@hosted` group participant is no longer attributed to the group** ([#50]).
   `from` fell back to the group address whenever the participant's jid didn't
   parse, so every hosted member's message looked like the group had written it —
   silently collapsing per-sender logic. Hosted business accounts are ordinary
   group members. Mentions and quotes naming an unaddressable user no longer crash the
   connection either; the jid annotation is dropped and the message still sends.
+
+### Security
+
+- **`download_media/1` now only fetches from WhatsApp's own media domain.** The
+  descriptor's `:direct_path` was already safe — it is a path joined onto
+  `mmg.whatsapp.net`, so it names a file, not a server. But the `:url` fallback was
+  passed to `Req.get/2` verbatim, with no scheme or host check. For a descriptor
+  taken straight off the socket that is fine; for one rehydrated from storage or
+  received over a transport, an attacker-influenced `:url` made Amarula fetch from
+  any host it named (SSRF), which is why a consumer doing exactly that had to
+  sanitize descriptors before every call.
+
+  A `:url` is now used only when it is `https://` on `whatsapp.net` or a subdomain,
+  with no userinfo (`https://mmg.whatsapp.net@evil.example.com/x` names `evil.example.com`,
+  and is refused). `:direct_path` still wins when present, and must start at the root
+  with no whitespace or control bytes, so it cannot reach the authority either.
+  `Amarula.Content.Media.new/1` applies the same rule and keeps only the locator that
+  survives it. New error reasons: `:untrusted_media_url` and `:unsafe_direct_path`.
+
+  Consumers who pass descriptors straight from `:messages_upsert` — the normal case —
+  see no change.
+
+- **`download_media/1` no longer raises on a response that is not a media blob.** A
+  200 carrying a CDN error page or a truncated body reached `binary_part/3` and the
+  AES primitive with a length they reject, so an `ArgumentError` escaped a function
+  specced `{:ok, binary()} | {:error, term()}` — enough for a consumer to wrap the
+  call in a `rescue` at its transport boundary. Short, misaligned, and badly padded
+  blobs are now `{:error, :bad_mac}` / `{:error, :bad_padding}`, and an unknown media
+  type is `{:error, :invalid_media}` instead of a `KeyError` from key derivation.
 
 ## [0.5.10] - 2026-09-29
 
@@ -1434,7 +1476,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.10...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.1...HEAD
+[0.6.0-rc.1]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.6.0-rc.1
 [0.5.10]: https://github.com/tubedude/amarula/compare/v0.5.9...v0.5.10
 [0.5.9]: https://github.com/tubedude/amarula/compare/v0.5.8...v0.5.9
 [0.5.8]: https://github.com/tubedude/amarula/compare/v0.5.7...v0.5.8

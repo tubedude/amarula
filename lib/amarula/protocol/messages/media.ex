@@ -25,6 +25,7 @@ defmodule Amarula.Protocol.Messages.Media do
   alias Amarula.Protocol.Crypto.{Constants, Crypto}
   alias Amarula.Protocol.Proto
   alias Amarula.Connection
+  alias Amarula.Content
 
   @hkdf_info %{
     image: "WhatsApp Image Keys",
@@ -54,16 +55,21 @@ defmodule Amarula.Protocol.Messages.Media do
   `%Amarula.Content.Media{}` (camelCase keys are no longer accepted). Returns
   `{:ok, plaintext}` (still possibly compressed — history blobs are zlib-deflated;
   the caller inflates).
+
+  Never raises: every malformed descriptor, hostile locator, and unusable response
+  comes back as `{:error, reason}` — `:invalid_media`, `:untrusted_media_url`,
+  `:unsafe_direct_path`, `{:http, status}`, `:bad_mac`, `:bad_padding`,
+  `:bad_file_hash`, or a Req error.
   """
   @spec download(map(), media_type()) :: {:ok, binary()} | {:error, term()}
-  def download(%{} = ref, type) do
+  def download(%{} = ref, type) when is_map_key(@hkdf_info, type) do
     # The descriptor is a canonical snake_case shape (`%Amarula.Content.Media{}` for inbound
     # messages; `HistorySync` and tests build the same keys). Surface its required
     # shape in the head: a valid one yields a URL and a media key; an invalid one
-    # falls through to `{:error, :invalid_media}` — honouring the {:ok | :error}
-    # contract instead of letting Req raise up through a typed caller.
-    with url when is_binary(url) <- download_url(ref),
-         media_key when is_binary(media_key) <- Map.get(ref, :media_key) do
+    # returns an error — honouring the {:ok | :error} contract instead of letting
+    # Req raise up through a typed caller.
+    with {:ok, url} <- download_url(ref),
+         <<_::binary-32>> = media_key <- Map.get(ref, :media_key) do
       case Req.get(url, [decode_body: false] ++ req_options()) do
         {:ok, %{status: 200, body: enc}} when is_binary(enc) ->
           verify_and_decrypt(ref, enc, media_key, type)
@@ -75,7 +81,8 @@ defmodule Amarula.Protocol.Messages.Media do
           {:error, reason}
       end
     else
-      _ -> {:error, :invalid_media}
+      {:error, _reason} = error -> error
+      _no_media_key -> {:error, :invalid_media}
     end
   end
 
@@ -106,11 +113,22 @@ defmodule Amarula.Protocol.Messages.Media do
   defp req_options, do: Application.get_env(:amarula, :req_options, [])
 
   # The full CDN URL from the descriptor's `:direct_path` (preferred) or `:url`.
-  defp download_url(%{direct_path: path}) when is_binary(path),
-    do: "https://#{@default_media_host}#{path}"
+  # `Content.Media.locator/1` owns which of the two may be trusted; re-checking the
+  # composed URL keeps the guarantee local — whatever the path was, what reaches Req
+  # is HTTPS on a WhatsApp host.
+  defp download_url(ref) do
+    case Content.Media.locator(ref) do
+      {:ok, {:direct_path, path}} ->
+        url = "https://#{@default_media_host}#{path}"
+        if Content.Media.trusted_url?(url), do: {:ok, url}, else: {:error, :unsafe_direct_path}
 
-  defp download_url(%{url: url}) when is_binary(url), do: url
-  defp download_url(_), do: nil
+      {:ok, {:url, url}} ->
+        {:ok, url}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
 
   @doc """
   Encrypt `plaintext` for media `type`. Returns the uploadable blob plus the
@@ -147,22 +165,40 @@ defmodule Amarula.Protocol.Messages.Media do
   @doc """
   Decrypt a downloaded media blob (`ciphertext ++ mac`) with its `media_key`.
   Verifies the MAC before decrypting. Returns the plaintext.
+
+  A blob the CDN never produced (an error page served as 200, a truncated body)
+  fails as `{:error, :bad_mac}` rather than raising: it is too short to hold a MAC,
+  or its trailing 10 bytes are not one.
   """
   @spec decrypt(binary(), binary(), media_type()) :: {:ok, binary()} | {:error, term()}
-  def decrypt(enc, media_key, type) when is_binary(enc) and is_binary(media_key) do
+  def decrypt(enc, media_key, type)
+      when is_binary(enc) and byte_size(enc) > 10 and is_binary(media_key) do
     %{iv: iv, cipher_key: cipher_key, mac_key: mac_key} = media_keys(media_key, type)
 
     ciphertext = binary_part(enc, 0, byte_size(enc) - 10)
     mac = binary_part(enc, byte_size(enc) - 10, 10)
     expected = :crypto.macN(:hmac, :sha256, mac_key, iv <> ciphertext, 10)
 
-    if byte_size(mac) == byte_size(expected) and :crypto.hash_equals(mac, expected) do
-      padded = :crypto.crypto_one_time(:aes_256_cbc, cipher_key, iv, ciphertext, false)
-      {:ok, pkcs7_unpad(padded)}
-    else
-      {:error, :bad_mac}
+    # Both MAC halves are 10 bytes, so `hash_equals/2` compares rather than raises.
+    # Alignment and padding are the sender's to get right once the MAC passes — check
+    # them anyway, so a hand-built blob is an error tuple and not an ArgumentError
+    # from OpenSSL.
+    cond do
+      not :crypto.hash_equals(mac, expected) ->
+        {:error, :bad_mac}
+
+      rem(byte_size(ciphertext), 16) != 0 ->
+        {:error, :bad_padding}
+
+      true ->
+        :aes_256_cbc
+        |> :crypto.crypto_one_time(cipher_key, iv, ciphertext, false)
+        |> pkcs7_unpad()
     end
   end
+
+  def decrypt(enc, media_key, _type) when is_binary(enc) and is_binary(media_key),
+    do: {:error, :bad_mac}
 
   # --- media retry (ask the phone to re-upload after a CDN 404/410) ---
   #
@@ -277,9 +313,14 @@ defmodule Amarula.Protocol.Messages.Media do
     data <> :binary.copy(<<pad>>, pad)
   end
 
+  defp pkcs7_unpad(<<>>), do: {:error, :bad_padding}
+
   defp pkcs7_unpad(data) do
     pad = :binary.last(data)
-    binary_part(data, 0, byte_size(data) - pad)
+
+    if pad in 1..16 and pad <= byte_size(data),
+      do: {:ok, binary_part(data, 0, byte_size(data) - pad)},
+      else: {:error, :bad_padding}
   end
 
   @doc """

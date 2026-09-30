@@ -29,12 +29,12 @@ defmodule Amarula.AddressFixtures do
     {"c.us PN", "#{@pn}@c.us", :pn, "#{@pn}@s.whatsapp.net"},
     {"clean LID", "#{@lid}@lid", :lid, "#{@lid}@lid"},
     {"LID + device", "#{@lid}:12@lid", :lid, "#{@lid}@lid"},
-    {"group", "#{@group}@g.us", :group, "#{@group}@g.us"}
+    {"group", "#{@group}@g.us", :group, "#{@group}@g.us"},
+    {"hosted PN device", "#{@pn}:99@hosted", :pn, "#{@pn}@hosted"},
+    {"hosted LID device", "#{@lid}:99@hosted.lid", :lid, "#{@lid}@hosted.lid"}
   ]
 
   @unresolvable [
-    {"hosted PN", "#{@pn}@hosted"},
-    {"hosted LID", "#{@lid}@hosted.lid"},
     {"broadcast", "status@broadcast"},
     {"newsletter", "#{@group}@newsletter"}
   ]

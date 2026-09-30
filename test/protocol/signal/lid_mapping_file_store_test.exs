@@ -112,4 +112,20 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStoreTest do
       assert Store.signal_user(conn, "not-a-jid") == nil
     end
   end
+
+  describe "hosted devices" do
+    test "a mapped hosted PN device maps to the hosted LID domain", %{conn: conn} do
+      Store.store_mappings(conn, [{@lid, @pn}])
+
+      assert Store.wire_jid(conn, "10000000001:99@hosted") == "20000000001:99@hosted.lid"
+      assert Store.signal_address(conn, "10000000001:99@hosted") == "20000000001_129.99"
+    end
+
+    test "a hosted LID device is never re-mapped", %{conn: conn} do
+      Store.store_mappings(conn, [{@lid, @pn}])
+
+      assert Store.wire_jid(conn, "20000000001:99@hosted.lid") == "20000000001:99@hosted.lid"
+      assert Store.signal_address(conn, "20000000001:99@hosted.lid") == "20000000001_129.99"
+    end
+  end
 end

@@ -82,11 +82,14 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   """
   @spec signal_address(Conn.t(), String.t()) :: String.t()
   def signal_address(conn, jid) do
-    with true <- JID.jid_user?(jid) and not JID.lid_user?(jid),
+    with true <- pn_jid?(jid),
          lid_user when is_binary(lid_user) <- lid_for_pn(conn, jid),
          %{} = decoded <- JID.decode(jid) do
       device = Map.get(decoded, :device, 0) || 0
-      plain_signal_address(JID.encode(%{user: lid_user, server: "lid", device: device}))
+
+      plain_signal_address(
+        JID.encode(%{user: lid_user, server: lid_server(decoded), device: device})
+      )
     else
       _ -> plain_signal_address(jid)
     end
@@ -113,15 +116,24 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   """
   @spec wire_jid(Conn.t(), String.t()) :: String.t()
   def wire_jid(conn, jid) do
-    with true <- JID.jid_user?(jid) and not JID.lid_user?(jid),
+    with true <- pn_jid?(jid),
          lid_user when is_binary(lid_user) <- lid_for_pn(conn, jid),
          %{} = decoded <- JID.decode(jid) do
       device = Map.get(decoded, :device, 0) || 0
-      JID.encode(%{user: lid_user, server: "lid", device: device})
+      JID.encode(%{user: lid_user, server: lid_server(decoded), device: device})
     else
       _ -> jid
     end
   end
+
+  # A phone-number jid, hosted or not — the only kind that has a LID to map to.
+  defp pn_jid?(jid), do: JID.jid_user?(jid) and not JID.lid_user?(jid) and not hosted_lid?(jid)
+
+  defp hosted_lid?(jid), do: String.ends_with?(jid, "@hosted.lid")
+
+  # A hosted PN device maps to the hosted LID domain (Baileys `getLIDForPN`).
+  defp lid_server(%{server: "hosted"}), do: "hosted.lid"
+  defp lid_server(_decoded), do: "lid"
 
   @doc """
   Plain signal address for a JID (no LID resolution): `<user>.<device>`, with a

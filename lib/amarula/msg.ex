@@ -136,10 +136,9 @@ defmodule Amarula.Msg do
   > #### Non-nil is not the same as addressable {: .warning}
   >
   > An address can be present and still have nowhere to send: `Amarula.Address`
-  > parses a jid whose chat kind we don't model yet (`@hosted`, `status@broadcast`,
+  > parses a jid whose chat kind we don't model yet (`status@broadcast`,
   > `@newsletter`) to `kind: :unsupported`, carrying its raw `server`. You'll meet
-  > these mainly as `from` — a `@hosted` business account writing in an ordinary
-  > group — and on history-synced status posts.
+  > these mainly on status posts.
   >
   > They compare and inspect like any address, but every send refuses them with
   > `{:error, {:unsupported, server}}` rather than guessing a destination. Check
@@ -366,7 +365,7 @@ defmodule Amarula.Msg do
   defp mentions(nil), do: []
 
   # Unparseable mentions are dropped rather than carried as nil (#50). A mention of
-  # a `@hosted` user arrives inside an ordinary group message — and a nil in this
+  # an unmodelled kind arrives inside an ordinary group message — and a nil in this
   # list is a live grenade: the documented
   # round-trip `send_text(conn, chan, text, mentions: msg.mentions)` feeds it to
   # `to_jid!/1` inside the Connection GenServer. Dropping also makes the list match

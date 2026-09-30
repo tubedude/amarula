@@ -21,6 +21,26 @@ defmodule Amarula.Protocol.USync.DevicesTest do
              ]
     end
 
+    test "a hosted device gets the hosted server of its identity's domain" do
+      pn = [entry("1234@s.whatsapp.net", [device(0, nil), device(99, 4, true)])]
+      lid = [entry("77@lid", [device(99, 4, true)])]
+
+      assert [_, %{server: "hosted", jid: "1234:99@hosted"}] =
+               Devices.extract(pn, "5555@s.whatsapp.net", nil, false)
+
+      assert [%{server: "hosted.lid", jid: "77:99@hosted.lid"}] =
+               Devices.extract(lid, "5555@s.whatsapp.net", nil, false)
+    end
+
+    test "hosted devices are excluded from group sender-key distribution" do
+      alias Amarula.Protocol.Messages.ConversationSender
+
+      assert ConversationSender.hosted_device?(%{server: "hosted", device: 99})
+      assert ConversationSender.hosted_device?(%{server: "hosted.lid", device: 1})
+      assert ConversationSender.hosted_device?(%{server: "s.whatsapp.net", device: 99})
+      refute ConversationSender.hosted_device?(%{server: "s.whatsapp.net", device: 2})
+    end
+
     test "exclude_zero_devices? drops device 0" do
       list = [entry("1234@s.whatsapp.net", [device(0, nil), device(1, 3)])]
 

@@ -894,6 +894,20 @@ defmodule Amarula.Connection do
     dispatch_send(state, SendOps.text(jid, text, opts), from)
   end
 
+  # The one sanctioned way to send to `status@broadcast`: `resolve_target/1` refuses
+  # it for every other send, so a bot replying to a status channel cannot post.
+  @impl GenServer
+  def handle_call({:post_status, text, audience}, from, state) do
+    case status_audience(audience) do
+      {:ok, jids} ->
+        payload = %{text: text, status_audience: jids}
+        deliver_resolved(state, "status@broadcast", payload, from, &SendOps.default_send_reply/2)
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
   @impl GenServer
   def handle_call({:send_message, jid, message}, from, state) do
     dispatch_send(state, SendOps.message(jid, message), from)
@@ -1800,6 +1814,25 @@ defmodule Amarula.Connection do
   # the reply belongs to `msg.from`, the author.
   defp resolve_target(%Amarula.Address{kind: :status}), do: {:error, :status_post_unsupported}
   defp resolve_target(target), do: Amarula.Address.to_jid(target)
+
+  # Account-level PN/LID jids for a status audience, deduped. Anything else (a group,
+  # the status feed itself, a non-jid) is refused by name.
+  defp status_audience(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
+      case Amarula.Address.parse(entry) do
+        %Amarula.Address{kind: kind} = addr when kind in [:pn, :lid] ->
+          {:cont, {:ok, [addr |> Amarula.Address.normalize() |> Amarula.Address.to_jid!() | acc]}}
+
+        _ ->
+          {:halt, {:error, {:invalid_audience, entry}}}
+      end
+    end)
+    |> case do
+      {:ok, []} -> {:error, {:invalid_audience, :empty}}
+      {:ok, jids} -> {:ok, jids |> Enum.reverse() |> Enum.uniq()}
+      error -> error
+    end
+  end
 
   # Sandbox (offline) mode: the connection has no socket and there is no peer to
   # reach, so a send must not run the real pipeline (USync/bundle fetch IQs would

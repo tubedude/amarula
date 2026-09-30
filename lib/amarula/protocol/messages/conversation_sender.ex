@@ -248,7 +248,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
   defp run_send(%{msg_id: msg_id} = msg, state) do
     jid = state.recipient_jid
-    kind = if JID.jid_group?(jid), do: :group, else: :dm
+    kind = send_kind(jid)
 
     # Run the send plugin pipeline (before encrypt): steps may transform the
     # message or halt the send. The built-in retry-cache step records it here.
@@ -262,8 +262,15 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
 
       {:cont, %{message: message}} ->
         store_own_lid_mapping(state)
-        do_send(state, msg_id, jid, kind, message, stanza_attrs, enc_attrs)
+        audience = Map.get(msg, :status_audience, [])
+        do_send(state, msg_id, jid, kind, message, stanza_attrs, enc_attrs, audience)
     end
+  end
+
+  defp send_kind("status@broadcast"), do: :status
+
+  defp send_kind(jid) do
+    if JID.jid_group?(jid), do: :group, else: :dm
   end
 
   # The plugin send pipeline. ctx carries the message + addressing + the scopes a
@@ -283,7 +290,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     Amarula.Plugin.run(conn.send_steps, ctx)
   end
 
-  defp do_send(state, msg_id, jid, kind, message, stanza_attrs, enc_attrs) do
+  defp do_send(state, msg_id, jid, kind, message, stanza_attrs, enc_attrs, audience) do
     ctx = %{
       cm: state.cm,
       conn: state.conn,
@@ -302,6 +309,9 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       # The `edit` attr on the <message> stanza, required for delete/edit/pin
       # (Baileys messages-send.ts): "7" delete-for-everyone, "1" edit. nil = none.
       edit_attr: edit_attr(message),
+      # Who may see a status post (`:status` kind only). WhatsApp's server does not
+      # know it: the sender picks the audience and hands each device our sender key.
+      status_audience: audience,
       devices: [],
       participants: [],
       addressing_mode: nil,
@@ -389,6 +399,20 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   defp resolve_devices(%{kind: :group} = ctx) do
     with {:ok, devices, addressing_mode} <- group_devices(ctx) do
       {:ok, %{ctx | devices: devices, addressing_mode: addressing_mode}}
+    end
+  end
+
+  # Status: the caller's audience (+ our own devices) — a group whose member list
+  # we are given instead of fetching. Sender identity follows Baileys' default
+  # `lid` addressing.
+  defp resolve_devices(%{kind: :status, status_audience: []}),
+    do: {:error, {:resolve_devices, :no_audience}}
+
+  defp resolve_devices(%{kind: :status} = ctx) do
+    users = Enum.uniq(ctx.status_audience ++ own_id_list(ctx))
+
+    with {:ok, devices} <- user_devices(ctx, users) do
+      {:ok, %{ctx | devices: devices, addressing_mode: :lid}}
     end
   end
 
@@ -639,7 +663,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   # distribute our sender-key-distribution-message (SKDM) to every participant
   # device as a per-device pkmsg so they can decrypt the skmsg. First send to a
   # group distributes keys to everyone; we redistribute on every send for now.
-  defp encrypt(%{kind: :group, message: message} = ctx) do
+  defp encrypt(%{kind: kind, message: message} = ctx) when kind in [:group, :status] do
     me_id = sender_identity(ctx)
     sender_name = SenderKeyName.from_jids(ctx.target_jid, me_id)
 
@@ -672,7 +696,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     {:error, {:relay, {:no_encrypted_devices, ctx.target_jid}}}
   end
 
-  defp relay(%{kind: :group} = ctx) do
+  defp relay(%{kind: kind} = ctx) when kind in [:group, :status] do
     {:ok, stanza} =
       Relay.build_group_stanza(
         ctx.msg_id,

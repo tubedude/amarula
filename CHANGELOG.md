@@ -14,7 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on `:messages_upsert` with that `channel` and the author as `from`; replying with
   `send_text(conn, msg.from, text, quoted: msg)` quotes it the way WhatsApp does.
   Sends *to* the status channel are refused with `{:error, :status_post_unsupported}`,
-  since that would post a status. Own-device status receipts now use the plain
+  since that would post a status.
+- **`Amarula.post_status/3` posts a text status** to an explicit audience
+  (`to: [addresses]`). WhatsApp encrypts a status like a group message and its server
+  does not know who may see it, so the sender must list the viewers (Baileys'
+  `statusJidList`). It is the only path that can send to `status@broadcast`. Own-device status receipts now use the plain
   `to`/`participant` form, as in Baileys.
 
 ### Changed

@@ -61,6 +61,9 @@ defmodule Amarula.Protocol.Socket.SendCrashIsolationTest do
       assert {:error, :status_post_unsupported} =
                Amarula.send_text(conn, "status@broadcast", "hi")
 
+      # The explicit, audience-bound path is the one way to post.
+      assert {:ok, _id} = Amarula.post_status(conn, "hi", to: [Amarula.Address.pn("5511999")])
+
       # THE assertion. Before #50 this raised inside the GenServer, so replying to
       # a friend's story took the whole connection down and restarted it.
       assert Process.alive?(conn)

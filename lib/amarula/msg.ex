@@ -150,7 +150,8 @@ defmodule Amarula.Msg do
   > A status post has `channel` `Amarula.Address.status/0` and the author as
   > `from`. Sends to the status channel are refused (`:status_post_unsupported`) —
   > it would *post* a status. Reply to the author instead:
-  > `send_text(conn, msg.from, text, quoted: msg)`.
+  > `send_text(conn, msg.from, text, quoted: msg)`. To post a status on purpose, use
+  > `Amarula.post_status/3`.
 
   ## `pushname`
 

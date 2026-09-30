@@ -154,6 +154,11 @@ as `msg.from`. Sends to the status channel are refused with
 a status*, so an echo bot replying to `msg.channel` would publish a story to all of the
 account's contacts. Do not rebuild the jid string to get around the refusal.
 
+To **post** a status on purpose, use `Amarula.post_status(conn, text, to: audience)`.
+`audience` is required: WhatsApp encrypts a status like a group message, and only the
+accounts you list (plus your own devices) get the key. Amarula cannot read the phone's
+status-privacy setting, so pick the audience yourself.
+
 ## Sending
 
 All sends return `{:ok, msg_id}` or `{:error, reason}` (e.g. `:not_on_whatsapp`).

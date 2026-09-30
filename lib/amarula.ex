@@ -636,6 +636,36 @@ defmodule Amarula do
     GenServer.call(conn, {:send_text, jid, text, opts}, send_call_timeout())
   end
 
+  @post_status_opts NimbleOptions.new!(
+                      to: [
+                        type: {:list, :any},
+                        required: true,
+                        doc:
+                          "who may see the status — PN/LID addresses or jid strings. Required: " <>
+                            "WhatsApp's server does not know your status audience, the sender picks it."
+                      ]
+                    )
+
+  @doc """
+  Post a text status (a Story) to the accounts in `:to`.
+
+  A status is end-to-end encrypted like a group message: only the listed accounts (and
+  your own devices) receive the key to read it. Amarula cannot see your phone's contact
+  list or status-privacy setting, so you choose the audience here.
+
+  Returns `{:ok, msg_id}`, or `{:error, {:invalid_audience, entry}}` for an entry that is
+  not a PN/LID account.
+
+  ## Options
+
+  #{NimbleOptions.docs(@post_status_opts)}
+  """
+  @spec post_status(conn(), String.t(), keyword()) :: send_result()
+  def post_status(conn, text, opts) when is_binary(text) do
+    opts = NimbleOptions.validate!(opts, @post_status_opts)
+    GenServer.call(conn, {:post_status, text, opts[:to]}, send_call_timeout())
+  end
+
   @doc "Set your global presence: `:available` (online) or `:unavailable`."
   @spec set_presence(conn(), :available | :unavailable) :: :ok | {:error, term()}
   def set_presence(conn, type), do: GenServer.call(conn, {:set_presence, type})

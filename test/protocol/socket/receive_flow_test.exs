@@ -390,6 +390,48 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert_receive {[:amarula, :retry, :sent], ^ref, %{count: 1, attempt: 1}, _meta}
     end
 
+    test "a channel post arrives as a bare <plaintext>, is delivered, and is only acked", ctx do
+      channel = "120363000000000000@newsletter"
+
+      body =
+        Node.create("plaintext", %{}, Proto.Message.encode(%Proto.Message{conversation: "news"}))
+
+      inject(
+        ctx,
+        Node.create(
+          "message",
+          %{"from" => channel, "id" => "NL1", "t" => "1700000000", "server_id" => "118"},
+          [body]
+        )
+      )
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert msg.channel == Amarula.Address.newsletter(channel)
+      assert msg.content == "news"
+      assert msg.server_id == "118"
+
+      # No delivery receipt for a channel post — only the stanza ack.
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "id") == "NL1"
+      assert attr(ack, "error") == nil
+      refute_receive {:frame_out, _}, 150
+    end
+
+    test "an undecodable channel post is plain-acked, with no retry and no nack", ctx do
+      channel = "120363000000000000@newsletter"
+      bad = Node.create("plaintext", %{}, <<0xFF, 0xFF, 0xFF>>)
+
+      inject(ctx, Node.create("message", %{"from" => channel, "id" => "NL2", "t" => "1"}, [bad]))
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "id") == "NL2"
+      assert attr(ack, "error") == nil
+      refute_receive {:frame_out, _}, 150
+      assert Process.alive?(ctx.pid)
+    end
+
     test "an undecryptable status is retried then plain-acked without a nack", ctx do
       ref = attach_telemetry([[:amarula, :decrypt, :exception], [:amarula, :retry, :sent]])
       inject(ctx, undecryptable_message("STATUSFAIL1", "status@broadcast"))

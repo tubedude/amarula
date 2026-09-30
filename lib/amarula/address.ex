@@ -4,13 +4,16 @@ defmodule Amarula.Address do
   for or from. A friendly value you can build, inspect, and pass to sends, instead
   of juggling raw `"user@server"` jid strings.
 
-  Four kinds, distinguished by `:kind`:
+  Distinguished by `:kind`:
 
     * `:pn`    — a phone-number identity (`<number>@s.whatsapp.net`).
     * `:lid`   — a privacy "Linked ID" (`<id>@lid`). WhatsApp's wire-preferred
       identity; the same person has both a PN and a LID.
     * `:group` — a group chat (`<id>@g.us`). A *container* of participants, not a
       person; its members are fetched separately (group metadata), not stored here.
+    * `:newsletter` — a WhatsApp Channel (`<id>@newsletter`). Its posts arrive with
+      it as their `channel`. Followers can't post to it, and Amarula does not send
+      as a channel admin yet, so sends refuse it.
     * `:none`  — the **empty** address (`empty/0`): "no identity". A stand-in for
       "we don't have one yet" (e.g. `Amarula.own_address/1` before login) — returned
       instead of `nil`, so you never have to nil-check. It names nothing: every
@@ -40,7 +43,7 @@ defmodule Amarula.Address do
 
   alias Amarula.Protocol.Binary.JID
 
-  @type kind :: :pn | :lid | :group | :none | :unsupported
+  @type kind :: :pn | :lid | :group | :newsletter | :none | :unsupported
   @type t :: %__MODULE__{
           user: String.t(),
           kind: kind(),
@@ -54,7 +57,7 @@ defmodule Amarula.Address do
   # twice would just be a second source of truth to keep in sync.
   defstruct [:user, :kind, :device, :server]
 
-  @server %{pn: "s.whatsapp.net", lid: "lid", group: "g.us"}
+  @server %{pn: "s.whatsapp.net", lid: "lid", group: "g.us", newsletter: "newsletter"}
 
   @doc "A PN address from a bare number or full jid string."
   @spec pn(String.t()) :: t()
@@ -68,6 +71,10 @@ defmodule Amarula.Address do
   @spec group(String.t()) :: t()
   def group(id), do: %__MODULE__{user: user_of(id), kind: :group, device: nil}
 
+  @doc "A channel (newsletter) address from a bare id or full `@newsletter` jid string."
+  @spec newsletter(String.t()) :: t()
+  def newsletter(id), do: %__MODULE__{user: user_of(id), kind: :newsletter, device: nil}
+
   @doc "The empty address — \"no identity\". Returned instead of `nil` (see the `:none` kind)."
   @spec empty() :: t()
   def empty, do: %__MODULE__{user: "", kind: :none, device: nil}
@@ -78,7 +85,7 @@ defmodule Amarula.Address do
   safe to call on an optional `String.t() | nil` field without wrapping.
 
   `nil` means **"not a jid"** — an unparseable string with no server part. A jid
-  whose server we do not model yet (`status@broadcast`, `@newsletter`, `@hosted`)
+  whose server we do not model yet (`status@broadcast`, `@hosted`)
   is NOT nil: it parses to `kind: :unsupported` carrying the raw `server`, so it
   can be inspected, matched and logged like any other address. It cannot be
   addressed — `to_jid/1` refuses it (see `unsupported?/1`).
@@ -212,6 +219,10 @@ defmodule Amarula.Address do
   def lid?(%__MODULE__{kind: :lid}), do: true
   def lid?(_), do: false
 
+  @spec newsletter?(t()) :: boolean()
+  def newsletter?(%__MODULE__{kind: :newsletter}), do: true
+  def newsletter?(_), do: false
+
   @spec group?(t()) :: boolean()
   def group?(%__MODULE__{kind: :group}), do: true
   def group?(_), do: false
@@ -223,7 +234,7 @@ defmodule Amarula.Address do
 
   @doc """
   Whether this is a real jid whose chat kind Amarula does not model yet
-  (`status@broadcast`, `@newsletter`, `@hosted`, …).
+  (`status@broadcast`, `@hosted`, …).
 
   Such an address carries its raw `server` and can be inspected and compared, but
   has no safe destination — `to_jid/1` returns `{:error, {:unsupported, server}}`
@@ -240,6 +251,7 @@ defmodule Amarula.Address do
   defp kind_of("c.us"), do: :pn
   defp kind_of("lid"), do: :lid
   defp kind_of("g.us"), do: :group
+  defp kind_of("newsletter"), do: :newsletter
   defp kind_of(_), do: nil
 
   # The user part of a bare id or full jid: strip @server, then the `:device` and

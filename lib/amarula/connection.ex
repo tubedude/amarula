@@ -1790,9 +1790,15 @@ defmodule Amarula.Connection do
   defp resolve_target(target) when is_binary(target) do
     case Amarula.Address.parse(target) do
       %Amarula.Address{kind: :unsupported, server: server} -> {:error, {:unsupported, server}}
+      %Amarula.Address{kind: :newsletter} -> {:error, :newsletter_send_unsupported}
       _ -> {:ok, target}
     end
   end
+
+  # Channel posts are plaintext stanzas of their own, sent only by channel admins —
+  # not the Signal send pipeline. Refuse until that is implemented.
+  defp resolve_target(%Amarula.Address{kind: :newsletter}),
+    do: {:error, :newsletter_send_unsupported}
 
   defp resolve_target(target), do: Amarula.Address.to_jid(target)
 
@@ -3699,7 +3705,8 @@ defmodule Amarula.Connection do
       from_me: from_me?,
       # The sender's display name, off the stanza envelope (absent on our own sends).
       pushname: NodeUtils.get_attr(node, "notify"),
-      timestamp: parse_ts(NodeUtils.get_attr(node, "t"))
+      timestamp: parse_ts(NodeUtils.get_attr(node, "t")),
+      server_id: NodeUtils.get_attr(node, "server_id")
     })
   end
 
@@ -4088,6 +4095,17 @@ defmodule Amarula.Connection do
       # it at the head of the offline queue and withhold every ordinary message
       # behind it across reconnects. Keep the retry request so the sender can
       # still recover it, but finish with a plain stanza ack so the queue drains.
+      # A channel post is plaintext: there is no session to repair, so a retry
+      # request is pointless and a nack could stall the queue. Plain ack.
+      JID.jid_newsletter?(from) ->
+        Logger.debug("Channel post #{msg_id}: undecodable — plain ack")
+
+        Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
+          reason: :nothing_decrypted
+        })
+
+        send_message_ack(state, node)
+
       JID.jid_status_broadcast?(from) ->
         Logger.debug("Status #{msg_id}: nothing decrypted — retry + plain ack")
 
@@ -4238,7 +4256,15 @@ defmodule Amarula.Connection do
     send_binary_node(state, receipt)
   end
 
+  # A channel post gets no delivery receipt, only the stanza ack (Baileys:
+  # "processed newsletter message without receipts").
   defp send_delivery_receipt(state, node) do
+    if JID.jid_newsletter?(NodeUtils.get_attr(node, "from")),
+      do: send_message_ack(state, node),
+      else: send_person_receipt(state, node)
+  end
+
+  defp send_person_receipt(state, node) do
     from = NodeUtils.get_attr(node, "from")
     participant = NodeUtils.get_attr(node, "participant")
     category = NodeUtils.get_attr(node, "category")

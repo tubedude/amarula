@@ -7,10 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Channel (newsletter) posts are delivered.** `@newsletter` parses to
+  `kind: :newsletter` (`Amarula.Address.newsletter/1`, `newsletter?/1`), and
+  `%Amarula.Msg{}` gains `server_id`, the channel's id for the post. Sends to a
+  channel are refused with `{:error, :newsletter_send_unsupported}`.
+
+### Fixed
+
+- **Channel posts no longer fail to decrypt.** They arrive as a bare `<plaintext>`
+  child, not `<enc>`, so Amarula found nothing to decrypt and answered every one with
+  a retry request and an error NACK. They are now decoded, and acked without a
+  delivery receipt, as in Baileys. An undecodable one gets a plain ack.
+
 ### Changed
 
 - **`Amarula.Address.parse/1` no longer returns `nil` for a chat kind we don't
-  model** ([#50]). A jid like `status@broadcast`, `@newsletter` or `@hosted` now
+  model** ([#50]). A jid like `status@broadcast` or `@hosted` now
   parses to `kind: :unsupported` carrying a new `:server` field, so it can be
   inspected and matched like any address. `nil` now means only "not a jid at all"
   (no `@server` part). New `Amarula.Address.unsupported?/1`.

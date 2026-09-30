@@ -29,14 +29,14 @@ defmodule Amarula.AddressFixtures do
     {"c.us PN", "#{@pn}@c.us", :pn, "#{@pn}@s.whatsapp.net"},
     {"clean LID", "#{@lid}@lid", :lid, "#{@lid}@lid"},
     {"LID + device", "#{@lid}:12@lid", :lid, "#{@lid}@lid"},
-    {"group", "#{@group}@g.us", :group, "#{@group}@g.us"}
+    {"group", "#{@group}@g.us", :group, "#{@group}@g.us"},
+    {"newsletter", "#{@group}@newsletter", :newsletter, "#{@group}@newsletter"}
   ]
 
   @unresolvable [
     {"hosted PN", "#{@pn}@hosted"},
     {"hosted LID", "#{@lid}@hosted.lid"},
-    {"broadcast", "status@broadcast"},
-    {"newsletter", "#{@group}@newsletter"}
+    {"broadcast", "status@broadcast"}
   ]
 
   @doc "Address shapes `Amarula.Address` resolves — `{label, jid, kind, account_jid}`."

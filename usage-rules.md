@@ -125,8 +125,8 @@ WhatsApp multi-device uses both **LID** (`<n>@lid`) and **phone-number**
 resolves addressing for you on send, so you rarely need to convert by hand.
 
 **Not every address can be replied to (0.6.0+).** WhatsApp has chat kinds Amarula
-doesn't model yet — status posts (`status@broadcast`), channels (`@newsletter`),
-hosted business accounts (`@hosted`). `Amarula.Address.parse/1` gives those
+doesn't model yet — status posts (`status@broadcast`), hosted business accounts
+(`@hosted`). `Amarula.Address.parse/1` gives those
 `kind: :unsupported` with the raw `server`, so they're real addresses you can inspect
 and compare, but **every send refuses them** with
 `{:error, {:unsupported, server}}`. They do NOT crash the connection, and they are
@@ -134,8 +134,7 @@ not silently retargeted.
 
 Where you'll meet one:
 - `msg.from` — a `@hosted` business account writing in an ordinary group.
-- `msg.channel` on status posts and channel (`@newsletter`) messages, live or
-  history-synced.
+- `msg.channel` on status posts, live or history-synced.
 
 So don't assume `msg.channel` is a valid reply target. If you build a bot that
 replies to whatever arrives, guard it:
@@ -147,6 +146,10 @@ else
   Amarula.send_text(conn, msg.channel, "pong")
 end
 ```
+
+**Channel posts** (WhatsApp Channels) arrive with a `kind: :newsletter` channel
+(`Amarula.Address.newsletter?/1`) and `msg.server_id`. Sends to a channel are refused
+with `{:error, :newsletter_send_unsupported}`.
 
 Do not try to reconstruct a jid string to get around the refusal. Sending to
 `status@broadcast` is how one *posts a status* — an echo bot that "helpfully" rebuilt

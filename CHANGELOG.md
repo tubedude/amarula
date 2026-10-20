@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.2] - 2026-10-20
+
+### Added
+
+- Includes 0.5.11: `%Amarula.Msg{offline: boolean()}` (#95).
+
 ## [0.6.0-rc.1] - 2026-09-30
 
 A release candidate: the chat kinds below need live traffic to confirm. Please report
@@ -1484,7 +1490,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.1...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.2...HEAD
+[0.6.0-rc.2]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.1...v0.6.0-rc.2
 [0.6.0-rc.1]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.6.0-rc.1
 [0.5.11]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/tubedude/amarula/compare/v0.5.9...v0.5.10

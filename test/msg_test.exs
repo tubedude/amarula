@@ -81,6 +81,11 @@ defmodule Amarula.MsgTest do
     assert is_nil(unnamed.pushname)
   end
 
+  test "offline is carried from meta (false when absent)" do
+    assert build(%Proto.Message{conversation: "hi"}, %{offline: true}).offline
+    refute build(%Proto.Message{conversation: "hi"}).offline
+  end
+
   test "from carries the sending device — the self-send loop signal" do
     # A self-chat send by a linked device (e.g. :29) comes back from_me with the
     # device on `from`; a consumer compares it to Amarula.own_address(conn).device.

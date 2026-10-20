@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`%Amarula.Msg{offline: boolean()}`** — `true` when the message came from the
+  server's offline queue (sent while the connection was down), so a consumer can skip
+  the reconnect backlog. Receipts are unchanged. (#95)
+
 ## [0.5.10] - 2026-09-29
 
 ### Fixed

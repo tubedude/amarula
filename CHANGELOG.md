@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-10-19
+
 ### Added
 
 - **`%Amarula.Msg{offline: boolean()}`** — `true` when the message came from the
@@ -1336,7 +1338,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.10...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.11...HEAD
+[0.5.11]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/tubedude/amarula/compare/v0.5.9...v0.5.10
 [0.5.9]: https://github.com/tubedude/amarula/compare/v0.5.8...v0.5.9
 [0.5.8]: https://github.com/tubedude/amarula/compare/v0.5.7...v0.5.8

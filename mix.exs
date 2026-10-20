@@ -12,7 +12,7 @@ defmodule Amarula.MixProject do
   def project do
     [
       app: :amarula,
-      version: "0.5.10",
+      version: "0.5.11",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -205,12 +205,13 @@ defmodule Amarula.MixProject do
   # that ran the suite first, rather than something a consumer discovers for us.
   # If that job is ever removed, revisit this policy with it — they are a pair.
   #
-  # DELIBERATE EXCEPTION — `protobuf` is `~> 0.17`, not `~> 0.17.0`. It decodes
+  # DELIBERATE EXCEPTION — `protobuf` is `~> 0.17 and >= 0.17.1`, not `~> 0.17.0`. It decodes
   # bytes from any peer that can open a Signal session with us, so it is the
   # dependency where a security fix most needs to reach consumers without
   # waiting on us to cut a release. Here the CVE lesson outranks the
-  # untested-minor risk, and the floor is what matters: `~> 0.17` guarantees
-  # consumers are above CVE-2026-54451. Do not tighten it to `~> 0.17.0`.
+  # untested-minor risk, and the floor is what matters: `>= 0.17.1` guarantees
+  # consumers are above CVE-2026-54451 and CVE-2026-104635. Do not tighten it
+  # to `~> 0.17.0`.
   #
   # `req` is `~> 0.4` and predates this policy; it is wide for no articulated
   # reason. Narrow it to the current minor when someone has time to test that.
@@ -231,7 +232,7 @@ defmodule Amarula.MixProject do
       {:jason, "~> 1.4"},
 
       # Protocol buffers
-      {:protobuf, "~> 0.17"},
+      {:protobuf, "~> 0.17 and >= 0.17.1"},
 
       # HTTP client
       {:req, "~> 0.4"},

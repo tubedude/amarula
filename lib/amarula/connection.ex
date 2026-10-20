@@ -2730,7 +2730,7 @@ defmodule Amarula.Connection do
   # so our session matches their new identity — and nothing encrypts to the old one
   # in the gap.
   defp maybe_refresh_identity(state, node, from) do
-    offline? = NodeUtils.get_attr(node, "offline") not in [nil, ""]
+    offline? = offline_node?(node)
 
     if offline? do
       Logger.debug("encrypt(identity) from #{from}: offline batch — deferring refresh")
@@ -3753,9 +3753,13 @@ defmodule Amarula.Connection do
       # The sender's display name, off the stanza envelope (absent on our own sends).
       pushname: NodeUtils.get_attr(node, "notify"),
       timestamp: parse_ts(NodeUtils.get_attr(node, "t")),
-      server_id: NodeUtils.get_attr(node, "server_id")
+      server_id: NodeUtils.get_attr(node, "server_id"),
+      offline: offline_node?(node)
     })
   end
+
+  # Delivered from the server's offline queue (the stanza's `offline` attr).
+  defp offline_node?(node), do: NodeUtils.get_attr(node, "offline") not in [nil, ""]
 
   # An embedded `%Proto.MessageKey{}` names its TARGET from the AUTHOR'S perspective:
   # in a DM the peer's `remoteJid` is *us* and `fromMe` is false-from-their-side, so
@@ -3914,7 +3918,7 @@ defmodule Amarula.Connection do
   # counts/kinds/booleans only.
   defp emit_message_telemetry(state, msgs, node, from) do
     group? = JID.jid_group?(from)
-    offline? = NodeUtils.get_attr(node, "offline") not in [nil, ""]
+    offline? = offline_node?(node)
 
     Enum.each(msgs, fn msg ->
       {media?, media_kind, bytes} =

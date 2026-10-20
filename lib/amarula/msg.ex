@@ -155,6 +155,20 @@ defmodule Amarula.Msg do
   > channel's own id for the post. Sends to a channel are refused
   > (`:newsletter_send_unsupported`).
 
+  ## `offline`
+
+  `offline` is `true` when WhatsApp delivered the message from its offline queue —
+  it arrived while this connection was down (the stanza's `offline` attr). It says
+  *how* the message was delivered, not whether it was read, answered, or is older
+  than some cutoff. It is `false` for live delivery and whenever it is unknown (a
+  quoted copy, a hand-built `%Msg{}`). Receipts are sent either way, so a consumer
+  can skip the reconnect backlog without stalling the queue:
+
+      def handle_info({:amarula, :messages_upsert, %{messages: msgs}}, state) do
+        msgs |> Enum.reject(& &1.offline) |> Enum.each(&reply/1)
+        {:noreply, state}
+      end
+
   ## `pushname`
 
   `pushname` is the sender's display name as it rides on the inbound stanza (the
@@ -226,6 +240,7 @@ defmodule Amarula.Msg do
           quoted: quoted() | nil,
           mentions: [Address.t()],
           forwarded: boolean(),
+          offline: boolean(),
           preview: Content.LinkPreview.t() | nil,
           raw: Proto.Message.t()
         }
@@ -246,6 +261,7 @@ defmodule Amarula.Msg do
     :preview,
     :raw,
     forwarded: false,
+    offline: false,
     mentions: []
   ]
 
@@ -256,7 +272,8 @@ defmodule Amarula.Msg do
   (the writer `Address` — participant in a group, else the channel), `:to` (the
   addressed identity `Address`), `:from_me`, `:pushname` (the sender's display name
   off the stanza, `nil` when absent), `:timestamp`, `:server_id` (a channel post's
-  server-side id, `nil` elsewhere).
+  server-side id, `nil` elsewhere), `:offline` (delivered
+  from the offline queue; `false` when absent).
 
   `:channel` is normalized to its account-level address here (device stripped) — it
   is the reply handle, and a device-bound one is rejected on send. `:from` keeps its
@@ -282,6 +299,7 @@ defmodule Amarula.Msg do
       quoted: quoted(ctx, channel),
       mentions: mentions(ctx),
       forwarded: forwarded?(ctx),
+      offline: meta[:offline] || false,
       preview: link_preview(proto),
       raw: proto
     }

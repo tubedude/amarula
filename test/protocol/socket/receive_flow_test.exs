@@ -1436,6 +1436,37 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
 
   # A <message> whose <enc type="plaintext"> carries an encoded proto — rides the
   # real decrypt path with no Signal session needed.
+  # --- offline-queue delivery flag (#95) ---
+
+  describe "offline delivery flag (#95)" do
+    test "an offline-marked stanza yields offline: true and is still receipted", ctx do
+      text = %Proto.Message{conversation: "queued"}
+      inject(ctx, plaintext_message("OFF1", @jid, text, %{"offline" => "1"}))
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [%{type: :text, offline: true}]}}
+      assert %{tag: "receipt"} = recv_frame()
+    end
+
+    test "a live stanza interleaved with backlog yields offline: false", ctx do
+      inject(
+        ctx,
+        plaintext_message("OFF1", @jid, %Proto.Message{conversation: "a"}, %{"offline" => "1"})
+      )
+
+      inject(ctx, plaintext_message("LIVE1", @jid, %Proto.Message{conversation: "b"}))
+
+      assert_receive {:amarula, :messages_upsert, %{id: "OFF1", messages: [%{offline: true}]}}
+      assert_receive {:amarula, :messages_upsert, %{id: "LIVE1", messages: [%{offline: false}]}}
+    end
+
+    test "captionless media keeps the flag", ctx do
+      image = %Proto.Message{imageMessage: %Proto.Message.ImageMessage{mimetype: "image/jpeg"}}
+      inject(ctx, plaintext_message("OFFIMG1", @jid, image, %{"offline" => "1"}))
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [%{type: :media, offline: true}]}}
+    end
+  end
+
   defp plaintext_message(id, from, %Proto.Message{} = proto, attrs \\ %{}) do
     enc = Node.create("enc", %{"type" => "plaintext", "v" => "2"}, Proto.Message.encode(proto))
 

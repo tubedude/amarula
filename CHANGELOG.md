@@ -152,6 +152,14 @@ anything odd with status posts, channels, hosted businesses, broadcast lists or 
   blobs are now `{:error, :bad_mac}` / `{:error, :bad_padding}`, and an unknown media
   type is `{:error, :invalid_media}` instead of a `KeyError` from key derivation.
 
+## [0.5.11] - 2026-10-19
+
+### Added
+
+- **`%Amarula.Msg{offline: boolean()}`** — `true` when the message came from the
+  server's offline queue (sent while the connection was down), so a consumer can skip
+  the reconnect backlog. Receipts are unchanged. (#95)
+
 ## [0.5.10] - 2026-09-29
 
 ### Fixed
@@ -1478,6 +1486,7 @@ First public release.
 
 [Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.1...HEAD
 [0.6.0-rc.1]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.6.0-rc.1
+[0.5.11]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/tubedude/amarula/compare/v0.5.9...v0.5.10
 [0.5.9]: https://github.com/tubedude/amarula/compare/v0.5.8...v0.5.9
 [0.5.8]: https://github.com/tubedude/amarula/compare/v0.5.7...v0.5.8

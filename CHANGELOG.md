@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   server's offline queue (sent while the connection was down), so a consumer can skip
   the reconnect backlog. Receipts are unchanged. (#95)
 
+### Security
+
+- **`protobuf` floor raised to `>= 0.17.1`** (CVE-2026-104635, GHSA-m497-c2h9-rvw6:
+  unbounded recursion in protobuf's *JSON* decoder). Amarula only decodes binary
+  protobuf, so it is not reachable through Amarula; the floor keeps `mix hex.audit`
+  clean for consumers.
+
 ## [0.5.10] - 2026-09-29
 
 ### Fixed

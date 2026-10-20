@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Includes 0.5.11: `%Amarula.Msg{offline: boolean()}` (#95).
 
+### Security
+
+- Includes 0.5.11: `protobuf` floor raised to `>= 0.17.1` (CVE-2026-104635).
+
 ## [0.6.0-rc.1] - 2026-09-30
 
 A release candidate: the chat kinds below need live traffic to confirm. Please report

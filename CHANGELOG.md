@@ -162,6 +162,18 @@ anything odd with status posts, channels, hosted businesses, broadcast lists or 
   blobs are now `{:error, :bad_mac}` / `{:error, :bad_padding}`, and an unknown media
   type is `{:error, :invalid_media}` instead of a `KeyError` from key derivation.
 
+## [0.5.12] - 2026-10-24
+
+### Changed
+
+- **Pinned WhatsApp Web version bumped to `2.3000.1051594400`.**
+
+### Security
+
+- **The development lock now resolves `plug_crypto` 2.2.1** (EEF-CVE-2026-105963 /
+  GHSA-ffw9-w85g-f2vh). `plug_crypto` is a test-only transitive dependency via `plug`
+  (powers `Req.Test` stubs).
+
 ## [0.5.11] - 2026-10-19
 
 ### Added
@@ -1504,6 +1516,7 @@ First public release.
 [Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.2...HEAD
 [0.6.0-rc.2]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.1...v0.6.0-rc.2
 [0.6.0-rc.1]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.6.0-rc.1
+[0.5.12]: https://github.com/tubedude/amarula/compare/v0.5.11...v0.5.12
 [0.5.11]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/tubedude/amarula/compare/v0.5.9...v0.5.10
 [0.5.9]: https://github.com/tubedude/amarula/compare/v0.5.8...v0.5.9

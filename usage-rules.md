@@ -167,7 +167,7 @@ recipients complete independently.
 Amarula.send_text(conn, jid, "hello")
 Amarula.send_media(conn, jid, :image, File.read!("pic.jpg"), caption: "hi")   # raw bytes, not a path/base64; :image|:video|:audio|:document|:sticker
 # per-type opts: :file_name/:page_count/:jpeg_thumbnail (document), :gif_playback (video),
-# :is_animated (sticker), :width/:height, :seconds (REQUIRED for :audio), :ptt, :view_once, :ptv.
+# :is_animated (sticker), :width/:height, :seconds (auto-filled for Ogg/Opus :audio via Amarula.OggOpus; REQUIRED for other :audio formats), :ptt, :view_once, :ptv.
 # All snake_case — the proto-cased spellings (:fileName) are rejected.
 Amarula.send_reaction(conn, msg, "👍")   # "" removes the reaction
 Amarula.send_edit(conn, msg, "fixed typo")

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Amarula.OggOpus` — pure-Elixir Ogg/Opus header and duration reader.**
+  `Amarula.OggOpus.info/1`, `seconds/1`, and `voice_note?/1` inspect an Ogg/Opus
+  binary (such as WhatsApp voice notes or OpenAI TTS `opus` output) without
+  `ffmpeg`. `Amarula.send_media/5` now calls `Amarula.OggOpus.seconds/1`
+  automatically when sending `:audio` without an explicit `:seconds` option, so
+  Ogg/Opus clips play on iPhone recipients out of the box (Baileys #2646).
+
 ## [0.6.0-rc.3] - 2026-10-24
 
 ### Changed

@@ -333,6 +333,22 @@ defmodule AmarulaTest do
                      {:send_media, "x@s.whatsapp.net", :document, <<1, 2, 3>>, [title: "t"]}}
   end
 
+  test "send_media auto-derives :seconds for Ogg/Opus :audio when omitted", %{conn: conn} do
+    head = <<"OpusHead", 1, 1, 312::little-16, 48_000::little-32, 0::16, 0>>
+
+    ogg =
+      <<"OggS", 0, 2, 0::little-signed-64, 1::little-32, 0::little-32, 0::32, 1, byte_size(head)>> <>
+        head <>
+        <<"OggS", 0, 4, 312 + 216_000::little-signed-64, 1::little-32, 1::little-32, 0::32, 1, 4,
+          1, 2, 3, 4>>
+
+    Amarula.send_media(conn, "x@s.whatsapp.net", :audio, ogg, ptt: true)
+
+    assert_received {:got, {:send_media, "x@s.whatsapp.net", :audio, ^ogg, opts}}
+    assert opts[:seconds] == 5
+    assert opts[:ptt] == true
+  end
+
   test "connection_state and disconnect delegate", %{conn: conn} do
     assert Amarula.connection_state(conn) == :connected
     assert_received {:got, :get_connection_state}

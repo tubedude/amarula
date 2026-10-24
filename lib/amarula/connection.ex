@@ -949,6 +949,7 @@ defmodule Amarula.Connection do
         with {:ok, enc} <- Media.encrypt(data, type),
              {:ok, uploaded} <- Media.upload(conn_pid, enc.enc, enc.file_enc_sha256, type) do
           info = Map.merge(enc, Map.put(uploaded, :mimetype, mimetype))
+          opts = Amarula.OggOpus.maybe_put_seconds(opts, type, data)
           {:ok, MessageEncoder.media(type, info, opts)}
         end
       end)

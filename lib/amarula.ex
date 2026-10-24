@@ -1259,10 +1259,13 @@ defmodule Amarula do
 
   > #### Audio needs `:seconds` {: .warning}
   >
-  > Amarula does no media processing — it won't compute an audio clip's duration
-  > for you. **Pass `:seconds` (the clip length) for `:audio`.** Without it, clips
-  > longer than ~10s may fail to play on iPhone recipients (WhatsApp rejects the
-  > playback and asks the sender to resend — Baileys #2646).
+  > For **Ogg/Opus** `:audio` (WhatsApp's native voice-note format, and what OpenAI
+  > TTS `opus` returns), Amarula reads `:seconds` from the Ogg pages automatically via
+  > `Amarula.OggOpus.seconds/1` when you don't pass it. For any other audio container
+  > (MP3, AAC, M4A, WAV), Amarula does no media processing — **pass `:seconds`
+  > explicitly**. Without it, clips longer than ~10s may fail to play on iPhone
+  > recipients (WhatsApp rejects the playback and asks the sender to resend —
+  > Baileys #2646).
 
   ## Options
 
@@ -1274,7 +1277,12 @@ defmodule Amarula do
     # `:album_parent` is an internal threading key (set by send_album), not a public
     # option — split it off so it doesn't trip the strict schema, then re-attach.
     {internal, public} = Keyword.split(opts, [:album_parent])
-    public = NimbleOptions.validate!(public, @send_media_opts)
+
+    public =
+      public
+      |> NimbleOptions.validate!(@send_media_opts)
+      |> Amarula.OggOpus.maybe_put_seconds(type, data)
+
     GenServer.call(conn, {:send_media, jid, type, data, public ++ internal}, send_call_timeout())
   end
 

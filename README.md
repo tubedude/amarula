@@ -229,8 +229,10 @@ Amarula.send_media(conn, jid, :image, File.read!("photo.jpg"), caption: "hi")
 File.write!(msg.content.file_name || "received.jpg", bytes)
 ```
 
-One gotcha: for `:audio`, pass `seconds:` (the clip duration) — Amarula does no
-media processing, and iPhone recipients may fail to play longer clips without it.
+One gotcha: for `:audio`, iPhone recipients may fail to play longer clips without
+`seconds:` (the clip duration). Amarula reads `seconds:` automatically when the
+bytes are Ogg/Opus (`Amarula.OggOpus`); for any other audio format, pass `seconds:`
+explicitly.
 
 ### Reactions & replies
 

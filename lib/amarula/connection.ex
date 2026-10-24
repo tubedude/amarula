@@ -2097,6 +2097,10 @@ defmodule Amarula.Connection do
   # Incoming call (offer/terminate/accept/reject/...). Always ack first (stops
   # the server retransmitting), then surface it as :call_update.
   defp dispatch_node(state, :call_ack, node), do: handle_call(state, node)
+  # Top-level <status> stanza (server-side rollout for contacts' status updates,
+  # Baileys #2858 / #2866, whatsmeow a238105488). Plain-ack with class="status"
+  # so the server doesn't close the stream after 50 minutes with `<stream:error><ack class="status"/>`.
+  defp dispatch_node(state, :status_ack, node), do: send_message_ack(state, node)
   # Server confirmation of a send we relayed — reply the parked consumer.
   defp dispatch_node(state, :message_ack, node), do: handle_message_ack(state, node)
 
@@ -2319,11 +2323,11 @@ defmodule Amarula.Connection do
   end
 
   # A retry receipt may carry a <keys> bundle (a fresh session for the requester).
-  # Inject it like a prekey-bundle reply so our re-encrypt uses the right session.
+  # Inject it so our re-encrypt uses the session the requester just advertised.
   defp maybe_inject_retry_keys(state, node) do
     case NodeUtils.get_binary_node_child(node, "keys") do
       %Node{} ->
-        SessionInjector.inject(node, state.auth_creds, conn(state), state.instance_id, :always)
+        SessionInjector.inject_retry(node, state.auth_creds, conn(state), state.instance_id)
         state
 
       _ ->
@@ -2519,6 +2523,7 @@ defmodule Amarula.Connection do
     inner = NodeUtils.get_binary_node_child(node, "link_code_companion_reg")
 
     with reg when not is_nil(reg) <- inner,
+         stage when stage in [nil, "primary_hello"] <- NodeUtils.get_attr(reg, "stage"),
          ref when not is_nil(ref) <- child_buffer(reg, "link_code_pairing_ref"),
          primary_identity_pub when not is_nil(primary_identity_pub) <-
            child_buffer(reg, "primary_identity_pub"),
@@ -3469,7 +3474,7 @@ defmodule Amarula.Connection do
             child("companion_server_auth_key_pub", creds.noise_key.public),
             child("companion_platform_id", companion_platform_id(state.config.browser)),
             child("companion_platform_display", platform_display(state.config.browser)),
-            child("link_code_pairing_nonce", "0")
+            child("link_code_pairing_nonce", <<0>>)
           ]
         }
       ]
@@ -3759,7 +3764,8 @@ defmodule Amarula.Connection do
   end
 
   # Delivered from the server's offline queue (the stanza's `offline` attr).
-  defp offline_node?(node), do: NodeUtils.get_attr(node, "offline") not in [nil, ""]
+  # `offline="0"` can appear on online stanzas (Baileys #2810 / #2840) — treat it as online.
+  defp offline_node?(node), do: NodeUtils.get_attr(node, "offline") not in [nil, "", "0"]
 
   # An embedded `%Proto.MessageKey{}` names its TARGET from the AUTHOR'S perspective:
   # in a DM the peer's `remoteJid` is *us* and `fromMe` is false-from-their-side, so
@@ -4150,6 +4156,22 @@ defmodule Amarula.Connection do
       # request is pointless and a nack could stall the queue. Plain ack.
       JID.jid_newsletter?(from) ->
         Logger.debug("Channel post #{msg_id}: undecodable — plain ack")
+
+        Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
+          reason: :nothing_decrypted
+        })
+
+        send_message_ack(state, node)
+
+      # An undecryptable `from_me` message (`own_sender?`) is a sender-fanout echo
+      # from another of our own linked devices, encrypted under that device's
+      # session with the recipient — a session this client can never hold. Asking
+      # ourselves for a retry makes the server close the stream with
+      # `<stream:error><ack id="..."/>` (Baileys #2864). Plain-ack and move on.
+      own_sender? ->
+        Logger.debug(
+          "Own message #{msg_id} from #{from}: undecryptable — plain ack without retry"
+        )
 
         Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
           reason: :nothing_decrypted

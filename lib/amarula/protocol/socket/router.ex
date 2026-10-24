@@ -40,6 +40,7 @@ defmodule Amarula.Protocol.Socket.Router do
           | :retry_receipt
           | :receipt_ack
           | :call_ack
+          | :status_ack
           | :message_ack
           | :unhandled
 
@@ -85,6 +86,7 @@ defmodule Amarula.Protocol.Socket.Router do
       {"receipt", "retry", _, _} -> :retry_receipt
       {"receipt", _, _, _} -> :receipt_ack
       {"call", _, _, _} -> :call_ack
+      {"status", _, _, _} -> :status_ack
       _ -> :unhandled
     end
   end

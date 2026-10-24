@@ -79,4 +79,49 @@ defmodule Amarula.Protocol.Signal.SessionInjectorTest do
 
     File.write!(@out_path, JSON.encode!(%{"body" => Base.encode64(body)}))
   end
+
+  test "inject_retry/4 extracts keys from a retry receipt and builds a session (including hosted.lid)",
+       %{conn: conn, instance_id: iid} do
+    bundle = @bundle_path |> File.read!() |> JSON.decode!()
+
+    receipt =
+      Node.create(
+        "receipt",
+        %{
+          "from" => "120363000000000001@g.us",
+          "participant" => "20000000009:99@hosted.lid",
+          "id" => "3EB0RETRY1",
+          "type" => "retry"
+        },
+        [
+          Node.create("retry", %{"count" => "2", "id" => "3EB0RETRY1", "v" => "1"}, nil),
+          Node.create("registration", %{}, <<bundle["registrationId"]::big-unsigned-32>>),
+          Node.create("keys", %{}, [
+            Node.create("type", %{}, <<5>>),
+            Node.create("identity", %{}, raw(d64(bundle["identityPub"]))),
+            Node.create("skey", %{}, [
+              Node.create("id", %{}, <<bundle["signedPreKeyId"]::big-unsigned-24>>),
+              Node.create("value", %{}, raw(d64(bundle["signedPreKeyPub"]))),
+              Node.create("signature", %{}, d64(bundle["signedPreKeySig"]))
+            ]),
+            Node.create("key", %{}, [
+              Node.create("id", %{}, <<bundle["preKeyId"]::big-unsigned-24>>),
+              Node.create("value", %{}, raw(d64(bundle["preKeyPub"])))
+            ])
+          ])
+        ]
+      )
+
+    alice = Amarula.Protocol.Crypto.Crypto.generate_key_pair()
+
+    creds = %{
+      registration_id: 4242,
+      signed_identity_key: %{public: alice.public, private: alice.private},
+      signed_pre_key: %{key_id: 1, key_pair: alice},
+      pre_keys: %{}
+    }
+
+    assert SessionInjector.inject_retry(receipt, creds, conn, iid) == 1
+    assert SessionStore.load_session(conn, "20000000009_129.99") != nil
+  end
 end

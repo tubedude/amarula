@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.3] - 2026-10-24
+
+### Changed
+
+- Includes 0.5.12: default WhatsApp Web protocol version bumped to `[2, 3000, 1_051_594_400]`.
+
+### Fixed
+
+- **Top-level `<status>` stanzas are now acknowledged** (Baileys #2858 / #2866,
+  whatsmeow `a238105488`). Previously, `<status>` fell through to `:unhandled`
+  without an `<ack class="status">`, causing WhatsApp to close the socket after
+  ~60–90 seconds.
+- **Phone-number link-code pairing hardening** (Baileys #2832 / #2872):
+  `link_code_pairing_nonce` is now encoded as a single zero byte (`<<0>>`)
+  instead of ASCII `"0"`, `link_code_companion_reg` notifications with a stage
+  other than `"primary_hello"` are ignored, and reconnecting while link-code
+  pairing is in progress (`creds.me` set, `registered: false`) stays on the
+  registration handshake instead of attempting a login handshake.
+- **`offline="0"` on inbound `<message>` stanzas now produces `offline: false`**
+  (Baileys #2810 / #2840).
+- **Undecryptable messages from our own devices (`from_me`) are plain-acked
+  without sending a retry receipt or `500` nack** (Baileys #2864), preventing
+  retry loops against stale companion sessions.
+- **`Amarula.post_status/3` normalizes audience addressing and matches own-device
+  identity** (Baileys #2794 / #2841, whatsmeow #1293 / #1294). When `me.lid` is
+  present, PN audience members with known LID mappings are resolved to LIDs and
+  paired with `me.lid` (`addressing_mode: :lid`); all-PN audiences use `me.id`
+  (`addressing_mode: :pn`); mixed LID and unmapped PN audiences fail early with
+  `{:error, :mixed_status_addressing}` instead of sending a stanza that WhatsApp
+  drops or rejects with `400` / `479`.
+- **Inbound `<receipt type="retry">` carrying `<registration>` and `<keys>` now
+  injects the fresh Signal session** via `SessionInjector.inject_retry/4`
+  (preserving `@hosted.lid` domain separation, whatsmeow #1302), and
+  `ConversationSender` checks `own_device?/2` within the matching PN or LID
+  domain (Baileys #2856).
+
+### Security
+
+- Includes 0.5.12: `plug_crypto` updated in `mix.lock` to `2.2.1` (CVE-2026-33957 /
+  GHSA-ffw9-w85g-f2vh).
+
 ## [0.6.0-rc.2] - 2026-10-20
 
 ### Added
@@ -1513,7 +1554,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.2...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.3...HEAD
+[0.6.0-rc.3]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.2...v0.6.0-rc.3
 [0.6.0-rc.2]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.1...v0.6.0-rc.2
 [0.6.0-rc.1]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.6.0-rc.1
 [0.5.12]: https://github.com/tubedude/amarula/compare/v0.5.11...v0.5.12

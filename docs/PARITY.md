@@ -257,6 +257,46 @@ Baileys and whatsmeow for anything unmerged but worth tracking.
   WhatsApp Web service worker (and superseding Baileys' already-stale automated
   version-update branch #2818).
 
+**Ported from post-watermark upstream review (2026-10-24):**
+
+- **[Baileys #2866](https://github.com/WhiskeySockets/Baileys/pull/2866) /
+  #2858 & [whatsmeow `a238105488`](https://github.com/tulir/whatsmeow/commit/a2381054880054719843cf7e592169696b3488a5) —
+  top-level `<status>` stanza ack.** Top-level `<status>` nodes now route to
+  `:status_ack` and are acknowledged with `send_message_ack/2`, preventing
+  WhatsApp from disconnecting the socket after ~60–90 s when an unacked
+  `<status>` node arrives.
+- **[Baileys #2872](https://github.com/WhiskeySockets/Baileys/pull/2872) /
+  #2832 — link-code pairing fixes.** `link_code_pairing_nonce` is now sent as a
+  1-byte zero binary (`<<0>>`) rather than ASCII `"0"`, `link_code_companion_reg`
+  notifications ignore stages other than `nil` / `"primary_hello"`, and a
+  reconnect after `request_pairing_code/3` has set `creds.me` (while
+  `registered` is still `false`) stays on the registration handshake path.
+- **[Baileys #2840](https://github.com/WhiskeySockets/Baileys/pull/2840) /
+  #2810 — `offline="0"` treated as live.** `offline_node?/1` now treats `"0"`
+  alongside `nil` and `""` as online (`offline: false`).
+- **[Baileys #2864](https://github.com/WhiskeySockets/Baileys/pull/2864) —
+  undecryptable `from_me` messages.** When a message from one of our own
+  devices (`own_sender?`) fails to decrypt, it is plain-acked without sending a
+  `<receipt type="retry">` or `500` error nack, avoiding retry loops against
+  stale companion sessions.
+- **[Baileys #2841](https://github.com/WhiskeySockets/Baileys/pull/2841) /
+  #2794 & [whatsmeow #1294](https://github.com/tulir/whatsmeow/pull/1294) /
+  #1293 — `status@broadcast` LID audience & own-identity consistency.**
+  `post_status/3` now resolves PN audience members via `LidMappingFileStore`
+  when `me.lid` is present, pairs a LID audience with `me.lid` (`:lid`
+  addressing mode) and a PN audience with `me.id` (`:pn` addressing mode), and
+  rejects mixed LID + unmapped PN audiences with
+  `{:error, :mixed_status_addressing}` instead of sending a stanza that
+  WhatsApp drops or rejects with `400` / `479`.
+- **[whatsmeow #1302](https://github.com/tulir/whatsmeow/issues/1302) &
+  [Baileys #2856](https://github.com/WhiskeySockets/Baileys/pull/2856) —
+  retry receipt `<keys>` bundle extraction & domain-aware `own_device?/2`.**
+  `SessionInjector.inject_retry/4` now parses the `<registration>` and `<keys>`
+  bundle directly from `<receipt type="retry">` (preserving `@hosted.lid`'s
+  `_129` Signal domain), and `ConversationSender` compares LID/hosted.lid
+  devices against `me.lid` and PN/hosted devices against `me.id`.
+- **WA protocol version** bumped `1048663002` → `1051594400`.
+
 **Watching (open upstream — do not port speculatively):**
 - **PR #2693** (closed 2026-08-20, stale-bot auto-close, never merged) —
   broader desktop-platform fix superseding #2741: also maps `Mac OS` +

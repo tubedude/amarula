@@ -73,6 +73,7 @@ defmodule Amarula.Protocol.Socket.RouterTest do
     assert Router.route(n("receipt", %{"type" => "read"})) == :receipt_ack
     assert Router.route(n("receipt")) == :receipt_ack
     assert Router.route(n("call")) == :call_ack
+    assert Router.route(n("status")) == :status_ack
   end
 
   test "presence + chatstate route to :presence" do

@@ -1097,6 +1097,57 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
              GenServer.call(ctx.pid, {:post_status, "x", []})
   end
 
+  @tag me_lid: "20000000002@lid"
+  test "post_status resolves mapped PN audience to LID and uses me.lid as own identity (Baileys #2841, whatsmeow #1294)",
+       ctx do
+    member_lid = "20000000001@lid"
+    me_lid = "20000000002@lid"
+    LidMappingFileStore.store_mappings(ctx.conn, [{member_lid, @jid}])
+
+    task =
+      Task.async(fn ->
+        GenServer.call(ctx.pid, {:post_status, "lid story", [Amarula.Address.parse(@jid)]})
+      end)
+
+    usync_iq = recv_frame()
+    assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
+
+    queried =
+      usync_iq
+      |> NodeUtils.get_binary_node_child("usync")
+      |> NodeUtils.get_binary_node_child("list")
+      |> Map.get(:content)
+      |> Enum.map(&NodeUtils.get_attr(&1, "jid"))
+
+    assert member_lid in queried
+    assert me_lid in queried
+    refute @jid in queried
+    refute @me_jid in queried
+
+    inject(ctx, usync_members_reply(attr(usync_iq, "id"), [me_lid, member_lid]))
+
+    message = drain_until_message(ctx)
+    msg_id = message.attrs["id"]
+    assert message.attrs["to"] == "status@broadcast"
+
+    ack(ctx, msg_id)
+    assert {:ok, ^msg_id} = await_send_result(task)
+  end
+
+  @tag me_lid: "20000000002@lid"
+  test "post_status rejects a mixed LID and unmapped PN audience with :mixed_status_addressing",
+       ctx do
+    assert {:error, :mixed_status_addressing} =
+             GenServer.call(
+               ctx.pid,
+               {:post_status, "mixed",
+                [
+                  Amarula.Address.parse("20000000001@lid"),
+                  Amarula.Address.parse(@jid)
+                ]}
+             )
+  end
+
   test "lid group: USyncs participants by PN (not lid) and stores LID mappings", ctx do
     group = "120363000000000002@g.us"
     member_lid = "44444444444444@lid"

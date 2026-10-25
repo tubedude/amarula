@@ -43,7 +43,7 @@ defmodule Amarula.Connection.SessionOps do
   def maybe_migrate_sender_session(state, node) do
     author = NodeUtils.get_attr(node, "participant") || NodeUtils.get_attr(node, "from")
 
-    with true <- is_binary(author) and JID.jid_user?(author) and not JID.lid_user?(author),
+    with true <- JID.pn_user?(author),
          %{user: pn_user} <- JID.decode(author),
          false <- MapSet.member?(state.migrated_pn_sessions, pn_user),
          lid_user when is_binary(lid_user) <- LidMappingFileStore.lid_for_pn(state.conn, author),
@@ -186,7 +186,7 @@ defmodule Amarula.Connection.SessionOps do
   @doc "Opt-in PN→LID re-addressing for outbound sends when `resolve_pn_to_lid?` is enabled."
   @spec lid_target(term(), boolean(), String.t()) :: String.t()
   def lid_target(conn, true, jid) do
-    if JID.jid_user?(jid) and not JID.lid_user?(jid) do
+    if JID.pn_user?(jid) do
       case LidMappingFileStore.lid_for_pn(conn, JID.jid_normalized_user(jid)) do
         lid when is_binary(lid) -> JID.encode(%{user: lid, server: "lid"})
         _ -> jid

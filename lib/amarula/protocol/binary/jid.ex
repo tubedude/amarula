@@ -97,13 +97,19 @@ defmodule Amarula.Protocol.Binary.JID do
   defp ends?(_, _), do: false
 
   @doc """
-  Checks if a JID represents a user (PN user).
+  Checks if a JID represents a user (PN or LID, standard or hosted).
   """
   @spec jid_user?(binary() | nil) :: boolean()
   def jid_user?(jid) do
     ends?(jid, "@s.whatsapp.net") or ends?(jid, "@lid") or
       ends?(jid, "@hosted") or ends?(jid, "@hosted.lid")
   end
+
+  @doc """
+  Checks if a JID represents a phone-number (PN) user (`@s.whatsapp.net` or `@hosted`).
+  """
+  @spec pn_user?(binary() | nil) :: boolean()
+  def pn_user?(jid), do: ends?(jid, "@s.whatsapp.net") or ends?(jid, "@hosted")
 
   @doc """
   Checks if a JID represents a group.

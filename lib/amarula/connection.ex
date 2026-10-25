@@ -1818,7 +1818,7 @@ defmodule Amarula.Connection do
 
     case ConversationSender.deliver(opts, msg) do
       {:ok, sender} ->
-        state = ensure_sender_monitor(state, jid, sender)
+        state = ensure_sender_monitor(state, jid, sender, from)
         {:noreply, park_ack(state, msg_id, from, shape, jid)}
 
       {:error, reason} ->
@@ -1830,14 +1830,22 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Monitor a recipient's sender once, the first time we park a send for it. The
-  # sender is per recipient and may hold several in-flight sends; one monitor
-  # covers them all. On its :DOWN we fail every parked send for this jid. A
-  # fire-and-forget send (no parked entry) needs no monitor — but harmless to set.
-  # Monitor a recipient's sender once (the self()-bound Process.monitor stays
-  # here; AckLifecycle owns the map). One monitor covers all the recipient's
-  # in-flight sends; on its :DOWN we fail every parked send for this jid.
-  defp ensure_sender_monitor(state, jid, sender) do
+  # Monitor a recipient's sender once, the first time we park a send for it
+  # (`from != nil`). The sender is per recipient and may hold several in-flight
+  # sends; one monitor covers them all. On its :DOWN we fail every parked send for
+  # this jid.
+  #
+  # A fire-and-forget send (`from == nil`, e.g. a retry resend) parks nothing in
+  # `pending_acks`, so `resolve_ack` never runs `drop_monitor_if_idle` for it.
+  # Installing a monitor when `from == nil` would leave `jid` in `sender_monitors`
+  # until the sender idle-stops 30s later — and if a tracked send starts a fresh
+  # sender while that `:normal` `:DOWN` is still queued in our mailbox,
+  # `monitored?/2` would see the stale entry, skip monitoring the new sender, and
+  # the queued `:DOWN` would then delete the map entry, leaving the new parked send
+  # unmonitored.
+  defp ensure_sender_monitor(state, _jid, _sender, nil), do: state
+
+  defp ensure_sender_monitor(state, jid, sender, _from) do
     if AckLifecycle.monitored?(state, jid) do
       state
     else

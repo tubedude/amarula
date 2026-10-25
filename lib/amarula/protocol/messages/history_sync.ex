@@ -248,15 +248,11 @@ defmodule Amarula.Protocol.Messages.HistorySync do
 
   defp receipt_pn(_entry), do: nil
 
-  # A phone-number user. `JID.jid_user?/1` also accepts `@hosted.lid`, which
-  # `lid_user?/1` (an `@lid` suffix check) does NOT exclude — so test the PN
-  # servers positively rather than by subtraction, or a hosted LID would be
-  # persisted on the PN side of a mapping. Mirrors Baileys' `isPnUser ||
-  # isHostedPnUser`.
-  defp pn?(jid) when is_binary(jid),
-    do: String.ends_with?(jid, "@s.whatsapp.net") or String.ends_with?(jid, "@hosted")
-
-  defp pn?(_jid), do: false
+  # A phone-number user (`@s.whatsapp.net` or `@hosted`). `JID.jid_user?/1` also
+  # accepts `@hosted.lid`, which `lid_user?/1` does NOT exclude — `JID.pn_user?/1`
+  # tests the PN servers positively so a hosted LID is never persisted on the PN
+  # side of a mapping. Mirrors Baileys' `isPnUser || isHostedPnUser`.
+  defp pn?(jid), do: JID.pn_user?(jid)
 
   defp chat(convo) do
     %Chat{

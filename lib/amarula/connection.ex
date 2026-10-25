@@ -3163,9 +3163,7 @@ defmodule Amarula.Connection do
   end
 
   defp apply_app_state_reply(state, reply) do
-    scope(state)
-    |> AppStateOps.apply_reply(profile(state), reply)
-    |> Enum.each(fn {chats, contacts} ->
+    AppStateOps.apply_reply(scope(state), profile(state), reply, fn chats, contacts ->
       if chats != [], do: emit_to_subscribers(state, :chats_update, chats)
       if contacts != [], do: emit_to_subscribers(state, :contacts_update, contacts)
     end)

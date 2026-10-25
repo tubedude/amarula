@@ -87,10 +87,11 @@ defmodule Amarula.Connection.AppStateOps do
 
   @doc """
   Decode an app-state sync IQ `reply` against stored keys/versions, persist the
-  updated collection states, and return `[{chats, contacts}]` per collection.
+  updated collection state, and immediately invoke `on_collection.(chats, contacts)`
+  for each collection.
   """
-  @spec apply_reply(term(), term(), Node.t()) :: [{[term()], [term()]}]
-  def apply_reply(scope, profile, reply) do
+  @spec apply_reply(term(), term(), Node.t(), ([term()], [term()] -> any())) :: :ok
+  def apply_reply(scope, profile, reply, on_collection \\ fn _chats, _contacts -> :ok end) do
     get_key = fn id_b64 ->
       case Amarula.Storage.get(scope, profile, :app_state_sync_key, id_b64) do
         {:ok, key_data} -> Keys.expand(key_data)
@@ -100,7 +101,7 @@ defmodule Amarula.Connection.AppStateOps do
 
     reply
     |> Sync.extract_collections()
-    |> Enum.map(fn %{name: name, patches: patches} ->
+    |> Enum.each(fn %{name: name, patches: patches} ->
       prior = load_collection_state(scope, profile, name)
 
       {:ok, changes, new_state, mismatches} =
@@ -111,7 +112,8 @@ defmodule Amarula.Connection.AppStateOps do
       end)
 
       save_collection_state(scope, profile, name, new_state)
-      partition_changes(changes)
+      {chats, contacts} = partition_changes(changes)
+      on_collection.(chats, contacts)
     end)
   end
 

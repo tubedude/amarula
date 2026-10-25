@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0-rc.4] - 2026-10-25
+
+### Changed
+
+- Extracted pure protocol, crypto, and store operations out of `Amarula.Connection`
+  into `Amarula.Connection.{AppStateOps, Notifications, Pairing, Receive, SendOps, SessionOps}`
+  and `Amarula.Protocol.Socket.Login`, shrinking `lib/amarula/connection.ex` by ~30%.
+
+### Fixed
+
+- **Fire-and-forget retry resends no longer register a `ConversationSender` monitor**
+  (`from == nil` in `ensure_sender_monitor/4`), preventing a stale monitor's queued
+  idle-stop `:DOWN` from unmonitoring a subsequent tracked send to the same recipient.
+- **`@hosted.lid` JIDs are no longer misclassified as phone-number (`@s.whatsapp.net`)
+  JIDs** across `LidMappingFileStore`, `HistorySync`, group metadata parsing, and
+  outbound/inbound PN↔LID session resolution (`JID.pn_user?/1` and `JID.any_lid_user?/1`).
+
 ## [0.6.0-rc.3] - 2026-10-24
 
 ### Changed
@@ -1554,7 +1571,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.3...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.4...HEAD
+[0.6.0-rc.4]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.3...v0.6.0-rc.4
 [0.6.0-rc.3]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.2...v0.6.0-rc.3
 [0.6.0-rc.2]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.1...v0.6.0-rc.2
 [0.6.0-rc.1]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.6.0-rc.1

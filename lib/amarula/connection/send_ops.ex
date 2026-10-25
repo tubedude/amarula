@@ -131,4 +131,78 @@ defmodule Amarula.Connection.SendOps do
   def default_send_reply(:ok, msg_id), do: {:ok, msg_id}
   def default_send_reply({:error, reason}, _msg_id), do: {:error, reason}
   def default_send_reply({:halted, reason}, _msg_id), do: {:error, {:halted, reason}}
+
+  @doc """
+  Validate and resolve a consumer send `target` (a raw JID string or `%Amarula.Address{}`)
+  into `{:ok, jid}` or `{:error, reason}`.
+
+  Refuses unmodelled address kinds, `status@broadcast` (which must go through
+  `post_status`), newsletters, broadcast lists, and Meta AI bot targets.
+  """
+  @spec resolve_target(term()) :: {:ok, String.t()} | {:error, term()}
+  def resolve_target(target) when is_binary(target) do
+    case Amarula.Address.parse(target) do
+      %Amarula.Address{kind: :unsupported, server: server} -> {:error, {:unsupported, server}}
+      %Amarula.Address{kind: :status} -> {:error, :status_post_unsupported}
+      %Amarula.Address{kind: :newsletter} -> {:error, :newsletter_send_unsupported}
+      %Amarula.Address{kind: :broadcast} -> {:error, :broadcast_list_send_unsupported}
+      %Amarula.Address{kind: :bot} -> {:error, :bot_send_unsupported}
+      _ -> {:ok, target}
+    end
+  end
+
+  def resolve_target(%Amarula.Address{kind: :status}), do: {:error, :status_post_unsupported}
+
+  def resolve_target(%Amarula.Address{kind: :newsletter}),
+    do: {:error, :newsletter_send_unsupported}
+
+  def resolve_target(%Amarula.Address{kind: :broadcast}),
+    do: {:error, :broadcast_list_send_unsupported}
+
+  def resolve_target(%Amarula.Address{kind: :bot}), do: {:error, :bot_send_unsupported}
+  def resolve_target(target), do: Amarula.Address.to_jid(target)
+
+  @doc """
+  Normalize and validate a status audience list into `{:ok, [jid]}` (deduped
+  account-level PN/LID JIDs) or `{:error, {:invalid_audience, culprit}}`.
+  """
+  @spec status_audience(Enumerable.t()) ::
+          {:ok, [String.t()]} | {:error, {:invalid_audience, term()}}
+  def status_audience(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
+      case Amarula.Address.parse(entry) do
+        %Amarula.Address{kind: kind} = addr when kind in [:pn, :lid] ->
+          {:cont, {:ok, [addr |> Amarula.Address.normalize() |> Amarula.Address.to_jid!() | acc]}}
+
+        _ ->
+          {:halt, {:error, {:invalid_audience, entry}}}
+      end
+    end)
+    |> case do
+      {:ok, []} -> {:error, {:invalid_audience, :empty}}
+      {:ok, jids} -> {:ok, jids |> Enum.reverse() |> Enum.uniq()}
+      error -> error
+    end
+  end
+
+  @doc """
+  Build the fire-and-forget resend payload for a cached message requested by a
+  retry receipt, preserving original `stanza_attrs` and re-deriving `mediatype`
+  per-`<enc>` attributes.
+  """
+  @spec resend_payload(String.t(), struct(), map()) :: map()
+  def resend_payload(msg_id, message, stanza_attrs) do
+    enc_attrs =
+      case MessageContent.media_type(message) do
+        nil -> %{}
+        type -> %{"mediatype" => type}
+      end
+
+    %{
+      msg_id: msg_id,
+      message: message,
+      stanza_attrs: stanza_attrs,
+      enc_attrs: enc_attrs
+    }
+  end
 end

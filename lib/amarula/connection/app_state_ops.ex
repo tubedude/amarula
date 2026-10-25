@@ -1,12 +1,12 @@
 defmodule Amarula.Connection.AppStateOps do
   @moduledoc """
-  Pure app-state-sync helpers for `Amarula.Connection`.
-
-  The sync flow is Storage- and IQ-bound — requesting patches, persisting
-  collection state, decoding against stored keys, emitting events — and stays on
-  `Connection`. What's pure lives here: pulling shared sync-keys out of incoming
-  messages, and partitioning decoded changes into the chat/contact event lists.
+  App-state-sync helpers and storage/decode orchestration for `Amarula.Connection`.
   """
+
+  require Logger
+
+  alias Amarula.Protocol.AppState.{Keys, Patch, Sync}
+  alias Amarula.Protocol.Binary.Node
 
   @doc """
   Extract any `appStateSyncKeyShare` keys carried in a message as
@@ -38,5 +38,91 @@ defmodule Amarula.Connection.AppStateOps do
     chats = for {:chat, c} <- changes, do: c
     contacts = for {:contact, c} <- changes, do: c
     {chats, contacts}
+  end
+
+  @doc """
+  Extract and persist any `appStateSyncKeyShare` keys in `messages`.
+  Returns the number of keys stored (`0` when none were present).
+  """
+  @spec store_shared_keys(term(), term(), Enumerable.t()) :: non_neg_integer()
+  def store_shared_keys(scope, profile, messages) do
+    case sync_keys_in(messages) do
+      [] ->
+        0
+
+      keys ->
+        Enum.each(keys, fn {key_id_b64, key_data} ->
+          Amarula.Storage.put(scope, profile, :app_state_sync_key, key_id_b64, key_data)
+        end)
+
+        length(keys)
+    end
+  end
+
+  @doc """
+  Build the `<iq xmlns=\"w:sync:app:state\">` request stanza for `names` using
+  each collection's stored version.
+  """
+  @spec resync_iq(term(), term(), [String.t()]) :: Node.t()
+  def resync_iq(scope, profile, names) do
+    collections =
+      Enum.map(names, fn name ->
+        st = load_collection_state(scope, profile, name)
+        {name, st.version, st.version == 0}
+      end)
+
+    Sync.request_iq(collections)
+  end
+
+  @doc """
+  Reset the stored state of `names` (`:all` or list of collection names) to version 0
+  and return the resolved list of collection names.
+  """
+  @spec reset_collections(term(), term(), :all | [String.t()]) :: [String.t()]
+  def reset_collections(scope, profile, names) do
+    resolved = if names == :all, do: Sync.collections(), else: names
+    Enum.each(resolved, &save_collection_state(scope, profile, &1, Patch.new_state()))
+    resolved
+  end
+
+  @doc """
+  Decode an app-state sync IQ `reply` against stored keys/versions, persist the
+  updated collection states, and return `[{chats, contacts}]` per collection.
+  """
+  @spec apply_reply(term(), term(), Node.t()) :: [{[term()], [term()]}]
+  def apply_reply(scope, profile, reply) do
+    get_key = fn id_b64 ->
+      case Amarula.Storage.get(scope, profile, :app_state_sync_key, id_b64) do
+        {:ok, key_data} -> Keys.expand(key_data)
+        :error -> nil
+      end
+    end
+
+    reply
+    |> Sync.extract_collections()
+    |> Enum.map(fn %{name: name, patches: patches} ->
+      prior = load_collection_state(scope, profile, name)
+
+      {:ok, changes, new_state, mismatches} =
+        Sync.decode_collection(patches, prior, get_key, name)
+
+      Enum.each(mismatches, fn reason ->
+        Logger.warning("app-state sync for #{name}: #{inspect(reason)}")
+      end)
+
+      save_collection_state(scope, profile, name, new_state)
+      partition_changes(changes)
+    end)
+  end
+
+  defp load_collection_state(scope, profile, name) do
+    case Amarula.Storage.get(scope, profile, :app_state_version, name) do
+      {:ok, st} -> st
+      :error -> Patch.new_state()
+    end
+  end
+
+  defp save_collection_state(scope, profile, name, st) do
+    Amarula.Storage.put(scope, profile, :app_state_version, name, st)
   end
 end

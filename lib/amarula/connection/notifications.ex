@@ -112,4 +112,20 @@ defmodule Amarula.Connection.Notifications do
   end
 
   defp author(_), do: nil
+
+  @doc "Resolve the sender JID for a `privacy_token` notification (`sender_lid` when a LID, else `from`)."
+  @spec privacy_token_sender(Node.t()) :: String.t() | nil
+  def privacy_token_sender(node) do
+    from = NodeUtils.get_attr(node, "from")
+    sender_lid = NodeUtils.get_attr(node, "sender_lid")
+    if is_binary(sender_lid) and JID.lid_user?(sender_lid), do: sender_lid, else: from
+  end
+
+  @doc "Normalized bare JIDs for our own `me.id` and `me.lid` identities."
+  @spec own_device_users(map()) :: [String.t()]
+  def own_device_users(me) when is_map(me) do
+    [Map.get(me, :id), Map.get(me, :lid)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&JID.jid_normalized_user/1)
+  end
 end

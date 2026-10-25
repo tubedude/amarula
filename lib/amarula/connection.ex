@@ -19,18 +19,16 @@ defmodule Amarula.Connection do
 
   alias Amarula.Protocol.Socket.{Types, WebSocketClient, ConnectionSupervisor}
   alias Amarula.Protocol.{Crypto.NoiseHandler, Auth.AuthUtils, Socket.ConnectionValidator}
-  alias Amarula.Protocol.Auth.{DeviceIdentity, CompanionReg}
   alias Amarula.Protocol.Crypto.Crypto
   alias Amarula.ProfileRegistry
   alias Amarula.Protocol.Socket.{IQ, Login, Router}
   alias Amarula.Protocol.Binary.{Decoder, JID, NodeUtils, Encoder, Node}
   alias Amarula.Protocol.Messages.{ConversationSender, Media, MessageEncoder}
   alias Amarula.Protocol.Messages.{HistorySync, MessageDecryptor}
-  alias Amarula.Protocol.Messages.{EditEnvelope, MessageContent}
   alias Amarula.MessageSecretStore
   alias Amarula.Protocol.Presence
   alias Amarula.Protocol.Call
-  alias Amarula.Protocol.Signal.DecryptError
+  alias Amarula.Protocol.Proto
 
   # A send blocks the caller until the per-recipient sender finishes (up to three
   # IQ round-trips for a new recipient). The client-side call timeout must exceed
@@ -72,14 +70,23 @@ defmodule Amarula.Connection do
   # The <ack> wait (default 30s, config :ack_timeout_ms) lives on
   # Connection.AckLifecycle now; send_call_timeout/0 must still exceed it.
   alias Amarula.Protocol.Crypto.Constants
-  alias Amarula.Protocol.Proto
 
-  alias Amarula.Protocol.Signal.{PreKeys, SessionCustodian, SessionInjector, SessionStore}
-  alias Amarula.Protocol.Signal.{DeviceListCache, LidMappingFileStore, TcTokenStore}
+  alias Amarula.Protocol.Signal.{PreKeys, SessionInjector, SessionStore}
+  alias Amarula.Protocol.Signal.{DeviceListCache, TcTokenStore}
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
-  alias Amarula.Connection.{SendOps, GroupOps, PreKeyOps, Pairing, Notifications, Receive}
-  alias Amarula.Connection.{AppStateOps, AckLifecycle}
+
+  alias Amarula.Connection.{
+    AckLifecycle,
+    AppStateOps,
+    GroupOps,
+    Notifications,
+    Pairing,
+    PreKeyOps,
+    Receive,
+    SendOps,
+    SessionOps
+  }
 
   # This is the per-connection coordinator: one process owning the websocket,
   # Noise state, IQ correlation, ack parking, and several in-flight task maps (see
@@ -292,18 +299,6 @@ defmodule Amarula.Connection do
 
   defp already_running_reason({:already_registered, pid}), do: {:already_running, pid}
   defp already_running_reason(_), do: nil
-
-  # LID → PN canonicalization. Non-LID jids and unmapped LIDs pass through.
-  defp do_canonical_jid(conn, jid) do
-    with true <- JID.lid_user?(jid),
-         pn_user when is_binary(pn_user) <- LidMappingFileStore.pn_for_lid(conn, jid),
-         %{} = decoded <- JID.decode(jid) do
-      device = Map.get(decoded, :device, 0) || 0
-      JID.encode(%{user: pn_user, server: "s.whatsapp.net", device: device})
-    else
-      _ -> jid
-    end
-  end
 
   # Internal: the documented entry point is `Amarula.connect/2`.
   @doc false
@@ -727,7 +722,7 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:canonical_jid, jid}, _from, state) do
-    {:reply, do_canonical_jid(state.conn, jid), state}
+    {:reply, SessionOps.canonical_jid(state.conn, jid), state}
   end
 
   @impl GenServer
@@ -736,7 +731,7 @@ defmodule Amarula.Connection do
         _from,
         state
       ) do
-    {:reply, own_account?(state, to), state}
+    {:reply, Receive.own_account?(state, to), state}
   end
 
   def handle_call({:own_chat?, %Amarula.Msg{}}, _from, state) do
@@ -855,7 +850,7 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_call({:request_pairing_code, phone, custom_code}, _from, state) do
-    case build_pairing_code(custom_code) do
+    case Pairing.build_pairing_code(custom_code) do
       {:ok, code} ->
         state = start_link_code_pairing(state, phone, code)
         {:reply, {:ok, code}, state}
@@ -898,7 +893,7 @@ defmodule Amarula.Connection do
   # it for every other send, so a bot replying to a status channel cannot post.
   @impl GenServer
   def handle_call({:post_status, text, audience}, from, state) do
-    case status_audience(audience) do
+    case SendOps.status_audience(audience) do
       {:ok, jids} ->
         payload = %{text: text, status_audience: jids}
         deliver_resolved(state, "status@broadcast", payload, from, &SendOps.default_send_reply/2)
@@ -966,12 +961,8 @@ defmodule Amarula.Connection do
   # move need a fresh bundle (fetching for a migrated one would clobber the ratchet).
   @impl GenServer
   def handle_call({:migrate_pn_sessions, pairs}, _from, state) do
-    # Enumerate the session store ONCE for the whole batch (not per pair), then
-    # move each pair's ratchet; the lids that had nothing to move fall back to a
-    # fresh bundle fetch.
-    case SessionStore.list_session_keys(conn(state)) do
-      {:ok, keys} ->
-        {needs_fetch, state} = Enum.flat_map_reduce(pairs, state, &migrate_pair(&1, &2, keys))
+    case SessionOps.migrate_pairs(pairs, state) do
+      {:ok, needs_fetch, state} ->
         {:reply, :ok, force_refresh_sessions(state, needs_fetch)}
 
       {:error, reason} ->
@@ -1017,23 +1008,14 @@ defmodule Amarula.Connection do
 
   @impl GenServer
   def handle_cast({:notify_lid_mappings, pairs}, state) do
-    mappings =
-      Enum.map(pairs, fn {lid, pn} ->
-        %{lid: Amarula.Address.parse(lid), pn: Amarula.Address.parse(pn)}
-      end)
-
-    emit_to_subscribers(state, :lid_mapping_update, mappings)
+    emit_to_subscribers(state, :lid_mapping_update, SessionOps.format_lid_mappings(pairs))
     {:noreply, state}
   end
 
   @impl GenServer
   def handle_cast({:force_resync_app_state, names}, state) do
-    names = if names == :all, do: Amarula.Protocol.AppState.Sync.collections(), else: names
+    names = AppStateOps.reset_collections(scope(state), profile(state), names)
     Logger.debug("Force-resyncing app-state collection(s): #{inspect(names)}")
-    Enum.each(names, &reset_collection_state(state, &1))
-    # Bypasses the `:sync_app_state` gate on purpose: that flag suppresses the
-    # automatic triggers, and this reset already wiped the local versions — going
-    # through the gate would leave them at 0 with no request sent.
     {:noreply, do_resync_app_state(state, names)}
   end
 
@@ -1786,66 +1768,9 @@ defmodule Amarula.Connection do
   # live path refuses, the sandbox would certify a bot that breaks in production.
   # Both modes must agree on what is addressable.
   defp deliver_async(state, target, payload, from, shape) do
-    case resolve_target(target) do
+    case SendOps.resolve_target(target) do
       {:ok, jid} -> deliver_resolved(state, jid, payload, from, shape)
       {:error, reason} -> refuse_send(state, from, shape, payload, reason)
-    end
-  end
-
-  # A raw jid STRING has to face the same check as a parsed `%Address{}`.
-  # `Address.to_jid/1` passes strings through untouched by design — it is the "I
-  # already hold a jid" path — but on the consumer send boundary that is a hole:
-  # `send_text(conn, "status@broadcast", …)` would post a status purely because
-  # the caller passed a string instead of `msg.channel` (#50).
-  #
-  # Only unmodelled kinds and the status feed are refused; everything else returns
-  # the ORIGINAL string rather than a re-encoded one, so this cannot quietly
-  # rewrite a target (`@c.us` would otherwise normalize to `@s.whatsapp.net`).
-  defp resolve_target(target) when is_binary(target) do
-    case Amarula.Address.parse(target) do
-      %Amarula.Address{kind: :unsupported, server: server} -> {:error, {:unsupported, server}}
-      %Amarula.Address{kind: :status} -> {:error, :status_post_unsupported}
-      %Amarula.Address{kind: :newsletter} -> {:error, :newsletter_send_unsupported}
-      %Amarula.Address{kind: :broadcast} -> {:error, :broadcast_list_send_unsupported}
-      %Amarula.Address{kind: :bot} -> {:error, :bot_send_unsupported}
-      _ -> {:ok, target}
-    end
-  end
-
-  # `status@broadcast` is a real jid, but sending to it POSTS a status to every
-  # contact. A bot replying to `msg.channel` of a status post must not do that —
-  # the reply belongs to `msg.from`, the author.
-  defp resolve_target(%Amarula.Address{kind: :status}), do: {:error, :status_post_unsupported}
-  # Channel posts are plaintext stanzas of their own, sent only by channel admins —
-  # not the Signal send pipeline. Refuse until that is implemented.
-  defp resolve_target(%Amarula.Address{kind: :newsletter}),
-    do: {:error, :newsletter_send_unsupported}
-
-  # Sending to a broadcast list means fanning out to members we do not know.
-  defp resolve_target(%Amarula.Address{kind: :broadcast}),
-    do: {:error, :broadcast_list_send_unsupported}
-
-  # Meta AI takes its own send protocol (bot USync profile, bot metadata), which is
-  # not implemented.
-  defp resolve_target(%Amarula.Address{kind: :bot}), do: {:error, :bot_send_unsupported}
-  defp resolve_target(target), do: Amarula.Address.to_jid(target)
-
-  # Account-level PN/LID jids for a status audience, deduped. Anything else (a group,
-  # the status feed itself, a non-jid) is refused by name.
-  defp status_audience(entries) do
-    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
-      case Amarula.Address.parse(entry) do
-        %Amarula.Address{kind: kind} = addr when kind in [:pn, :lid] ->
-          {:cont, {:ok, [addr |> Amarula.Address.normalize() |> Amarula.Address.to_jid!() | acc]}}
-
-        _ ->
-          {:halt, {:error, {:invalid_audience, entry}}}
-      end
-    end)
-    |> case do
-      {:ok, []} -> {:error, {:invalid_audience, :empty}}
-      {:ok, jids} -> {:ok, jids |> Enum.reverse() |> Enum.uniq()}
-      error -> error
     end
   end
 
@@ -2336,70 +2261,15 @@ defmodule Amarula.Connection do
   end
 
   defp resend_from_cache(state, msg_id, participant) do
-    # Built-in DETS cache first, then the consumer-supplied get_message callback
-    # (a store plugin) for messages older than the cache.
-    case lookup_for_resend(state, msg_id) do
+    case Receive.lookup_for_resend(retry_cache(state), profile(state), state.config, msg_id) do
       {recipient, message, stanza_attrs} ->
         Logger.debug("Resending #{msg_id} to #{participant} (retry)")
-
-        # Re-encrypt + resend the original (same id, so the recipient replaces
-        # rather than duplicates). A fresh ConversationSender pass picks up the
-        # session the retry's <keys> bundle just injected. Replay the original
-        # stanza_attrs so a peer/edit stanza keeps its category/edit on resend.
-        # Per-enc attrs aren't cached — re-derive them from the message itself
-        # (deterministic), so a retried MEDIA resend keeps its `mediatype` and
-        # the server doesn't 479 the retry.
-        # Fire-and-forget: no caller is waiting, so `from` is nil.
-        enc_attrs =
-          case MessageContent.media_type(message) do
-            nil -> %{}
-            type -> %{"mediatype" => type}
-          end
-
-        payload = %{
-          msg_id: msg_id,
-          message: message,
-          stanza_attrs: stanza_attrs,
-          enc_attrs: enc_attrs
-        }
-
+        payload = SendOps.resend_payload(msg_id, message, stanza_attrs)
         deliver_async(state, recipient, payload, nil)
 
       nil ->
         Logger.debug("Retry for #{msg_id} but no cached/stored copy — cannot resend")
     end
-  end
-
-  defp lookup_for_resend(state, msg_id) do
-    case Amarula.RetryCache.get(retry_cache(state), profile(state), msg_id) do
-      {:ok, %{recipient_jid: recipient, message: message} = entry} ->
-        {recipient, message, Map.get(entry, :stanza_attrs, %{})}
-
-      :error ->
-        case get_message_via_callback(state, msg_id) do
-          {recipient, message} -> {recipient, message, %{}}
-          nil -> nil
-        end
-    end
-  end
-
-  # config[:get_message] is `fn msg_id -> {recipient_jid, %Proto.Message{}} | nil`,
-  # supplied by a consumer store plugin. Absent/erroring callback → no resend.
-  defp get_message_via_callback(state, msg_id) do
-    case Map.get(state.config, :get_message) do
-      fun when is_function(fun, 1) ->
-        case fun.(msg_id) do
-          {recipient, %{} = message} when is_binary(recipient) -> {recipient, message}
-          _ -> nil
-        end
-
-      _ ->
-        nil
-    end
-  rescue
-    error ->
-      Logger.warning("get_message callback failed for #{msg_id}: #{inspect(error)}")
-      nil
   end
 
   # Every notification must be acked or the server stops delivering; then we
@@ -2470,16 +2340,13 @@ defmodule Amarula.Connection do
         state
 
       :own_devices ->
-        # Our own linked-device set changed (a device added/removed elsewhere).
-        # Drop our own cached device list so the next send re-USyncs it — otherwise
-        # a newly-linked device would be missing from the encrypt recipients.
-        me = me(state)
-
-        own =
-          [me[:id], me[:lid]] |> Enum.reject(&is_nil/1) |> Enum.map(&JID.jid_normalized_user/1)
-
         Logger.debug("account_sync: own device set changed — dropping own device cache")
-        Enum.each(own, &DeviceListCache.delete(conn(state), &1))
+
+        state
+        |> me()
+        |> Notifications.own_device_users()
+        |> Enum.each(&DeviceListCache.delete(conn(state), &1))
+
         state
 
       :ignore ->
@@ -2487,10 +2354,7 @@ defmodule Amarula.Connection do
     end
   end
 
-  # devices — a contact's device list changed (add/remove/update). Rather than
-  # apply the delta (a partial list would look authoritative — Baileys defers when
-  # uncached), we drop the cached device list for each affected user so the next
-  # send re-fetches a fresh list via USync. A "remove" also drops their sessions.
+  # devices — a contact's device list changed (add/remove/update).
   defp dispatch_notification(state, "devices", node) do
     case Notifications.devices(node) do
       {tag, users} ->
@@ -2503,8 +2367,7 @@ defmodule Amarula.Connection do
     end
   end
 
-  # picture — a contact/group avatar changed; surface it as a contact update so a
-  # consumer can refresh the image (Baileys emits contacts.update imgUrl).
+  # picture — a contact/group avatar changed; surface it as a contact update.
   defp dispatch_notification(state, "picture", node) do
     update = Notifications.picture(node)
     Logger.debug("picture #{update.img_url} for #{update.id}")
@@ -2512,47 +2375,25 @@ defmodule Amarula.Connection do
     state
   end
 
-  # link_code_companion_reg — the phone confirmed our pairing code. Finish the
-  # handshake (companion_finish IQ + adv_secret re-key + registered=true); the
-  # server's subsequent 515 then logs us in via the normal login path.
-  #
-  # The same tag also arrives as a fieldless notification (Baileys #2600). Guard
-  # buffer extraction with `with` so a missing field logs-and-skips rather than
-  # crashing the connection.
+  # link_code_companion_reg — the phone confirmed our pairing code.
   defp dispatch_notification(state, "link_code_companion_reg", node) do
-    inner = NodeUtils.get_binary_node_child(node, "link_code_companion_reg")
+    case Pairing.parse_link_code_notification(node) do
+      {:ok, ref, primary_identity_pub, wrapped} ->
+        finish_link_code_pairing(state, ref, primary_identity_pub, wrapped)
 
-    with reg when not is_nil(reg) <- inner,
-         stage when stage in [nil, "primary_hello"] <- NodeUtils.get_attr(reg, "stage"),
-         ref when not is_nil(ref) <- child_buffer(reg, "link_code_pairing_ref"),
-         primary_identity_pub when not is_nil(primary_identity_pub) <-
-           child_buffer(reg, "primary_identity_pub"),
-         wrapped when not is_nil(wrapped) <-
-           child_buffer(reg, "link_code_pairing_wrapped_primary_ephemeral_pub") do
-      finish_link_code_pairing(state, ref, primary_identity_pub, wrapped)
-    else
-      _ ->
+      :ignore ->
         Logger.debug("link_code_companion_reg notification missing fields — skipping")
         state
     end
   end
 
-  # companion_reg_refresh — while QR pairing is pending, WhatsApp can retire the
-  # advertisement secret currently shown in the QR. Rotate and persist that
-  # secret, then re-emit the current QR ref without consuming the next ref or
-  # touching its expiry timer. Once `me` exists the secret belongs to a completed
-  # or phone-code pairing and must not be rotated.
+  # companion_reg_refresh — rotate QR advertisement secret while QR pairing is pending.
   defp dispatch_notification(state, "companion_reg_refresh", node) do
-    valid_child? =
-      Enum.any?(["companion_reg_refresh", "pair-device-rotate-qr"], fn tag ->
-        not is_nil(NodeUtils.get_binary_node_child(node, tag))
-      end)
-
-    case {valid_child?, Map.get(state.auth_creds, :me), state.qr_ref} do
+    case {Pairing.rotate_qr_adv_secret?(node), Map.get(state.auth_creds, :me), state.qr_ref} do
       {true, nil, ref} when is_binary(ref) ->
         adv_secret_key = Crypto.random_bytes(32) |> Base.encode64()
         state = update_creds(state, %{state.auth_creds | adv_secret_key: adv_secret_key})
-        qr = generate_qr_code(ref, state.auth_creds, state.config)
+        qr = Pairing.generate_qr_code(ref, state.auth_creds, state.config)
 
         emit_to_subscribers(state, :connection_update, %{
           connection: :connecting,
@@ -2567,34 +2408,20 @@ defmodule Amarula.Connection do
     end
   end
 
-  # mediaretry — the phone's reply to a server-error receipt we sent to re-request
-  # an expired media blob. Decode it against the media_key we parked and reply to
-  # the waiting retry_media/2 caller with {:ok, new_direct_path} or an error.
   defp dispatch_notification(state, "mediaretry", node) do
     handle_media_retry_notification(state, node)
   end
 
-  # privacy_token — a peer's trusted-contact token for us, pushed unsolicited
-  # (Baileys handlePrivacyTokenNotification). This is the actual channel new
-  # tokens arrive on; our own issuePrivacyTokens IQ reply is commonly empty.
-  # Without this, a freshly-linked device can never accumulate tokens and 1:1
-  # sends to new contacts keep hitting ack error 463. `sender_lid` (when it's
-  # actually a LID) takes precedence over `from` — a token node's own `jid`
-  # attr here is *our* device jid, not the sender's, so TcTokenStore ignores it
-  # in favor of this resolved fallback (see TcTokenStore.store_notification/3).
   defp dispatch_notification(state, "privacy_token", node) do
-    from = NodeUtils.get_attr(node, "from")
-    sender_lid = NodeUtils.get_attr(node, "sender_lid")
+    case Notifications.privacy_token_sender(node) do
+      fallback_jid when is_binary(fallback_jid) ->
+        Logger.debug("privacy_token notification from #{fallback_jid}")
+        TcTokenStore.store_notification(conn(state), node, fallback_jid)
+        state
 
-    fallback_jid =
-      if is_binary(sender_lid) and JID.lid_user?(sender_lid), do: sender_lid, else: from
-
-    if is_binary(fallback_jid) do
-      Logger.debug("privacy_token notification from #{fallback_jid}")
-      TcTokenStore.store_notification(conn(state), node, fallback_jid)
+      _ ->
+        state
     end
-
-    state
   end
 
   defp dispatch_notification(state, type, _node) do
@@ -2617,61 +2444,16 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Mirror of Baileys' link_code_companion_reg handler: decipher the phone's
-  # ephemeral key, build the encrypted key bundle, re-key adv_secret, send
-  # companion_finish, mark registered, emit :pairing_success.
   defp finish_link_code_pairing(state, ref, primary_identity_pub, wrapped) do
-    creds = state.auth_creds
-
-    code_pairing_pub = decipher_link_public_key(creds, wrapped)
-
-    companion_shared =
-      Crypto.shared_key(creds.pairing_ephemeral_key_pair.private, code_pairing_pub)
-
-    random = Crypto.random_bytes(32)
-    link_code_salt = Crypto.random_bytes(32)
-
-    expanded =
-      Crypto.hkdf(
-        companion_shared,
-        32,
-        link_code_salt,
-        "link_code_pairing_key_bundle_encryption_key"
+    {creds, iq} =
+      Pairing.finish_link_code(
+        state.auth_creds,
+        me(state).id,
+        generate_message_tag(state),
+        ref,
+        primary_identity_pub,
+        wrapped
       )
-
-    payload = creds.signed_identity_key.public <> primary_identity_pub <> random
-    iv = Crypto.random_bytes(12)
-    {:ok, encrypted} = Crypto.aes_encrypt_gcm(payload, expanded, iv, <<>>)
-    encrypted_payload = link_code_salt <> iv <> encrypted
-
-    identity_shared = Crypto.shared_key(creds.signed_identity_key.private, primary_identity_pub)
-
-    adv_secret =
-      Crypto.hkdf(companion_shared <> identity_shared <> random, 32, <<>>, "adv_secret")
-      |> Base.encode64()
-
-    creds = %{creds | adv_secret_key: adv_secret, registered: true}
-
-    iq = %Node{
-      tag: "iq",
-      attrs: [
-        {"to", Constants.s_whatsapp_net()},
-        {"type", "set"},
-        {"id", generate_message_tag(state)},
-        {"xmlns", "md"}
-      ],
-      content: [
-        %Node{
-          tag: "link_code_companion_reg",
-          attrs: [{"jid", me(state).id}, {"stage", "companion_finish"}],
-          content: [
-            child("link_code_pairing_wrapped_key_bundle", encrypted_payload),
-            child("companion_identity_public", creds.signed_identity_key.public),
-            child("link_code_pairing_ref", ref)
-          ]
-        }
-      ]
-    }
 
     Logger.info("Finishing link-code pairing — sending companion_finish")
     state = send_binary_node(state, iq)
@@ -2679,27 +2461,6 @@ defmodule Amarula.Connection do
     emit_to_subscribers(state, :pairing_success, %{via: :link_code})
   end
 
-  # salt(0..32) <> iv(32..48) <> payload(48..80); AES-CTR-decrypt the wrapped pub.
-  defp decipher_link_public_key(creds, buffer) do
-    <<salt::binary-size(32), iv::binary-size(16), payload::binary-size(32), _rest::binary>> =
-      buffer
-
-    key = Crypto.derive_pairing_code_key(creds.pairing_code, salt)
-    Crypto.aes_decrypt_ctr(payload, key, iv)
-  end
-
-  # Fetch a named child's content, but only if it's a binary buffer (the #2600
-  # guard — a fieldless notification yields nil, not a crash).
-  defp child_buffer(node, tag) do
-    case NodeUtils.get_binary_node_child(node, tag) do
-      %Node{content: content} when is_binary(content) -> content
-      _ -> nil
-    end
-  end
-
-  # No `from` (or the server jid) → pre-key top-up; any other origin is a peer
-  # identity change. (Guards can't call Constants, so the server-jid compare is in
-  # the body.)
   defp handle_encrypt_notification(state, node, nil), do: do_prekey_topup(state, node)
 
   defp handle_encrypt_notification(state, node, from) do
@@ -2711,12 +2472,7 @@ defmodule Amarula.Connection do
   end
 
   defp do_prekey_topup(state, node) do
-    count =
-      case NodeUtils.get_binary_node_child(node, "count") do
-        %Node{} = c -> String.to_integer(NodeUtils.get_attr(c, "value") || "0")
-        _ -> 0
-      end
-
+    count = PreKeyOps.server_count(node)
     low_water = PreKeys.low_water_pre_key_count()
 
     if count <= low_water do
@@ -2729,22 +2485,12 @@ defmodule Amarula.Connection do
     end
   end
 
-  # A peer's identity changed. Only act if we ALREADY have a session with them (a
-  # new contact needs none), and skip during offline batch processing (it'd refresh
-  # stale state). Otherwise wipe the stale session(s) and re-fetch their key bundle
-  # so our session matches their new identity — and nothing encrypts to the old one
-  # in the gap.
   defp maybe_refresh_identity(state, node, from) do
-    offline? = offline_node?(node)
-
-    if offline? do
+    if Receive.offline_node?(node) do
       Logger.debug("encrypt(identity) from #{from}: offline batch — deferring refresh")
       state
     else
-      # Wipe up front so a concurrent send can't encrypt to the old identity in the
-      # window before the refreshed bundle lands. No session → a new contact,
-      # nothing to refresh.
-      case wipe_identity_sessions(state, from) do
+      case SessionOps.wipe_identity_sessions(conn(state), state.instance_id, from) do
         n when n > 0 ->
           Logger.debug("encrypt(identity) from #{from}: wiped #{n} stale session(s), refreshing")
           force_refresh_sessions(state, [from])
@@ -2756,286 +2502,56 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Delete all of `from`'s 1:1 sessions (every device). Returns the count deleted, or
-  # 0 when we can't resolve the signal-user or enumerate the store. LID-aware, so it
-  # matches wherever the session actually lives after a PN→LID migration.
-  defp wipe_identity_sessions(state, from) do
-    conn = conn(state)
-
-    with signal_user when is_binary(signal_user) <- LidMappingFileStore.signal_user(conn, from),
-         {:ok, keys} <- SessionStore.list_session_keys(conn) do
-      prefix = signal_user <> "."
-
-      # Delete each device's session THROUGH its custodian, so an in-flight encrypt
-      # on that address serializes against the wipe and can't resurrect it.
-      keys
-      |> Enum.filter(&String.starts_with?(&1, prefix))
-      |> Enum.reduce(0, &wipe_one_session(&1, state, conn, &2))
-    else
-      _ -> 0
-    end
-  end
-
-  defp wipe_one_session(addr, state, conn, deleted) do
-    case SessionCustodian.replace(state.instance_id, conn, addr, nil) do
-      :ok -> deleted + 1
-      _ -> deleted
-    end
-  end
-
-  # Before decrypting, if the sender is PN-addressed but we know their LID, move
-  # their PN session onto the LID address. Idempotent per pn user per connection
-  # (the migrated_pn_sessions guard also spares a storage read for repeat senders).
-  defp maybe_migrate_sender_session(state, node) do
-    author = NodeUtils.get_attr(node, "participant") || NodeUtils.get_attr(node, "from")
-
-    with true <- is_binary(author) and JID.jid_user?(author) and not JID.lid_user?(author),
-         %{user: pn_user} <- JID.decode(author),
-         false <- MapSet.member?(state.migrated_pn_sessions, pn_user),
-         lid_user when is_binary(lid_user) <- LidMappingFileStore.lid_for_pn(conn(state), author),
-         {:ok, keys} <- SessionStore.list_session_keys(conn(state)) do
-      # Ignore the :migrated/:none result on purpose: the receive path never
-      # force-fetches a bundle. A :none (no PN session to move) just means an
-      # inbound pkmsg will establish the session on decrypt — fetching is a
-      # send-side concern (see the migrate_pn_sessions handler).
-      {state, _result} = migrate_pn_user(state, pn_user, lid_user, keys)
-      state
-    else
-      # A storage adapter that can't enumerate keys can't migrate in place; the
-      # decrypt lookup will then miss the still-PN-keyed ratchet. Rare (File/DETS
-      # both enumerate) but not silent.
-      {:error, reason} ->
-        Logger.warning(
-          "PN→LID migrate on receive: cannot enumerate sessions (#{inspect(reason)})"
-        )
-
-        state
-
-      # Every other else case is routine, not an anomaly: not a PN user, already
-      # migrated, or no LID mapping. `jid_user?` having passed guarantees
-      # `JID.decode/1` returns a map, so that clause can't fail.
-      _ ->
-        state
-    end
-  end
-
-  # Idempotently re-key one PN user's sessions onto their LID (from the pre-listed
-  # `keys`), recording it so we migrate once. Returns {state, :migrated | :none |
-  # :already}: `:none` means the user had no PN session to move (caller may want a
-  # fresh bundle instead).
-  #
-  # Both the PN and LID records are mutated through their SessionCustodians, so a
-  # concurrent send/decrypt on either can't clobber the migration mid-flight. The
-  # residual hazard is the cross-record sequencing (read PN, then write LID) — see
-  # migrate_pn_records, which uses install_if_absent so a session a concurrent send
-  # injected on the LID address wins instead of being overwritten.
-  defp migrate_pn_user(state, pn_user, lid_user, keys) do
-    if MapSet.member?(state.migrated_pn_sessions, pn_user) do
-      {state, :already}
-    else
-      state = %{state | migrated_pn_sessions: MapSet.put(state.migrated_pn_sessions, pn_user)}
-
-      case migrate_pn_records(state, pn_user, lid_user, keys) do
-        0 -> {state, :none}
-        _ -> {state, :migrated}
-      end
-    end
-  end
-
-  # Move each of pn_user's device sessions onto the LID address THROUGH the
-  # custodians (the per-record lock). Cross-record and non-atomic, so it is written
-  # to be safe under a concurrent send that injects a LID session mid-migration:
-  #   1. read the PN record,
-  #   2. install it on the LID address ONLY IF no live session is already there
-  #      (install_if_absent) — a concurrently-injected LID session WINS; we never
-  #      clobber a live ratchet with the migrated record,
-  #   3. drop the PN source only after (2) succeeded — :ok or already-present both
-  #      mean the LID side is settled — and only count the pair when the delete
-  #      itself landed. A failure at any step leaves the PN record for a later
-  #      re-migration (idempotent: step 2 then finds the LID session and skips).
-  # (The PN side has no concurrent mutator here — inbound PN decrypts run in this
-  # same Connection process, and sends resolve to the LID address.) Returns moved.
-  defp migrate_pn_records(state, pn_user, lid_user, keys) do
-    conn = conn(state)
-    iid = state.instance_id
-    pn_prefix = pn_user <> "."
-
-    keys
-    |> Enum.filter(&String.starts_with?(&1, pn_prefix))
-    |> Enum.reduce(0, fn pn_addr, moved ->
-      device = String.replace_prefix(pn_addr, pn_prefix, "")
-      lid_addr = "#{lid_user}_1.#{device}"
-
-      with {:ok, record} when not is_nil(record) <-
-             SessionCustodian.record(iid, conn, pn_addr),
-           installed when installed in [:ok, {:skipped, :session_exists}] <-
-             SessionCustodian.install_if_absent(iid, conn, lid_addr, record),
-           :ok <- SessionCustodian.replace(iid, conn, pn_addr, nil) do
-        moved + 1
-      else
-        _ -> moved
-      end
-    end)
-  end
-
-  # Persist the LID↔PN pairs a history blob carried and surface the newly-learned
-  # ones to the consumer. A first link is the richest mapping source there is —
-  # the blob names every synced chat's LID and PN at once.
-  #
-  # Store-and-emit ONLY, deliberately: unlike the USync path
-  # (`ConversationSender.store_lid_mappings`) this does NOT migrate sessions or
-  # assert new ones. USync runs because a send to that contact is imminent, so a
-  # session is about to be needed; a history blob names every contact you have
-  # ever chatted with, and on a fresh link none of them has a session yet. Routing
-  # those through the migration would send one `<iq xmlns=encrypt>` fetching a
-  # prekey bundle for *every* contact in your history — burning a one-time prekey
-  # each and risking throttling — to build sessions nothing needs yet. Sends
-  # establish them lazily via `ensure_sessions`. Baileys does the same: its
-  # history path only calls `storeLIDPNMappings` (`Utils/process-message.ts`).
-  defp learn_lid_mappings(state, []), do: state
-
   defp learn_lid_mappings(state, pairs) do
-    {count, newly} = LidMappingFileStore.store_mappings(conn(state), pairs)
-    if count > 0, do: Logger.debug("Stored #{count} LID↔PN mapping(s) from history sync")
-
-    unless newly == [] do
-      mappings =
-        Enum.map(newly, fn {lid, pn} ->
-          %{lid: Amarula.Address.parse(lid), pn: Amarula.Address.parse(pn)}
-        end)
-
-      emit_to_subscribers(state, :lid_mapping_update, mappings)
-    end
-
-    state
-  end
-
-  # Migrate one newly-mapped {lid, pn} pair (over the batch's pre-listed `keys`),
-  # threading state and emitting the lid into the fetch list ONLY when there was no
-  # PN session to re-key (:none) — a migrated contact must not be force-refreshed,
-  # which would clobber the moved ratchet. Shaped for Enum.flat_map_reduce/3.
-  defp migrate_pair({lid, pn}, state, keys) do
-    # store_mappings accepts pairs in either order; guard the orientation here so a
-    # reversed pair can't migrate the wrong direction.
-    with true <- JID.lid_user?(lid),
-         %{user: pn_user} <- JID.decode(pn),
-         %{user: lid_user} <- JID.decode(lid) do
-      case migrate_pn_user(state, pn_user, lid_user, keys) do
-        {state, :none} -> {[lid], state}
-        {state, _} -> {[], state}
-      end
-    else
-      # The pairs come from USync, so a mis-oriented or undecodable jid is an
-      # upstream anomaly, not routine — surface it (JID-free) rather than drop it.
-      _ ->
-        Logger.warning("migrate_pn_sessions: skipping a mis-oriented or undecodable mapping pair")
-        {[], state}
+    case SessionOps.store_and_format_lid_mappings(conn(state), pairs) do
+      [] -> state
+      mappings -> emit_to_subscribers(state, :lid_mapping_update, mappings)
     end
   end
 
-  # Build + send the <iq xmlns=encrypt> key fetch that force-refreshes the named
-  # jids' Signal sessions (Baileys assertSessions force=true). Used both for
-  # newly-mapped LIDs and for an identity-change notification.
   defp force_refresh_sessions(state, []), do: state
 
   defp force_refresh_sessions(state, jids) do
-    user_nodes =
-      Enum.map(jids, fn jid ->
-        %Node{tag: "user", attrs: %{"jid" => jid, "reason" => "identity"}, content: nil}
-      end)
-
-    node = %Node{
-      tag: "iq",
-      attrs: [{"xmlns", "encrypt"}, {"type", "get"}, {"to", Constants.s_whatsapp_net()}],
-      content: [%Node{tag: "key", attrs: %{}, content: user_nodes}]
-    }
-
-    send_tracked_iq(state, node, :assert_lid_sessions)
+    send_tracked_iq(state, SessionOps.force_refresh_iq(jids), :assert_lid_sessions)
   end
 
-  # Baileys CB:ib,,dirty (chats.ts): clear the server's dirty sync flag with a
-  # <iq type=set xmlns="urn:xmpp:whatsapp:dirty"><clean type=.. timestamp=../></iq>.
-  # Until this is acked the server keeps the companion's sync "paused".
   defp handle_dirty(state, node) do
-    case NodeUtils.get_binary_node_child(node, "dirty") do
-      nil ->
+    case Login.dirty_clean_iq(node) do
+      :ignore ->
         state
 
-      dirty ->
-        type = NodeUtils.get_attr(dirty, "type") || "account_sync"
-        ts = NodeUtils.get_attr(dirty, "timestamp")
-
-        clean_attrs =
-          if ts, do: %{"type" => type, "timestamp" => ts}, else: %{"type" => type}
-
-        iq = %Node{
-          tag: "iq",
-          attrs: [
-            {"to", Constants.s_whatsapp_net()},
-            {"type", "set"},
-            {"xmlns", "urn:xmpp:whatsapp:dirty"}
-          ],
-          content: [%Node{tag: "clean", attrs: clean_attrs, content: nil}]
-        }
-
+      {:ok, type, iq} ->
         Logger.debug("Clearing dirty bits (type=#{type})")
         state = send_tracked_iq(state, iq, :clean_dirty)
-        # An account_sync dirty flag means app state changed — resync it.
         if type == "account_sync", do: resync_app_state(state), else: state
     end
   end
 
-  # Baileys CB:ib,,offline_preview — reply <ib><offline_batch count="100"/></ib>
-  # or the server never delivers the queued offline messages.
   defp handle_offline_preview(state, node) do
-    count =
-      case NodeUtils.get_binary_node_child(node, "offline_preview") do
-        nil -> "?"
-        child -> NodeUtils.get_attr(child, "count") || "?"
-      end
+    Logger.debug(
+      "Offline preview received (count=#{Login.offline_preview_count(node)}) — requesting batch"
+    )
 
-    Logger.debug("Offline preview received (count=#{count}) — requesting batch")
-
-    batch = %Node{
-      tag: "ib",
-      attrs: %{},
-      content: [%Node{tag: "offline_batch", attrs: %{"count" => "100"}, content: nil}]
-    }
-
-    send_binary_node(state, batch)
+    send_binary_node(state, Login.offline_batch_node())
   end
 
   defp handle_offline_complete(state, node) do
-    count =
-      case NodeUtils.get_binary_node_child(node, "offline") do
-        nil -> 0
-        child -> String.to_integer(NodeUtils.get_attr(child, "count") || "0")
-      end
-
-    Logger.debug("Handled #{count} offline messages/notifications")
-
+    Logger.debug("Handled #{Login.offline_complete_count(node)} offline messages/notifications")
     emit_to_subscribers(state, :connection_update, %{received_pending_notifications: true})
     state
   end
 
-  # Baileys CB:ib,,edge_routing — persist routing info in creds.
   defp handle_edge_routing(state, node) do
-    with %Node{} = edge <- NodeUtils.get_binary_node_child(node, "edge_routing"),
-         %Node{content: info} when is_binary(info) <-
-           NodeUtils.get_binary_node_child(edge, "routing_info") do
-      update_creds(state, Map.put(state.auth_creds, :routing_info, info))
-    else
-      _ -> state
+    case Login.routing_info(node) do
+      {:ok, info} -> update_creds(state, Map.put(state.auth_creds, :routing_info, info))
+      :ignore -> state
     end
   end
 
-  # WhatsApp closes the stream with code 515 after a successful pair-device-sign
-  # reply; the client must reconnect and log in with the freshly paired creds
-  # (Baileys DisconnectReason.restartRequired).
   @stream_error_restart_required 515
 
   defp handle_stream_error(state, node) do
-    {code, reason} = stream_error_details(node)
+    {code, reason} = Login.stream_error_details(node)
 
     Amarula.Telemetry.emit([:amarula, :stream_error, :received], profile(state), %{count: 1}, %{
       code: code
@@ -3046,7 +2562,6 @@ defmodule Amarula.Connection do
         "Stream error 515 (restart required) — reconnecting to log in with paired credentials"
       )
 
-      # Creds were already persisted at pairing; just reconnect.
       restart_connection(state)
     else
       Logger.error("Stream error: code=#{code}, reason=#{reason}")
@@ -3054,28 +2569,6 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Mirrors Baileys getErrorCodeFromStreamError: code attr, reason = first child tag
-  defp stream_error_details(node) do
-    # get_first_child_tag/1 returns "" (never nil) for a childless node, so the
-    # "unknown" fallback has to test for the empty string — `|| "unknown"` never
-    # fired, and a childless stream error surfaced as an empty reason.
-    reason =
-      case NodeUtils.get_first_child_tag(node) do
-        "" -> "unknown"
-        tag -> tag
-      end
-
-    code =
-      case Integer.parse(NodeUtils.get_attr(node, "code") || "") do
-        {code, _} -> code
-        :error -> 500
-      end
-
-    {code, reason}
-  end
-
-  # Tear down the current socket and reconnect immediately, keeping auth creds.
-  # The handshake then sends a login (not registration) payload since creds.me is set.
   defp restart_connection(state) do
     if state.keep_alive_timer do
       Process.cancel_timer(state.keep_alive_timer)
@@ -3095,9 +2588,6 @@ defmodule Amarula.Connection do
     |> attempt_connection()
   end
 
-  # Drain pending IQs on a restart: blocked query_iq callers get an immediate
-  # error instead of hanging to their call timeout; tracked-IQ timers are
-  # cancelled (their continuations are abandoned with the old socket).
   defp fail_pending_iqs(state, reason) do
     Enum.each(state.pending_iqs, fn
       {_id, {:waiter, from, timer}} ->
@@ -3115,8 +2605,6 @@ defmodule Amarula.Connection do
     %{state | pending_iqs: %{}}
   end
 
-  # Drain parked media-retry callers on a restart, mirroring fail_pending_iqs: the
-  # phone's notification can't reach us across the socket swap, so fail fast.
   defp fail_pending_media_retries(state, reason) do
     Enum.each(state.pending_media_retries, fn {_id, {from, _media_key, timer}} ->
       Process.cancel_timer(timer)
@@ -3129,8 +2617,6 @@ defmodule Amarula.Connection do
   defp handle_pair_device(state, node) do
     Logger.debug("Received pair-device IQ, generating QR codes...")
 
-    # Cancel the server response timeout timer - we're now waiting for user action (QR scan),
-    # not server action. The user can take as long as they need.
     state =
       if state.server_response_timeout_timer do
         Process.cancel_timer(state.server_response_timeout_timer)
@@ -3139,16 +2625,10 @@ defmodule Amarula.Connection do
         state
       end
 
-    # NOTE: Do NOT clear waiting_for_server_response here!
-    # We're still waiting for the user to scan the QR code and pair-success to arrive.
-    # The pair-device IQ is just sending us QR codes, not completing authentication.
-
-    # Send IQ acknowledgment.
     msg_id = NodeUtils.get_attr(node, "id")
     Logger.debug("Sending pair-device IQ ack (id=#{msg_id})")
     state = send_binary_node(state, Pairing.pair_device_ack_node(msg_id))
 
-    # Extract ref nodes and start cycling QR codes (matches Baileys genPairQR loop)
     case Pairing.qr_refs(node) do
       [] ->
         Logger.warning("pair-device IQ had no ref nodes")
@@ -3159,9 +2639,6 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Emit the next QR ref and schedule the following one. The first QR lives for
-  # qr_timeout (default 60s), subsequent refs for a shorter window (20s), matching
-  # Baileys. When refs run out the pairing window has expired.
   defp emit_next_qr(%{qr_refs: []} = state) do
     Logger.warning("QR refs exhausted — pairing window expired")
     handle_connection_error(state, {:pairing_error, :qr_timeout})
@@ -3170,102 +2647,62 @@ defmodule Amarula.Connection do
   defp emit_next_qr(%{qr_refs: [ref | rest]} = state) do
     if state.qr_timer, do: Process.cancel_timer(state.qr_timer)
 
-    qr = generate_qr_code(ref, state.auth_creds, state.config)
+    qr = Pairing.generate_qr_code(ref, state.auth_creds, state.config)
 
     emit_to_subscribers(state, :connection_update, %{
       connection: :connecting,
       qr: qr
     })
 
-    # First QR: full timeout; later refs: shorter. Only schedule if more remain.
     state = %{state | qr_refs: rest, qr_ref: ref}
 
     if rest == [] do
       %{state | qr_timer: nil}
     else
-      delay = qr_refresh_delay(state)
+      delay = Pairing.qr_refresh_delay(state.config, state.qr_timer)
       timer = Process.send_after(self(), :next_qr, delay)
       %{state | qr_timer: timer}
     end
   end
 
-  defp qr_refresh_delay(state) do
-    # First emission uses the configured qr_timeout; afterwards 20s like Baileys.
-    base = Map.get(state.config, :qr_timeout) || 60_000
-    if state.qr_timer == nil, do: base, else: 20_000
-  end
-
   defp handle_pair_success(state, node) do
     Logger.debug("Received pair-success message, processing device pairing...")
-
-    # Clear waiting state - pairing is complete
     state = clear_server_response_waiting(state)
 
-    with msg_id when not is_nil(msg_id) <- NodeUtils.get_attr(node, "id"),
-         pair_success_node when not is_nil(pair_success_node) <-
-           NodeUtils.get_binary_node_child(node, "pair-success"),
-         device_identity_node when not is_nil(device_identity_node) <-
-           NodeUtils.get_binary_node_child(pair_success_node, "device-identity"),
-         device_node when not is_nil(device_node) <-
-           NodeUtils.get_binary_node_child(pair_success_node, "device"),
-         jid when not is_nil(jid) <- NodeUtils.get_attr(device_node, "jid"),
-         lid when not is_nil(lid) <- NodeUtils.get_attr(device_node, "lid"),
-         identity_hmac <-
-           Proto.ADVSignedDeviceIdentityHMAC.decode(device_identity_node.content),
-         {:ok, verified_account} <-
-           DeviceIdentity.verify_and_sign(identity_hmac, state.auth_creds),
-         device_identity <- Proto.ADVDeviceIdentity.decode(verified_account.details) do
-      # Extract optional fields
-      platform_node = NodeUtils.get_binary_node_child(pair_success_node, "platform")
-      business_node = NodeUtils.get_binary_node_child(pair_success_node, "biz")
-      platform = if platform_node, do: NodeUtils.get_attr(platform_node, "name"), else: nil
-      biz_name = if business_node, do: NodeUtils.get_attr(business_node, "name"), else: nil
+    case Pairing.verify_pair_success(node, state.auth_creds) do
+      {:ok,
+       %{
+         msg_id: msg_id,
+         key_index: key_index,
+         jid: jid,
+         lid: lid,
+         platform: platform,
+         reply_node: reply_node,
+         updated_creds: updated_creds
+       }} ->
+        Logger.info("Pairing device (platform=#{platform})")
+        Logger.debug("Pairing jid=#{jid} lid=#{lid}")
+        Logger.debug("Sending pair-device-sign reply: msg_id=#{msg_id}, key_index=#{key_index}")
 
-      Logger.info("Pairing device (platform=#{platform})")
-      Logger.debug("Pairing jid=#{jid} lid=#{lid}")
+        state =
+          state
+          |> send_binary_node(reply_node)
+          |> update_creds(updated_creds)
 
-      signal_identity = DeviceIdentity.signal_identity(lid, verified_account.accountSignatureKey)
+        Logger.info("Pairing successful")
+        Logger.debug("Paired device: #{jid}")
 
-      # Encode without the account signature key
-      account_enc = DeviceIdentity.encode(verified_account, false)
+        emit_to_subscribers(state, :pairing_success, %{jid: jid, lid: lid, platform: platform})
 
-      reply_node = Pairing.pair_device_sign_reply(msg_id, device_identity.keyIndex, account_enc)
+        emit_to_subscribers(state, :connection_update, %{
+          connection: :connecting,
+          is_new_login: true,
+          qr: nil
+        })
 
-      Logger.debug(
-        "Sending pair-device-sign reply: msg_id=#{msg_id}, key_index=#{device_identity.keyIndex}"
-      )
+        state
 
-      state = send_binary_node(state, reply_node)
-
-      updated_creds =
-        Pairing.update_credentials_after_pairing(
-          state.auth_creds,
-          verified_account,
-          jid,
-          lid,
-          biz_name,
-          platform,
-          signal_identity
-        )
-
-      # Persist the paired credentials (internally) before the server's 515
-      # restart, so the reconnect logs in with them.
-      state = update_creds(state, updated_creds)
-
-      Logger.info("Pairing successful")
-      Logger.debug("Paired device: #{jid}")
-
-      emit_to_subscribers(state, :pairing_success, %{jid: jid, lid: lid, platform: platform})
-
-      emit_to_subscribers(state, :connection_update, %{
-        connection: :connecting,
-        is_new_login: true,
-        qr: nil
-      })
-
-      state
-    else
-      nil ->
+      {:error, :missing_field} ->
         Logger.error("Missing required field in pair-success message")
         emit_to_subscribers(state, :pairing_failure, %{reason: "missing_required_field"})
         handle_connection_error(state, {:pairing_error, :missing_field})
@@ -3277,17 +2714,8 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Device-identity pairing crypto extracted to Auth.DeviceIdentity (pure);
-  # pairing node/creds builders extracted to Connection.Pairing (pure).
-
-  # Full-frame tap for protocol diffing against Baileys. Off unless AMARULA_FRAME_TAP
-  # is set. Dumps every in/out node as one-line XML so two clients' post-login frame
-  # streams can be diffed directly. Skips noisy decode of message bodies (logs the
-  # stanza shell only). Direction is "IN"/"OUT".
   defp frame_tap(dir, node) do
     if System.get_env("AMARULA_FRAME_TAP") do
-      # inspect (binary-safe) rather than binary_node_to_string, which emits raw
-      # bytes from <enc> content and crashes the Logger formatter.
       dump = inspect(node, limit: :infinity, printable_limit: 64, width: :infinity)
       Logger.info("TAP #{dir} #{dump}")
     end
@@ -3296,20 +2724,10 @@ defmodule Amarula.Connection do
   end
 
   defp send_binary_node(%{config: %{frame_sink: sink}} = state, node) when is_pid(sink) do
-    # Test seam: when a frame_sink pid is configured, deliver the decoded node
-    # directly (bypassing noise framing + websocket) so tests can assert on what
-    # would be sent without standing up a real connection. No-op in production
-    # where frame_sink is never set.
     send(sink, {:frame_out, node})
     state
   end
 
-  # Backstop: an outbound must never crash the connection. A send before the
-  # handshake completes (noise_state nil ⇒ encode_frame derefs nil ⇒ BadMapError)
-  # or after the socket dropped (websocket_client nil ⇒ send_data crash) drops the
-  # frame and returns the state unchanged. The consumer-facing send clauses guard
-  # with ready_to_send?/1 and reply {:error, :not_connected}; this catches every
-  # other (internal) caller — receipts, acks, pings — that fires in the same window.
   defp send_binary_node(%{noise_state: nil} = state, _node) do
     Logger.warning("Dropping outbound frame: connection not established (no noise state)")
     state
@@ -3323,29 +2741,17 @@ defmodule Amarula.Connection do
   defp send_binary_node(state, node) do
     frame_tap("OUT", node)
     {:ok, encoded} = Encoder.encode(node)
-
-    # Prepend the 1-byte compression flag (0x00 = uncompressed). Baileys frames every
-    # binary node with this leading byte; the receive path strips it before decoding.
-    # Without it the server reads the node shifted by one byte → xml-not-well-formed.
     framed = <<0>> <> encoded
     {encrypted, updated_noise_state} = NoiseHandler.encode_frame(state.noise_state, framed)
     WebSocketClient.send_data(state.websocket_client, encrypted)
     %{state | noise_state: updated_noise_state}
   end
 
-  # Whether the send path can run without hitting the nil-noise / nil-socket
-  # backstop above. A configured frame_sink (test seam) is always ready; otherwise
-  # we need a completed handshake (noise_state) AND a live socket (websocket_client).
-  # Race-free server-side: only this process mutates state, so the check and the
-  # send it gates can't straddle a disconnect.
   defp ready_to_send?(%{config: %{frame_sink: sink}}) when is_pid(sink), do: true
 
   defp ready_to_send?(%{noise_state: noise, websocket_client: ws}),
     do: not is_nil(noise) and not is_nil(ws)
 
-  # Send `node` and reply :ok, unless the connection isn't ready — then reply
-  # {:error, :not_connected} without entering the noise/socket path. For the
-  # synchronous consumer sends (presence, read receipts, relayed stanzas).
   defp send_reply(state, node) do
     if ready_to_send?(state) do
       {:reply, :ok, send_binary_node(state, node)}
@@ -3356,7 +2762,6 @@ defmodule Amarula.Connection do
 
   defp handle_connection_failure(state, node) do
     Logger.error("Connection failure: #{NodeUtils.binary_node_to_string(node)}")
-
     reason = NodeUtils.get_attr(node, "reason") || "unknown"
     handle_connection_error(state, {:connection_failure, reason})
   end
@@ -3366,22 +2771,8 @@ defmodule Amarula.Connection do
   end
 
   defp handle_server_ping(state, node) do
-    # The server pings us to check liveness; reply with an empty iq result or it
-    # concludes the client is dead and closes the stream. Matches Baileys, which
-    # auto-acks CB:iq,,ping with { type: 'result', to, id }.
     msg_id = NodeUtils.get_attr(node, "id")
-
-    pong = %Node{
-      tag: "iq",
-      attrs: [
-        {"to", Constants.s_whatsapp_net()},
-        {"type", "result"},
-        {"id", msg_id}
-      ],
-      content: nil
-    }
-
-    send_binary_node(state, pong)
+    send_binary_node(state, Pairing.pair_device_ack_node(msg_id))
   end
 
   defp handle_xml_stream_end(state, _node) do
@@ -3389,58 +2780,6 @@ defmodule Amarula.Connection do
     handle_connection_error(state, :xml_stream_end)
   end
 
-  defp generate_qr_code(ref, auth_creds, config) do
-    # Matches Baileys buildPairingQRData (rc13):
-    # "https://wa.me/settings/linked_devices#" +
-    #   [ref, noiseKey, identityKey, advSecretKey, companionPlatformId].join(",")
-    noise_key_b64 = Base.encode64(auth_creds.noise_key.public)
-    identity_key_b64 = Base.encode64(auth_creds.signed_identity_key.public)
-    adv_b64 = auth_creds.adv_secret_key
-    platform_id = companion_platform_id(config.browser)
-
-    "https://wa.me/settings/linked_devices#" <>
-      Enum.join([ref, noise_key_b64, identity_key_b64, adv_b64, platform_id], ",")
-  end
-
-  # Mirrors Baileys getCompanionWebClientType: browser name → CompanionWebClientType
-  # A lookup table over browser names, mirroring Baileys' own flat mapping.
-  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  defp companion_platform_id([os, browser_name | _]) do
-    cond do
-      browser_name == "Desktop" and os == "Windows" ->
-        "8"
-
-      browser_name == "Desktop" ->
-        "7"
-
-      true ->
-        case browser_name do
-          "Chrome" -> "1"
-          "Edge" -> "2"
-          "Firefox" -> "3"
-          "IE" -> "4"
-          "Opera" -> "5"
-          "Safari" -> "6"
-          _ -> "9"
-        end
-    end
-  end
-
-  defp companion_platform_id(_), do: "9"
-
-  # ── Link-code (phone-number) pairing ──────────────────────────────────────
-  # Mirrors Baileys requestPairingCode / generatePairingKey (socket.ts) on the
-  # request side and the link_code_companion_reg notification handler
-  # (messages-recv.ts) on the finish side. Plugs into the existing post-handshake
-  # IQ + notification machinery, parallel to QR pairing.
-
-  # nil → random 8-char Crockford code; a custom code must be exactly 8 chars.
-  defp build_pairing_code(nil), do: {:ok, CompanionReg.crockford_encode(Crypto.random_bytes(5))}
-  defp build_pairing_code(code) when is_binary(code) and byte_size(code) == 8, do: {:ok, code}
-  defp build_pairing_code(_), do: {:error, :custom_pairing_code_must_be_8_chars}
-
-  # Set me + pairing_code, persist, then send the companion_hello IQ and emit
-  # :pairing_code so the consumer can display the code.
   defp start_link_code_pairing(state, phone, code) do
     me = %{id: JID.encode(%{user: phone, server: "s.whatsapp.net"}), name: "~"}
 
@@ -3450,59 +2789,12 @@ defmodule Amarula.Connection do
       |> Map.put(:pairing_code, code)
 
     state = update_creds(state, creds)
-
-    iq = %Node{
-      tag: "iq",
-      attrs: [
-        {"to", Constants.s_whatsapp_net()},
-        {"type", "set"},
-        {"xmlns", "md"}
-      ],
-      content: [
-        %Node{
-          tag: "link_code_companion_reg",
-          attrs: [
-            {"jid", me.id},
-            {"stage", "companion_hello"},
-            {"should_show_push_notification", "true"}
-          ],
-          content: [
-            child(
-              "link_code_pairing_wrapped_companion_ephemeral_pub",
-              generate_pairing_key(creds)
-            ),
-            child("companion_server_auth_key_pub", creds.noise_key.public),
-            child("companion_platform_id", companion_platform_id(state.config.browser)),
-            child("companion_platform_display", platform_display(state.config.browser)),
-            child("link_code_pairing_nonce", <<0>>)
-          ]
-        }
-      ]
-    }
+    iq = Pairing.companion_hello_iq(me.id, creds, state.config.browser)
 
     Logger.info("Requested link-code pairing for #{phone} — code #{code}")
-    # The code is shown/returned immediately (the user needs it to act on right
-    # away); the companion_hello IQ is tracked so a server-side rejection (e.g.
-    # 400 bad-request) still surfaces as :pairing_failure instead of silently
-    # leaving the consumer with a code that was never registered.
     state = send_tracked_iq(state, iq, :pairing_code_hello)
     emit_to_subscribers(state, :pairing_code, %{code: code})
   end
-
-  # salt(32) <> iv(16) <> AES-CTR(pairing ephemeral pub, derivePairingCodeKey(code, salt), iv)
-  defp generate_pairing_key(creds) do
-    salt = Crypto.random_bytes(32)
-    iv = Crypto.random_bytes(16)
-    key = Crypto.derive_pairing_code_key(creds.pairing_code, salt)
-    ciphered = Crypto.aes_encrypt_ctr(creds.pairing_ephemeral_key_pair.public, key, iv)
-    salt <> iv <> ciphered
-  end
-
-  # Baileys `${browser[1]} (${browser[0]})` → "Chrome (Mac OS)".
-  defp platform_display([os, browser_name | _]), do: "#{browser_name} (#{os})"
-  defp platform_display(_), do: "Chrome"
-
-  defp child(tag, content), do: %Node{tag: tag, attrs: [], content: content}
 
   defp start_server_response_timeout(state) do
     timer = Process.send_after(self(), :server_response_timeout, 15_000)
@@ -3510,12 +2802,10 @@ defmodule Amarula.Connection do
   end
 
   defp clear_server_response_waiting(state) do
-    # Cancel timeout timer if it exists
     if state.server_response_timeout_timer do
       Process.cancel_timer(state.server_response_timeout_timer)
     end
 
-    # Stop QR cycling — the server has responded (pair-success / success)
     if state.qr_timer do
       Process.cancel_timer(state.qr_timer)
     end
@@ -3531,66 +2821,19 @@ defmodule Amarula.Connection do
   end
 
   defp send_passive_iq(state, tag) do
-    # Send passive IQ with proper child node format
-    # This matches the TypeScript Baileys implementation
     iq_id = generate_message_tag(state)
     state = increment_message_epoch(state)
-
-    passive_node = %Amarula.Protocol.Binary.Node{
-      tag: "iq",
-      # List attrs preserve Baileys order: to, xmlns, type, id
-      attrs: [
-        {"to", Constants.s_whatsapp_net()},
-        {"xmlns", "passive"},
-        {"type", "set"},
-        {"id", iq_id}
-      ],
-      content: [
-        %Amarula.Protocol.Binary.Node{
-          tag: tag,
-          attrs: %{},
-          content: nil
-        }
-      ]
-    }
-
-    send_binary_node(state, passive_node)
+    send_binary_node(state, Login.passive_iq(iq_id, tag))
   end
 
-  # Baileys executeInitQueries (chats.ts), fired on `open`: fetchProps + blocklist
-  # + privacy. These appear to be a server-side precondition for E2E key-exchange:
-  # without them the server SILENTLY ignores our prekey-bundle fetches (answers
-  # every other IQ). Fire-and-forget, matching Baileys (it doesn't block sends on
-  # the replies). The abt/props hash is omitted on first run (Baileys sends it only
-  # when it has a cached lastPropHash).
-  # Gated on `:fire_init_queries` (default true, #59) — a minimal ephemeral connect
-  # can skip the props/blocklist/privacy round-trips.
   defp maybe_send_init_queries(state) do
     if fire_init_queries?(state.config), do: send_init_queries(state), else: state
   end
 
   defp send_init_queries(state) do
-    state
-    |> send_init_iq(
-      [{"to", Constants.s_whatsapp_net()}, {"xmlns", "abt"}, {"type", "get"}],
-      %Node{
-        tag: "props",
-        attrs: %{"protocol" => "1"},
-        content: nil
-      }
-    )
-    |> send_init_iq(
-      [{"xmlns", "blocklist"}, {"to", Constants.s_whatsapp_net()}, {"type", "get"}],
-      nil
-    )
-    |> send_init_iq(
-      [{"xmlns", "privacy"}, {"to", Constants.s_whatsapp_net()}, {"type", "get"}],
-      %Node{
-        tag: "privacy",
-        attrs: %{},
-        content: nil
-      }
-    )
+    Enum.reduce(Login.init_query_specs(), state, fn {base_attrs, child}, acc ->
+      send_init_iq(acc, base_attrs, child)
+    end)
   end
 
   defp send_init_iq(state, base_attrs, child) do
@@ -3601,34 +2844,14 @@ defmodule Amarula.Connection do
     send_binary_node(state, node)
   end
 
-  # sendUnifiedSession: <ib><unified_session id="..."/></ib>
-  # id = (now_ms + 3_days) % 7_days — mirrors Baileys getUnifiedSessionId().
   defp send_unified_session(state) do
     send_binary_node(state, Login.unified_session_node())
   end
 
-  # Server-side device unlink: <iq set xmlns=md><remove-companion-device jid=<me.id>
-  # reason="user_initiated"/></iq>. Fire-and-forget; we tear down right after.
   defp send_remove_companion(state) do
     case me(state) do
       %{id: jid} when is_binary(jid) ->
-        iq = %Node{
-          tag: "iq",
-          attrs: [
-            {"to", Constants.s_whatsapp_net()},
-            {"type", "set"},
-            {"id", generate_message_tag(state)},
-            {"xmlns", "md"}
-          ],
-          content: [
-            %Node{
-              tag: "remove-companion-device",
-              attrs: %{"jid" => jid, "reason" => "user_initiated"},
-              content: nil
-            }
-          ]
-        }
-
+        iq = Login.remove_companion_iq(generate_message_tag(state), jid)
         send_binary_node(increment_message_epoch(state), iq)
 
       _ ->
@@ -3636,49 +2859,21 @@ defmodule Amarula.Connection do
     end
   end
 
-  # digestKeyBundle: server validates our key bundle; if no <digest> in reply we
-  # re-upload prekeys (handled by the :digest tracked continuation).
   defp send_digest_iq(state) do
     send_tracked_iq(state, Login.digest_iq(), :digest)
   end
 
   defp start_keep_alive_timer(state) do
-    # Start keep-alive timer to send periodic ping messages
-    # NO immediate ping after handshake - first ping sent after keep_alive_interval_ms
-    # Cancel any timer from a previous (re)connect so ping loops don't multiply.
     if state.keep_alive_timer, do: Process.cancel_timer(state.keep_alive_timer)
     keep_alive_interval = state.config.keep_alive_interval_ms || 30_000
-
-    # Schedule first ping after interval
     timer = Process.send_after(self(), :send_keep_alive, keep_alive_interval)
-
     %{state | keep_alive_timer: timer}
   end
 
   defp send_ping_message(state) do
-    # Send ping message to keep connection alive
-    # Using list-based attrs to preserve Baileys order: id, to, type, xmlns
     ping_id = generate_message_tag(state)
     state = increment_message_epoch(state)
-
-    ping_node = %Amarula.Protocol.Binary.Node{
-      tag: "iq",
-      attrs: [
-        {"id", ping_id},
-        {"to", "@s.whatsapp.net"},
-        {"type", "get"},
-        {"xmlns", "w:p"}
-      ],
-      content: [
-        %Amarula.Protocol.Binary.Node{
-          tag: "ping",
-          attrs: %{},
-          content: nil
-        }
-      ]
-    }
-
-    send_binary_node(state, ping_node)
+    send_binary_node(state, Login.ping_iq(ping_id))
   end
 
   defp generate_message_tag_prefix do
@@ -3703,288 +2898,17 @@ defmodule Amarula.Connection do
     state
   end
 
-  # Wrap a decrypted proto into the consumer %Amarula.Msg{}, pulling the envelope
-  # (chat, sender, timestamp, from_me) off the stanza so the consumer never sees a
-  # raw protobuf.
-  # `to_addr` is our own identity — constant across a node's messages, so the caller
-  # computes it once per batch (via `own_address/1`) and passes it in.
   @doc false
-  def build_msg(state, proto, node, from, msg_id, to_addr) do
-    # Three address roles (see Amarula.Msg): `channel` is the room (the reply handle —
-    # group jid for groups, the peer for DMs). `from` is the writer (the participant in
-    # a group, else the channel) and carries the sending device. `to` is whom it was
-    # addressed to.
-    stanza_from = Amarula.Address.parse(from)
-    from_addr = node |> NodeUtils.get_attr("participant") |> maybe_address() || stanza_from
-    from_me? = own_account?(state, from_addr)
+  defdelegate build_msg(state, proto, node, from, msg_id, to_addr), to: Receive
 
-    # WhatsApp fans every message we send out to our linked devices as a `from_me`
-    # stanza whose `from` is our own account — so the stanza `from` is NOT the peer.
-    # The real other party is the `recipient` attr (Baileys decode: own message →
-    # chatId = recipient). Use it for both the room (`channel`/reply handle) and `to`,
-    # so a consumer can tell "I messaged myself" (to == self) from "I messaged someone
-    # else" (to == that contact). Falls back to the old behaviour when absent (e.g. a
-    # peer-routed self stanza with no recipient).
-    # Only for non-group stanzas: a group's room is the group jid (`from`), and
-    # group messages carry `participant`, never `recipient` (Baileys applies the
-    # recipient override only in the PN/LID-user branch, not the group branch).
-    # `stanza_from` is nil when `from` doesn't parse (the decrypt-failure path — a
-    # Signal-desynced contact: "Key used already" / old counter / bad PreKey id). Such
-    # a message must NOT crash the connection (it'd loop-crash inbound + fetch_groups);
-    # skip the recipient override and let the fallback branch carry the nils through.
-    recipient =
-      if stanza_from && stanza_from.kind != :group,
-        do: node |> NodeUtils.get_attr("recipient") |> maybe_address()
-
-    {channel, to} =
-      if from_me? && recipient do
-        {recipient, recipient}
-      else
-        {stanza_from, to_addr}
-      end
-
-    # Reply-style messages (reaction/edit/revoke/pin/keep/poll-vote) embed a
-    # target-message key written from the SENDER'S perspective. Remap it to OURS
-    # before the consumer sees it, so a received `key` is safe to feed straight
-    # back to `send_reaction`/`send_edit`/… as `Amarula.Msg` promises (#47).
-    proto = normalize_reply_keys(state, proto, channel, from_me?, from_addr)
-
-    Amarula.Msg.from_proto(proto, %{
-      id: msg_id,
-      channel: channel,
-      from: from_addr,
-      to: to,
-      from_me: from_me?,
-      # The sender's display name, off the stanza envelope (absent on our own sends).
-      pushname: NodeUtils.get_attr(node, "notify"),
-      timestamp: parse_ts(NodeUtils.get_attr(node, "t")),
-      server_id: NodeUtils.get_attr(node, "server_id"),
-      offline: offline_node?(node)
-    })
-  end
-
-  # Delivered from the server's offline queue (the stanza's `offline` attr).
-  # `offline="0"` can appear on online stanzas (Baileys #2810 / #2840) — treat it as online.
-  defp offline_node?(node), do: NodeUtils.get_attr(node, "offline") not in [nil, "", "0"]
-
-  # An embedded `%Proto.MessageKey{}` names its TARGET from the AUTHOR'S perspective:
-  # in a DM the peer's `remoteJid` is *us* and `fromMe` is false-from-their-side, so
-  # feeding it straight back to `send_reaction` reacts to ourselves. Rewrite each
-  # embedded key to OUR perspective — the same normalisation Baileys does in
-  # `processMessage`/`normaliseKey`: `remoteJid` ← the chat as we see it (`channel`,
-  # already account-level), `fromMe` recomputed against our own account (PN *and*
-  # LID, via `own_account?/2`), and the target's author preserved as `participant`
-  # (for a group carrier, filled from the carrier's participant when the sender
-  # omitted it). #47. Groups masked the bug (a group jid is identical from every
-  # perspective) — the DM case is where it bit.
-  #
-  # A `from_me?` carrier already embeds keys in our perspective, so leave it alone;
-  # ditto when there is no `channel` to remap onto (the decrypt-failure path).
-  defp normalize_reply_keys(_state, proto, _channel, true, _from), do: proto
-  defp normalize_reply_keys(_state, proto, nil, _from_me?, _from), do: proto
-
-  defp normalize_reply_keys(
-         state,
-         %Proto.Message{reactionMessage: %{key: key} = r} = proto,
-         channel,
-         _from_me?,
-         from
-       )
-       when not is_nil(key),
-       do: %{proto | reactionMessage: %{r | key: our_perspective(state, key, channel, from)}}
-
-  defp normalize_reply_keys(
-         state,
-         %Proto.Message{pollUpdateMessage: %{pollCreationMessageKey: key} = m} = proto,
-         channel,
-         _from_me?,
-         from
-       )
-       when not is_nil(key),
-       do: %{
-         proto
-         | pollUpdateMessage: %{
-             m
-             | pollCreationMessageKey: our_perspective(state, key, channel, from)
-           }
-       }
-
-  # Only the key-bearing protocol types (edit/revoke) name a message in this chat;
-  # other protocolMessages (history sync, key share, …) either carry no key or a key
-  # with unrelated semantics — leave those untouched.
-  defp normalize_reply_keys(
-         state,
-         %Proto.Message{protocolMessage: %{type: type, key: key} = pm} = proto,
-         channel,
-         _from_me?,
-         from
-       )
-       when not is_nil(key) and type in [:MESSAGE_EDIT, :REVOKE],
-       do: %{proto | protocolMessage: %{pm | key: our_perspective(state, key, channel, from)}}
-
-  defp normalize_reply_keys(
-         state,
-         %Proto.Message{pinInChatMessage: %{key: key} = m} = proto,
-         channel,
-         _from_me?,
-         from
-       )
-       when not is_nil(key),
-       do: %{proto | pinInChatMessage: %{m | key: our_perspective(state, key, channel, from)}}
-
-  defp normalize_reply_keys(
-         state,
-         %Proto.Message{keepInChatMessage: %{key: key} = m} = proto,
-         channel,
-         _from_me?,
-         from
-       )
-       when not is_nil(key),
-       do: %{proto | keepInChatMessage: %{m | key: our_perspective(state, key, channel, from)}}
-
-  defp normalize_reply_keys(_state, proto, _channel, _from_me?, _from), do: proto
-
-  # Rewrite one embedded key to our perspective (see `normalize_reply_keys/5`).
-  defp our_perspective(state, %Proto.MessageKey{} = key, %Amarula.Address{} = channel, from) do
-    author = key.participant || key.remoteJid
-
-    %{
-      key
-      | remoteJid: Amarula.Address.to_jid!(channel),
-        fromMe: key.fromMe != true and own_account?(state, maybe_address(author)),
-        participant: key.participant || group_participant(channel, from)
-    }
-  end
-
-  # The carrier's own participant, but only for a group target — a DM key carries no
-  # participant, and fabricating one from the peer would be wrong.
-  defp group_participant(%Amarula.Address{kind: :group}, %Amarula.Address{} = from),
-    do: Amarula.Address.to_jid!(from)
-
-  defp group_participant(_channel, _from), do: nil
-
-  # Stash each decrypted message's messageContextInfo.messageSecret keyed by the
-  # stanza id (what a later edit's targetMessageKey.id references), together with
-  # the stanza's server-attested author — EditEnvelope's author check compares
-  # the editor against it. #30.
-  defp stash_message_secrets(state, node, from, messages) do
-    msg_id = NodeUtils.get_attr(node, "id")
-    sender = JID.jid_normalized_user(NodeUtils.get_attr(node, "participant") || from)
-
-    if is_binary(msg_id) and sender != "" do
-      store = conn(state).message_secret_store
-
-      messages
-      |> Enum.map(&MessageContent.message_secret/1)
-      |> Enum.filter(&is_binary/1)
-      |> Enum.each(
-        &MessageSecretStore.put(store, profile(state), msg_id, %{secret: &1, sender: sender})
-      )
-    end
-  end
-
-  # Decrypt a secretEncryptedMessage MESSAGE_EDIT envelope back into the legacy
-  # inline-edit message; anything else passes through untouched. A decryption
-  # failure (no stashed secret / expired window / wrong author) logs and passes
-  # the envelope through — it classifies {:other, _}, exactly as before #30.
-  defp decrypt_edit_envelope(state, node, from, message) do
-    ctx = %{
-      conn: conn(state),
-      profile: profile(state),
-      stanza_from: from,
-      participant: NodeUtils.get_attr(node, "participant")
-    }
-
-    case EditEnvelope.decrypt(message, ctx) do
-      {:ok, inner} ->
-        inner
-
-      :not_an_edit_envelope ->
-        message
-
-      {:error, reason} ->
-        Logger.warning(
-          "Could not decrypt secretEncryptedMessage edit from #{from}: #{inspect(reason)}"
-        )
-
-        message
-    end
-  end
-
-  # Our own identity as an Address (the addressed `to`), or empty before login.
-  defp own_address(state) do
-    case me(state)[:id] do
-      id when is_binary(id) -> Amarula.Address.parse(id) || Amarula.Address.empty()
-      _ -> Amarula.Address.empty()
-    end
-  end
-
-  # One :message,:received per decrypted message — throughput + media volume.
-  # media_bytes is the sender's declared fileLength (no eager download). Privacy:
-  # counts/kinds/booleans only.
-  defp emit_message_telemetry(state, msgs, node, from) do
-    group? = JID.jid_group?(from)
-    offline? = offline_node?(node)
-
-    Enum.each(msgs, fn msg ->
-      {media?, media_kind, bytes} =
-        case msg do
-          %{type: :media, content: %Amarula.Content.Media{kind: kind, file_length: len}} ->
-            {true, kind, len || 0}
-
-          _ ->
-            {false, nil, 0}
-        end
-
-      Amarula.Telemetry.emit(
-        [:amarula, :message, :received],
-        profile(state),
-        %{count: 1, media_bytes: bytes},
-        %{
-          from_me?: msg.from_me,
-          group?: group?,
-          offline?: offline?,
-          media?: media?,
-          media_kind: media_kind
-        }
-      )
-    end)
-  end
-
-  defp maybe_address(nil), do: nil
-  defp maybe_address(jid), do: Amarula.Address.parse(jid)
-
-  defp parse_ts(nil), do: nil
-  defp parse_ts(t), do: String.to_integer(t)
-
-  # True when `addr` is one of our own identities (id or lid).
-  defp own_account?(state, %Amarula.Address{} = addr) do
-    me = me(state)
-
-    [me[:id], me[:lid]]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&Amarula.Address.parse/1)
-    |> Enum.any?(&Amarula.Address.same_account?(&1, addr))
-  end
-
-  defp own_account?(_state, _), do: false
-
-  # Who actually sent this stanza, server-attested (participant for a group,
-  # else the stanza `from`) — the same identity build_msg/6 uses for `from_me?`.
-  # Exposed (not private) so it can be unit-tested directly, like build_msg/6.
-  #
-  # Callers gate the self-only protocolMessage types on this BEFORE any
-  # per-message classification: APP_STATE_SYNC_KEY_SHARE and
-  # HISTORY_SYNC_NOTIFICATION are only ever legitimate from our own linked
-  # device. Baileys shipped this as a security fix (GHSA-qvv5-jq5g-4cgg /
-  # CVE-2026-48063) — without it, anyone who can open a session with us can
-  # spoof one of these to poison our app-state sync keys or feed us fake
-  # history.
   @doc false
-  def own_sender?(state, node, from) do
-    participant = node |> NodeUtils.get_attr("participant") |> maybe_address()
-    own_account?(state, participant || maybe_address(from))
-  end
+  defdelegate normalize_reply_keys(state, proto, channel, from_me?, from), to: Receive
+
+  @doc false
+  defdelegate own_sender?(state, node, from), to: Receive
+
+  @doc false
+  defdelegate duplicate_decrypt_error?(errors), to: Receive
 
   # The inbound message pipeline: token capture, session migration, decrypt, classify,
   # emit, receipt-or-nack. Connection is the per-connection coordinator by design (see
@@ -3994,18 +2918,10 @@ defmodule Amarula.Connection do
   defp handle_message(state, node) do
     msg_id = NodeUtils.get_attr(node, "from") && NodeUtils.get_attr(node, "id")
     from = NodeUtils.get_attr(node, "from")
-    own_sender? = own_sender?(state, node, from)
+    own_sender? = Receive.own_sender?(state, node, from)
 
-    # Capture any `<tctoken>` the sender attached, BEFORE anything that can fail: a
-    # token is useful even when the body doesn't decrypt (we still want the next
-    # reply to carry it rather than eating a 463), and this path can end in a nack.
     TcTokenStore.store_message_node(state.conn, node)
-
-    # If the sender is PN-addressed but we now know their LID, move their Signal
-    # session onto the LID address BEFORE decrypting — otherwise the LID-aware
-    # address lookup in decrypt_node would miss the still-PN-keyed ratchet. #15.
-    state = maybe_migrate_sender_session(state, node)
-
+    state = SessionOps.maybe_migrate_sender_session(state, node)
     store = SessionStore.build(state.auth_creds)
 
     {:ok, messages, used_pre_key_ids, errors} =
@@ -4017,61 +2933,24 @@ defmodule Amarula.Connection do
 
     state = remove_used_pre_keys(state, used_pre_key_ids)
 
-    # Stash each message's messageContextInfo.messageSecret for the 15-min edit
-    # window, then decrypt any secretEncryptedMessage MESSAGE_EDIT envelope in
-    # this batch back into the legacy inline-edit shape (#30) — before
-    # run_recv_steps, so plugins and classification see the decoded edit.
-    stash_message_secrets(state, node, from, messages)
-    messages = Enum.map(messages, &decrypt_edit_envelope(state, node, from, &1))
+    Receive.stash_message_secrets(conn(state), profile(state), node, from, messages)
 
-    # The primary device shares app-state-sync keys via an APP_STATE_SYNC_KEY_SHARE
-    # protocol message. Store them and (re)sync app state once we have keys — but
-    # only when it genuinely came from us (own_sender? above); otherwise it's a
-    # spoof attempt (CVE-2026-48063) and must be dropped.
-    state =
-      if own_sender? do
-        maybe_handle_app_state_key_share(state, messages)
-      else
-        if AppStateOps.sync_keys_in(messages) != [] do
-          Logger.warning(
-            "dropping spoofed app-state-sync-key-share protocolMessage from non-self origin (#{from})"
-          )
-        end
+    messages =
+      Enum.map(
+        messages,
+        &Receive.decrypt_edit_envelope(conn(state), profile(state), node, from, &1)
+      )
 
-        state
-      end
+    state = maybe_apply_key_share(state, own_sender?, from, messages)
+    messages = Receive.run_recv_steps(conn(state), from, msg_id, messages)
 
-    # Run the receive plugin pipeline over each decrypted message: steps may
-    # transform a message or drop it (halt). Dropped messages never reach the
-    # consumer; we still receipt the node so the server's offline queue drains.
-    messages = run_recv_steps(state, from, msg_id, messages)
-
-    # Baileys handleMessage: success → <receipt> (this is what removes the
-    # message from the server's offline queue — a plain <ack> does NOT);
-    # failure → retry receipt (asks the sender to re-encrypt, re-establishing
-    # session/sender key) then <ack error="500"> nack.
     cond do
       messages != [] ->
-        # Classify each decrypted message once, then split the stream so the
-        # consumer's `:messages_upsert` carries only real user messages:
-        #   * :sender_key — a bare senderKeyDistributionMessage (group-session-key
-        #     plumbing whose side effect MessageDecryptor already applied). Dropped
-        #     entirely; not user-visible in any form.
-        #   * :protocol — a bare protocolMessage (the residue of control frames:
-        #     ephemeral/setting changes and other types Amarula doesn't handle
-        #     specially; the important ones — history-sync, app-state key-share — are
-        #     already extracted to their own events/handlers upstream). Re-emitted on
-        #     a separate `:protocol_update` event rather than dropped, so a consumer
-        #     CAN react without it polluting `messages_upsert`.
-        # User-meaningful protocolMessages (edit/revoke/member-tag) classify into
-        # their own types upstream, so they stay in `messages_upsert`. We keep all of
-        # them counting as a successful decrypt (we split `msgs`, not `messages`), so
-        # the delivery receipt fires and we never nack a control-only node.
-        to_addr = own_address(state)
+        to_addr = Receive.own_address(me(state))
 
         classified =
           messages
-          |> Enum.map(&build_msg(state, &1, node, from, msg_id, to_addr))
+          |> Enum.map(&Receive.build_msg(state, &1, node, from, msg_id, to_addr))
           |> Enum.reject(&(&1.type == :sender_key))
 
         {protocol_msgs, msgs} = Enum.split_with(classified, &(&1.type == :protocol))
@@ -4088,7 +2967,7 @@ defmodule Amarula.Connection do
           kinds = Enum.map(msgs, & &1.type)
           Logger.debug("Decrypted #{length(msgs)} message(s) from #{from} (#{inspect(kinds)})")
 
-          emit_message_telemetry(state, msgs, node, from)
+          Receive.emit_message_telemetry(profile(state), msgs, node, from)
 
           emit_to_subscribers(state, :messages_upsert, %{
             from: Amarula.Address.parse(from),
@@ -4099,23 +2978,11 @@ defmodule Amarula.Connection do
 
         state = send_delivery_receipt(state, node)
 
-        # A message carrying a history-sync notification needs an extra
-        # <receipt type="hist_sync"> — this is the signal the server waits for to
-        # mark the companion's initial sync complete (Baileys messages-recv.ts).
-        # Without it the phone shows the device as "Paused" / times out, and the
-        # server treats the companion as not fully linked.
-        #
-        # Only our own linked device legitimately sends this — gated on
-        # own_sender? for the same reason as the app-state-key-share branch
-        # above (CVE-2026-48063): anyone else's historySyncNotification is a
-        # spoof attempt, dropped without downloading or acking hist_sync.
         cond do
-          not Enum.any?(messages, &history_sync_message?/1) ->
+          not Enum.any?(messages, &Receive.history_sync_message?/1) ->
             state
 
           own_sender? ->
-            # Always ack (so the phone doesn't show this device as "Paused"), but
-            # skip the download/decrypt/emit when the consumer opted out (#59).
             maybe_download_history_sync(state, messages)
             send_hist_sync_receipt(state, node)
 
@@ -4127,164 +2994,80 @@ defmodule Amarula.Connection do
             state
         end
 
-      # `%DecryptError{reason: :key_unavailable}` = the key material this stanza
-      # references is gone: the ratchet counter was consumed, or the pkmsg's
-      # one-time prekey isn't in our store. Almost always a duplicate redelivery
-      # (the first decrypt consumed the key), though a genuinely unknown prekey id
-      # lands here too. Either way we can't (and needn't) retry.
-      #
-      # We treat it as RECEIVED: send the same <receipt> the success path does
-      # (which is what drains the server's offline queue), NOT an error nack. A
-      # duplicate is a message we already have, so nacking 487 (ParsingError) would
-      # mislabel it as a parse failure. WhatsApp does have an accurate code for this
-      # exact condition — 496 (SignalErrorOldCounter) — but even that reads as an
-      # error to the server's rate heuristics, so we prefer the positive delivery
-      # receipt: the most honest signal (received, not an error). (Baileys nacks 487
-      # here; we diverge on purpose.)
-      duplicate_decrypt_error?(errors) ->
+      Receive.duplicate_decrypt_error?(errors) ->
         Logger.debug(
           "Message #{msg_id} from #{from}: already-decrypted duplicate — receipt as delivered"
         )
 
         send_delivery_receipt(state, node)
 
-      # An undecryptable status must not be NACKed. WhatsApp can otherwise keep
-      # it at the head of the offline queue and withhold every ordinary message
-      # behind it across reconnects. Keep the retry request so the sender can
-      # still recover it, but finish with a plain stanza ack so the queue drains.
-      # A channel post is plaintext: there is no session to repair, so a retry
-      # request is pointless and a nack could stall the queue. Plain ack.
       JID.jid_newsletter?(from) ->
         Logger.debug("Channel post #{msg_id}: undecodable — plain ack")
-
-        Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
-          reason: :nothing_decrypted
-        })
-
+        emit_nothing_decrypted_telemetry(state)
         send_message_ack(state, node)
 
-      # An undecryptable `from_me` message (`own_sender?`) is a sender-fanout echo
-      # from another of our own linked devices, encrypted under that device's
-      # session with the recipient — a session this client can never hold. Asking
-      # ourselves for a retry makes the server close the stream with
-      # `<stream:error><ack id="..."/>` (Baileys #2864). Plain-ack and move on.
       own_sender? ->
         Logger.debug(
           "Own message #{msg_id} from #{from}: undecryptable — plain ack without retry"
         )
 
-        Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
-          reason: :nothing_decrypted
-        })
-
+        emit_nothing_decrypted_telemetry(state)
         send_message_ack(state, node)
 
       JID.jid_status_broadcast?(from) ->
         Logger.debug("Status #{msg_id}: nothing decrypted — retry + plain ack")
-
-        Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
-          reason: :nothing_decrypted
-        })
-
+        emit_nothing_decrypted_telemetry(state)
         state = send_retry_request(state, node)
         send_message_ack(state, node)
 
       true ->
         Logger.debug("Message #{msg_id} from #{from}: nothing decrypted — retry + nack")
-
-        Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
-          reason: :nothing_decrypted
-        })
-
+        emit_nothing_decrypted_telemetry(state)
         state = send_retry_request(state, node)
         send_message_ack(state, node, @nack_unhandled_error)
     end
   end
 
-  # A redelivery we can't (and needn't) retry: the key material the stanza
-  # references is unavailable — the ratchet counter was consumed, or the pkmsg's
-  # one-time prekey isn't in our store. The Signal layer flags this structurally as
-  # `%DecryptError{reason: :key_unavailable}` (raised in `SessionCipher`/
-  # `SessionBuilder`, propagated through the multi-session trial decrypt), so we
-  # match the reason — not error prose, which the `msg` path wraps. It's ~always a
-  # duplicate; recognising it each time is what terminates the redelivery loop,
-  # which recurs on every 515 reconnect (the server re-fans the undrained stanza)
-  # where an in-memory "seen msg_ids" set would be wiped by the restart. Exposed
-  # for a direct test.
-  @doc false
-  def duplicate_decrypt_error?(errors) do
-    Enum.any?(errors, &match?(%DecryptError{reason: :key_unavailable}, &1))
+  defp maybe_apply_key_share(state, true, _from, messages),
+    do: maybe_handle_app_state_key_share(state, messages)
+
+  defp maybe_apply_key_share(state, false, from, messages) do
+    if AppStateOps.sync_keys_in(messages) != [] do
+      Logger.warning(
+        "dropping spoofed app-state-sync-key-share protocolMessage from non-self origin (#{from})"
+      )
+    end
+
+    state
   end
 
-  # One-time prekeys consumed by a PreKeySignalMessage must be deleted, like
-  # libsignal's removePreKey after decryptPreKeyWhisperMessage.
+  defp emit_nothing_decrypted_telemetry(state) do
+    Amarula.Telemetry.emit([:amarula, :decrypt, :exception], profile(state), %{count: 1}, %{
+      reason: :nothing_decrypted
+    })
+  end
+
   defp remove_used_pre_keys(state, []), do: state
 
   defp remove_used_pre_keys(state, ids) do
     Logger.debug("Removing used one-time prekey(s): #{inspect(ids)}")
     pre_keys = Map.drop(Map.get(state.auth_creds, :pre_keys, %{}), ids)
-    updated_creds = Map.put(state.auth_creds, :pre_keys, pre_keys)
-
-    update_creds(state, updated_creds)
+    update_creds(state, Map.put(state.auth_creds, :pre_keys, pre_keys))
   end
 
-  # Ack an incoming stanza, ported from Baileys buildAckStanza (stanza-ack.ts):
-  # <ack id to class={node.tag} [error] [participant] [recipient] [type] from={me}/>.
-  # class must be the received node's tag — a wrong class makes the server
-  # treat the ack as unrelated and redeliver. `error` (nack) marks the stanza
-  # processed-with-error so it stops redelivering.
   defp send_message_ack(state, node, error_code \\ nil) do
     me_id = get_in(state.auth_creds, [:me, :id])
-
-    attrs =
-      [
-        {"id", NodeUtils.get_attr(node, "id")},
-        {"to", NodeUtils.get_attr(node, "from")},
-        {"class", node.tag}
-      ] ++
-        optional_attr("error", error_code && Integer.to_string(error_code)) ++
-        optional_attr("participant", NodeUtils.get_attr(node, "participant")) ++
-        optional_attr("recipient", NodeUtils.get_attr(node, "recipient")) ++
-        optional_attr("type", NodeUtils.get_attr(node, "type")) ++
-        if(node.tag == "message" and me_id, do: [{"from", me_id}], else: [])
-
-    ack = %Node{tag: "ack", attrs: attrs, content: nil}
-    send_binary_node(state, ack)
+    send_binary_node(state, Receive.ack_stanza(node, me_id, error_code))
   end
 
-  # Delivery receipt for a successfully decrypted message, ported from Baileys
-  # sendReceipt (messages-send.ts) as called by handleMessage:
-  #   <receipt id to [participant] [type]/>
-  # type: "peer_msg" for category="peer" stanzas, "sender" for messages sent
-  # from our own phone (fromMe), absent = plain delivered.
-  # True when a decrypted Proto.Message carries a history-sync notification
-  # (directly or wrapped in deviceSentMessage).
-  defp history_sync_message?(%{protocolMessage: %{historySyncNotification: hsn}})
-       when not is_nil(hsn),
-       do: true
-
-  defp history_sync_message?(%{deviceSentMessage: %{message: inner}}) when not is_nil(inner),
-    do: history_sync_message?(inner)
-
-  defp history_sync_message?(_), do: false
-
-  # Download + decode the history-sync blob(s) these messages reference and emit
-  # Gated on `:sync_history` (default true, #59). When off, skip the download/
-  # decrypt/emit entirely — the caller still sends the hist_sync receipt so the
-  # phone doesn't show this device as "Paused".
   defp maybe_download_history_sync(state, messages) do
     if sync_history?(state.config), do: download_history_sync(state, messages), else: state
   end
 
-  # the chats/contacts to the consumer. The download is a network call; run it in
-  # a task so the receive path isn't blocked, and emit from there.
   defp download_history_sync(state, messages) do
     parent = self()
-    notifications = Enum.flat_map(messages, &history_notification/1)
 
-    for hsn <- notifications do
-      # Fire-and-forget under our Task.Supervisor (no caller to answer). Supervised,
-      # so a Connection death takes the download with it — never orphaned.
+    for hsn <- Receive.history_notifications(messages) do
       Task.Supervisor.start_child(state.task_supervisor, fn ->
         case HistorySync.fetch(hsn) do
           {:ok, result} ->
@@ -4299,95 +3082,18 @@ defmodule Amarula.Connection do
     state
   end
 
-  defp history_notification(%{protocolMessage: %{historySyncNotification: hsn}})
-       when not is_nil(hsn),
-       do: [hsn]
-
-  defp history_notification(%{deviceSentMessage: %{message: inner}}) when not is_nil(inner),
-    do: history_notification(inner)
-
-  defp history_notification(_), do: []
-
-  # Baileys sendReceipt(jid, _, [id], 'hist_sync'): <receipt type="hist_sync"
-  # to=<bare-user jid> id=..>. Tells the server we received the history sync so it
-  # marks initial sync complete (device leaves "Paused").
   defp send_hist_sync_receipt(state, node) do
-    from = NodeUtils.get_attr(node, "from")
-    jid = JID.jid_normalized_user(from)
-
-    receipt = %Node{
-      tag: "receipt",
-      attrs: [
-        {"id", NodeUtils.get_attr(node, "id")},
-        {"to", jid},
-        {"type", "hist_sync"}
-      ],
-      content: nil
-    }
-
     Logger.debug("Sending hist_sync receipt (initial-sync ack)")
-    send_binary_node(state, receipt)
+    send_binary_node(state, Receive.hist_sync_receipt(node))
   end
 
-  # A channel post gets no delivery receipt, only the stanza ack (Baileys:
-  # "processed newsletter message without receipts").
   defp send_delivery_receipt(state, node) do
-    if JID.jid_newsletter?(NodeUtils.get_attr(node, "from")),
-      do: send_message_ack(state, node),
-      else: send_person_receipt(state, node)
+    send_binary_node(state, Receive.delivery_receipt(state, node))
   end
 
-  defp send_person_receipt(state, node) do
-    from = NodeUtils.get_attr(node, "from")
-    participant = NodeUtils.get_attr(node, "participant")
-    category = NodeUtils.get_attr(node, "category")
-    author = participant || from
-
-    type =
-      cond do
-        category == "peer" -> "peer_msg"
-        author_is_me?(state, author) -> "sender"
-        true -> nil
-      end
-
-    # Baileys: for type="sender" on a 1:1 (pn/lid) jid, recipient=jid and
-    # to=participant; otherwise (a group, the status feed, a broadcast list, no
-    # participant) the
-    # plain to+participant form.
-    to_attrs =
-      if type == "sender" and is_binary(participant) and person_jid?(from) do
-        [{"recipient", from}, {"to", participant}]
-      else
-        [{"to", from}] ++ optional_attr("participant", participant)
-      end
-
-    attrs =
-      [{"id", NodeUtils.get_attr(node, "id")}] ++ to_attrs ++ optional_attr("type", type)
-
-    receipt = %Node{tag: "receipt", attrs: attrs, content: nil}
-    send_binary_node(state, receipt)
-  end
-
-  defp person_jid?(jid) do
-    match?(%Amarula.Address{kind: kind} when kind in [:pn, :lid], Amarula.Address.parse(jid))
-  end
-
-  # Retry receipt for a message we failed to decrypt, ported from Baileys
-  # sendRetryRequest (messages-recv.ts, minus the retry-manager/placeholder
-  # machinery): <receipt id type="retry" to [participant] [recipient]> with
-  # <retry count id t v error/> + <registration/>; from the second retry on,
-  # a <keys> bundle (one-time prekey + signed prekey + device identity) so the
-  # sender can rebuild the session from scratch.
   defp send_retry_request(state, node) do
     msg_id = NodeUtils.get_attr(node, "id")
     participant = NodeUtils.get_attr(node, "participant")
-
-    # Counter is keyed on the participant (not the message id) so repeated
-    # failures from the SAME broken sender escalate: count>1 attaches the
-    # <keys> bundle, which a sender with no session to us needs to redistribute
-    # its sender key. Baileys keys on msgId:participant, but a member whose SKDM
-    # we lost sends a NEW bare skmsg each time, so a per-message counter would
-    # never escalate and the keys bundle would never go out.
     cache_key = participant || NodeUtils.get_attr(node, "from")
     retry_count = Map.get(state.msg_retry_counts, cache_key, 0) + 1
 
@@ -4397,52 +3103,24 @@ defmodule Amarula.Connection do
     else
       state = %{state | msg_retry_counts: Map.put(state.msg_retry_counts, cache_key, retry_count)}
 
-      retry_child = %Node{
-        tag: "retry",
-        attrs: [
-          {"count", Integer.to_string(retry_count)},
-          {"id", msg_id},
-          {"t", NodeUtils.get_attr(node, "t") || ""},
-          {"v", "1"},
-          {"error", "0"}
-        ],
-        content: nil
-      }
-
-      registration_child = %Node{
-        tag: "registration",
-        attrs: %{},
-        content: <<state.auth_creds.registration_id::big-unsigned-32>>
-      }
-
       {state, extra_children} =
         if retry_count > 1 do
-          {state, keys_node} = build_retry_keys_node(state)
-          {state, [keys_node]}
+          {updated_creds, keys_node} = Receive.retry_keys_node(state.auth_creds)
+          {update_creds(state, updated_creds), [keys_node]}
         else
           {state, []}
         end
 
-      attrs =
-        [
-          {"id", msg_id},
-          {"type", "retry"},
-          {"to", NodeUtils.get_attr(node, "from")}
-        ] ++
-          optional_attr("participant", participant) ++
-          optional_attr("recipient", NodeUtils.get_attr(node, "recipient"))
-
-      receipt = %Node{
-        tag: "receipt",
-        attrs: attrs,
-        content: [retry_child, registration_child] ++ extra_children
-      }
+      receipt =
+        Receive.retry_receipt(
+          node,
+          retry_count,
+          state.auth_creds.registration_id,
+          extra_children
+        )
 
       Logger.debug("Sending retry receipt for message #{msg_id} (count=#{retry_count})")
 
-      # `attempt` is the escalating per-peer retry count: a one-off is normal, a
-      # climbing attempt means a peer we can't re-establish a session with (poison
-      # message / lost sender key). That's the signal worth alerting on.
       Amarula.Telemetry.emit([:amarula, :retry, :sent], profile(state), %{
         count: 1,
         attempt: retry_count
@@ -4452,175 +3130,43 @@ defmodule Amarula.Connection do
     end
   end
 
-  # <keys> bundle for a retry receipt: reserves a fresh one-time prekey
-  # (persisted internally) and includes identity + signed prekey + device
-  # identity, mirroring Baileys' getNextPreKeys(authState, 1) block.
-  defp build_retry_keys_node(state) do
-    creds = state.auth_creds
-    {updated_creds, [{key_id, pair} | _]} = PreKeys.get_next_pre_keys(creds, 1)
-
-    state = update_creds(state, updated_creds)
-
-    keys_node = %Node{
-      tag: "keys",
-      attrs: %{},
-      content: [
-        %Node{tag: "type", attrs: %{}, content: PreKeys.key_bundle_type()},
-        %Node{tag: "identity", attrs: %{}, content: creds.signed_identity_key.public},
-        PreKeys.xmpp_pre_key(pair, key_id),
-        PreKeys.xmpp_signed_pre_key(creds.signed_pre_key),
-        %Node{
-          tag: "device-identity",
-          attrs: %{},
-          content: DeviceIdentity.encode(creds.account, true)
-        }
-      ]
-    }
-
-    {state, keys_node}
-  end
-
-  # fromMe: the author is one of our own identities (pn or lid user part).
-  defp author_is_me?(state, author) do
-    me = Map.get(state.auth_creds, :me) || %{}
-
-    author_user =
-      case JID.decode(author) do
-        %{user: user} -> user
-        _ -> nil
-      end
-
-    my_users =
-      [Map.get(me, :id), Map.get(me, :lid)]
-      |> Enum.reject(&is_nil/1)
-      |> Enum.map(fn jid ->
-        case JID.decode(jid) do
-          %{user: user} -> user
-          _ -> nil
-        end
-      end)
-
-    author_user != nil and author_user in my_users
-  end
-
-  defp optional_attr(_key, nil), do: []
-  defp optional_attr(key, value), do: [{key, value}]
-
   # --- app-state sync (C2) ---
 
-  alias Amarula.Protocol.AppState.{Keys, Patch, Sync}
+  alias Amarula.Protocol.AppState.Sync
 
-  # Store any app-state-sync keys shared in these messages; resync if we got some.
   defp maybe_handle_app_state_key_share(state, messages) do
-    case AppStateOps.sync_keys_in(messages) do
-      [] ->
+    case AppStateOps.store_shared_keys(scope(state), profile(state), messages) do
+      0 ->
         state
 
-      keys ->
-        Enum.each(keys, fn {key_id_b64, key_data} ->
-          Amarula.Storage.put(
-            scope(state),
-            profile(state),
-            :app_state_sync_key,
-            key_id_b64,
-            key_data
-          )
-        end)
-
-        Logger.debug("Stored #{length(keys)} app-state-sync key(s); syncing app state")
+      count ->
+        Logger.debug("Stored #{count} app-state-sync key(s); syncing app state")
         resync_app_state(state)
     end
   end
 
-  # Request + decode patches for the named collections (all by default), persist
-  # new state, emit changes. A server_sync notification names ONE collection, so
-  # we resync just that one (Baileys: resyncAppState([name])) rather than hammer
-  # the server with all five.
-  # `:sync_app_state` gates the AUTOMATIC triggers (server_sync/account_sync/
-  # key-share) — #59. Shared keys are still stored upstream, so re-enabling later
-  # works. An explicit `AppState.force_resync/2` is the consumer asking for one
-  # anyway, so it calls `do_resync_app_state/2` and bypasses this.
   defp resync_app_state(state, names \\ Sync.collections()) do
     if sync_app_state?(state.config), do: do_resync_app_state(state, names), else: state
   end
 
   defp do_resync_app_state(state, names) do
-    collections =
-      Enum.map(names, fn name ->
-        st = load_collection_state(state, name)
-        {name, st.version, st.version == 0}
-      end)
-
-    iq = Sync.request_iq(collections)
-    # Tracked (not blocking): the reply continues in handle_tracked_iq(:app_state_sync).
+    iq = AppStateOps.resync_iq(scope(state), profile(state), names)
     send_tracked_iq(state, iq, :app_state_sync)
   end
 
   defp apply_app_state_reply(state, reply) do
-    get_key = fn id_b64 ->
-      case Amarula.Storage.get(scope(state), profile(state), :app_state_sync_key, id_b64) do
-        {:ok, key_data} -> Keys.expand(key_data)
-        :error -> nil
-      end
-    end
-
-    reply
-    |> Sync.extract_collections()
-    |> Enum.each(fn %{name: name, patches: patches} ->
-      prior = load_collection_state(state, name)
-
-      {:ok, changes, new_state, mismatches} =
-        Sync.decode_collection(patches, prior, get_key, name)
-
-      # See Sync.decode_collection/5 moduledoc for the patch-MAC-vs-snapshot-MAC
-      # handling this reports (ported from Baileys' chat-utils.ts resilience fix,
-      # upstream PR #2456): neither kind aborts the collection outright, so a
-      # single persistently-corrupt record can no longer freeze this collection's
-      # sync at the same version forever.
-      Enum.each(mismatches, fn reason ->
-        Logger.warning("app-state sync for #{name}: #{inspect(reason)}")
-      end)
-
-      save_collection_state(state, name, new_state)
-      emit_app_state_changes(state, changes)
+    scope(state)
+    |> AppStateOps.apply_reply(profile(state), reply)
+    |> Enum.each(fn {chats, contacts} ->
+      if chats != [], do: emit_to_subscribers(state, :chats_update, chats)
+      if contacts != [], do: emit_to_subscribers(state, :contacts_update, contacts)
     end)
   end
 
-  defp emit_app_state_changes(state, changes) do
-    {chats, contacts} = AppStateOps.partition_changes(changes)
-    if chats != [], do: emit_to_subscribers(state, :chats_update, chats)
-    if contacts != [], do: emit_to_subscribers(state, :contacts_update, contacts)
-  end
-
-  defp load_collection_state(state, name) do
-    case Amarula.Storage.get(scope(state), profile(state), :app_state_version, name) do
-      {:ok, st} -> st
-      :error -> Patch.new_state()
-    end
-  end
-
-  defp save_collection_state(state, name, st) do
-    Amarula.Storage.put(scope(state), profile(state), :app_state_version, name, st)
-  end
-
-  # Drop a collection's stored version/hash so the next resync_app_state/2 call
-  # requests from version 0 — the server sees the same shape of request as a
-  # first-ever sync (return_snapshot: true) and sends a full snapshot.
-  defp reset_collection_state(state, name) do
-    save_collection_state(state, name, Patch.new_state())
-  end
-
   defp scope(state), do: state.conn.storage
-
-  # The connection handle (Amarula.Conn) — the one built at connect, carrying the
-  # storage/retry-cache scopes, profile, and plugin pipelines.
   defp conn(state), do: state.conn
-
   defp profile(state), do: state.conn.profile
 
-  # Resolve startup creds: explicit config[:auth] > profile's stored creds >
-  # freshly generated. Amarula owns persistence (Storage :creds/:self), so a
-  # consumer normally just names a :profile and never touches credentials.
   defp resolve_auth_creds(conn, config) do
     case Map.get(config, :auth) do
       creds when is_map(creds) and map_size(creds) > 0 ->
@@ -4640,63 +3186,29 @@ defmodule Amarula.Connection do
     end
   end
 
-  # The single path for a credentials change: store the new creds in state and
-  # write them to the profile's storage. Amarula OWNS credential persistence (the
-  # Storage :creds/:self entry the next connect reloads), so there is no public
-  # :creds_update event — the consumer never handles credentials.
   defp update_creds(state, new_creds) do
     state = %{state | auth_creds: new_creds}
     Amarula.Storage.put(scope(state), profile(state), :creds, :self, new_creds)
     state
   end
 
-  # The logged-in identity (me.id/me.lid/me.name) from auth creds.
   defp me(state), do: Map.get(state.auth_creds, :me, %{})
 
-  # A PUSH_NAME history-sync carries push names by jid. If ours is in there and we
-  # only have the "~" placeholder, adopt the real name, persist it, and re-send
-  # presence (the phone shows the real device name + flips active).
   defp learn_own_push_name(state, []), do: state
 
   defp learn_own_push_name(state, push_names) do
-    me = me(state)
-    my_users = [me[:id], me[:lid]] |> Enum.reject(&is_nil/1) |> Enum.map(&Amarula.Address.parse/1)
+    case Login.own_push_name(me(state), push_names) do
+      nil ->
+        state
 
-    real_name =
-      Enum.find_value(push_names, fn {jid, name} ->
-        addr = Amarula.Address.parse(jid)
-        if addr && Enum.any?(my_users, &Amarula.Address.same_account?(&1, addr)), do: name
-      end)
-
-    if real_name && me[:name] in [nil, "~"] do
-      new_state = update_creds(state, put_in(state.auth_creds, [:me, :name], real_name))
-      Logger.info("Learned push name: #{inspect(real_name)} — refreshing presence")
-      # Honor mark_online_on_connect here too: learning the name must not force a
-      # connection that opted out of presence back online.
-      maybe_mark_online(new_state)
-    else
-      state
+      real_name ->
+        new_state = update_creds(state, put_in(state.auth_creds, [:me, :name], real_name))
+        Logger.info("Learned push name: #{inspect(real_name)} — refreshing presence")
+        maybe_mark_online(new_state)
     end
   end
 
   defp retry_cache(state), do: state.conn.retry_cache
-
-  # Run the receive pipeline over each message; keep transformed ones, drop halts.
-  defp run_recv_steps(%{conn: %{recv_steps: []}}, _from, _id, messages), do: messages
-
-  defp run_recv_steps(state, from, id, messages) do
-    steps = state.conn.recv_steps
-    profile = state.conn.profile
-
-    Enum.flat_map(messages, fn message ->
-      ctx = %{message: message, from: from, id: id, profile: profile}
-
-      case Amarula.Plugin.run(steps, ctx) do
-        {:cont, %{message: m}} -> [m]
-        {:halt, _reason} -> []
-      end
-    end)
-  end
 
   # init/1 accepts a built %Conn{} (normal path) or a bare config map (tests that
   # start Connection directly). For the bare map, default :profile so a
@@ -5078,43 +3590,14 @@ defmodule Amarula.Connection do
   @spec resolve_pn_to_lid?(map()) :: boolean()
   def resolve_pn_to_lid?(config), do: Map.get(config, :resolve_pn_to_lid, false)
 
-  # Opt-in PN→LID re-addressing (see `resolve_pn_to_lid?/1`). Off by default: the
-  # envelope keeps whatever was addressed, which is what `docs/LID_PN.md` documents.
-  #
-  # Applied at THIS boundary and not inside `ConversationSender` on purpose. The
-  # sender's registry key IS `{instance_id, recipient_jid}`, so resolving any later
-  # would let a PN caller and a LID caller run two senders for the same person and
-  # fork the shared ratchet — precisely what the per-recipient lock exists to
-  # prevent. Rewriting before the key is derived keeps one sender per human.
-  #
-  # `jid_user?/1` excludes groups; a jid already on `@lid` is left alone; and an
-  # unmapped contact falls through unchanged rather than failing.
   defp lid_target(state, jid) do
-    if resolve_pn_to_lid?(state.config) and JID.jid_user?(jid) and not JID.lid_user?(jid) do
-      case LidMappingFileStore.lid_for_pn(state.conn, JID.jid_normalized_user(jid)) do
-        lid when is_binary(lid) -> JID.encode(%{user: lid, server: "lid"})
-        _ -> jid
-      end
-    else
-      jid
-    end
+    SessionOps.lid_target(state.conn, resolve_pn_to_lid?(state.config), jid)
   end
 
-  # Baileys sendPresenceUpdate('available'): <presence name={me.name} type="available"/>.
   defp send_presence_available(state) do
-    # Personal accounts (and profiles paired before push-name learning existed)
-    # carry no me.name; "~" is the bootstrap placeholder WhatsApp accepts. The
-    # real push name self-heals later from the PUSH_NAME history sync.
     name = get_in(state.auth_creds, [:me, :name]) || "~"
-
-    node = %Node{
-      tag: "presence",
-      attrs: [{"name", String.replace(name, "@", "")}, {"type", "available"}],
-      content: nil
-    }
-
     Logger.debug("Sending presence available (name: #{name})")
-    send_binary_node(state, node)
+    send_binary_node(state, Login.presence_available_node(name))
   end
 
   defp upload_pre_keys(state, count, kind \\ :prekey_upload) do

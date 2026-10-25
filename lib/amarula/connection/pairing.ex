@@ -139,6 +139,7 @@ defmodule Amarula.Connection.Pairing do
       biz_name = if business_node, do: NodeUtils.get_attr(business_node, "name"), else: nil
 
       signal_identity = DeviceIdentity.signal_identity(lid, verified_account.accountSignatureKey)
+      # Encode without the account signature key
       account_enc = DeviceIdentity.encode(verified_account, false)
       reply_node = pair_device_sign_reply(msg_id, device_identity.keyIndex, account_enc)
 
@@ -174,6 +175,9 @@ defmodule Amarula.Connection.Pairing do
   """
   @spec generate_qr_code(String.t(), map(), map()) :: String.t()
   def generate_qr_code(ref, auth_creds, config) do
+    # Matches Baileys buildPairingQRData (rc13):
+    # "https://wa.me/settings/linked_devices#" +
+    #   [ref, noiseKey, identityKey, advSecretKey, companionPlatformId].join(",")
     noise_key_b64 = Base.encode64(auth_creds.noise_key.public)
     identity_key_b64 = Base.encode64(auth_creds.signed_identity_key.public)
     adv_b64 = auth_creds.adv_secret_key
@@ -222,6 +226,7 @@ defmodule Amarula.Connection.Pairing do
   @doc "Validate or generate an 8-character Crockford link-code pairing code."
   @spec build_pairing_code(String.t() | nil) ::
           {:ok, String.t()} | {:error, :custom_pairing_code_must_be_8_chars}
+  # nil → random 8-char Crockford code; a custom code must be exactly 8 chars.
   def build_pairing_code(nil), do: {:ok, CompanionReg.crockford_encode(Crypto.random_bytes(5))}
   def build_pairing_code(code) when is_binary(code) and byte_size(code) == 8, do: {:ok, code}
   def build_pairing_code(_), do: {:error, :custom_pairing_code_must_be_8_chars}
@@ -268,6 +273,9 @@ defmodule Amarula.Connection.Pairing do
   def parse_link_code_notification(node) do
     inner = NodeUtils.get_binary_node_child(node, "link_code_companion_reg")
 
+    # The same tag also arrives as a fieldless notification (Baileys #2600). Guard
+    # buffer extraction with `with` so a missing field logs-and-skips rather than
+    # crashing the connection.
     with reg when not is_nil(reg) <- inner,
          stage when stage in [nil, "primary_hello"] <- NodeUtils.get_attr(reg, "stage"),
          ref when not is_nil(ref) <- child_buffer(reg, "link_code_pairing_ref"),
@@ -341,6 +349,7 @@ defmodule Amarula.Connection.Pairing do
     {updated_creds, iq}
   end
 
+  # salt(32) <> iv(16) <> AES-CTR(pairing ephemeral pub, derivePairingCodeKey(code, salt), iv)
   defp generate_pairing_key(creds) do
     salt = Crypto.random_bytes(32)
     iv = Crypto.random_bytes(16)
@@ -349,6 +358,7 @@ defmodule Amarula.Connection.Pairing do
     salt <> iv <> ciphered
   end
 
+  # salt(0..32) <> iv(32..48) <> payload(48..80); AES-CTR-decrypt the wrapped pub.
   defp decipher_link_public_key(creds, buffer) do
     <<salt::binary-size(32), iv::binary-size(16), payload::binary-size(32), _rest::binary>> =
       buffer
@@ -357,11 +367,14 @@ defmodule Amarula.Connection.Pairing do
     Crypto.aes_decrypt_ctr(payload, key, iv)
   end
 
+  # Baileys `${browser[1]} (${browser[0]})` → "Chrome (Mac OS)".
   defp platform_display([os, browser_name | _]), do: "#{browser_name} (#{os})"
   defp platform_display(_), do: "Chrome"
 
   defp child(tag, content), do: %Node{tag: tag, attrs: [], content: content}
 
+  # Fetch a named child's content, but only if it's a binary buffer (the #2600
+  # guard — a fieldless notification yields nil, not a crash).
   defp child_buffer(node, tag) do
     case NodeUtils.get_binary_node_child(node, tag) do
       %Node{content: content} when is_binary(content) -> content

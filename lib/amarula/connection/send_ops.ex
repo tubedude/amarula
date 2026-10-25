@@ -140,6 +140,15 @@ defmodule Amarula.Connection.SendOps do
   `post_status`), newsletters, broadcast lists, and Meta AI bot targets.
   """
   @spec resolve_target(term()) :: {:ok, String.t()} | {:error, term()}
+  # A raw jid STRING has to face the same check as a parsed `%Address{}`.
+  # `Address.to_jid/1` passes strings through untouched by design — it is the "I
+  # already hold a jid" path — but on the consumer send boundary that is a hole:
+  # `send_text(conn, "status@broadcast", …)` would post a status purely because
+  # the caller passed a string instead of `msg.channel` (#50).
+  #
+  # Only unmodelled kinds and the status feed are refused; everything else returns
+  # the ORIGINAL string rather than a re-encoded one, so this cannot quietly
+  # rewrite a target (`@c.us` would otherwise normalize to `@s.whatsapp.net`).
   def resolve_target(target) when is_binary(target) do
     case Amarula.Address.parse(target) do
       %Amarula.Address{kind: :unsupported, server: server} -> {:error, {:unsupported, server}}
@@ -151,14 +160,22 @@ defmodule Amarula.Connection.SendOps do
     end
   end
 
+  # `status@broadcast` is a real jid, but sending to it POSTS a status to every
+  # contact. A bot replying to `msg.channel` of a status post must not do that —
+  # the reply belongs to `msg.from`, the author.
   def resolve_target(%Amarula.Address{kind: :status}), do: {:error, :status_post_unsupported}
 
+  # Channel posts are plaintext stanzas of their own, sent only by channel admins —
+  # not the Signal send pipeline. Refuse until that is implemented.
   def resolve_target(%Amarula.Address{kind: :newsletter}),
     do: {:error, :newsletter_send_unsupported}
 
+  # Sending to a broadcast list means fanning out to members we do not know.
   def resolve_target(%Amarula.Address{kind: :broadcast}),
     do: {:error, :broadcast_list_send_unsupported}
 
+  # Meta AI takes its own send protocol (bot USync profile, bot metadata), which is
+  # not implemented.
   def resolve_target(%Amarula.Address{kind: :bot}), do: {:error, :bot_send_unsupported}
   def resolve_target(target), do: Amarula.Address.to_jid(target)
 
@@ -168,6 +185,8 @@ defmodule Amarula.Connection.SendOps do
   """
   @spec status_audience(Enumerable.t()) ::
           {:ok, [String.t()]} | {:error, {:invalid_audience, term()}}
+  # Account-level PN/LID jids for a status audience, deduped. Anything else (a group,
+  # the status feed itself, a non-jid) is refused by name.
   def status_audience(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
       case Amarula.Address.parse(entry) do
@@ -192,6 +211,14 @@ defmodule Amarula.Connection.SendOps do
   """
   @spec resend_payload(String.t(), struct(), map()) :: map()
   def resend_payload(msg_id, message, stanza_attrs) do
+    # Re-encrypt + resend the original (same id, so the recipient replaces
+    # rather than duplicates). A fresh ConversationSender pass picks up the
+    # session the retry's <keys> bundle just injected. Replay the original
+    # stanza_attrs so a peer/edit stanza keeps its category/edit on resend.
+    # Per-enc attrs aren't cached — re-derive them from the message itself
+    # (deterministic), so a retried MEDIA resend keeps its `mediatype` and
+    # the server doesn't 479 the retry.
+    # Fire-and-forget: no caller is waiting, so `from` is nil.
     enc_attrs =
       case MessageContent.media_type(message) do
         nil -> %{}

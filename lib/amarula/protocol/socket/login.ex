@@ -88,6 +88,7 @@ defmodule Amarula.Protocol.Socket.Login do
   def passive_iq(iq_id, tag) do
     %Node{
       tag: "iq",
+      # List attrs preserve Baileys order: to, xmlns, type, id
       attrs: [
         {"to", Constants.s_whatsapp_net()},
         {"xmlns", "passive"},
@@ -136,6 +137,7 @@ defmodule Amarula.Protocol.Socket.Login do
   def ping_iq(ping_id) do
     %Node{
       tag: "iq",
+      # Using list-based attrs to preserve Baileys order: id, to, type, xmlns
       attrs: [
         {"id", ping_id},
         {"to", "@s.whatsapp.net"},
@@ -227,6 +229,9 @@ defmodule Amarula.Protocol.Socket.Login do
   @doc "Extract `{code, reason}` from a `<stream:error>` stanza (Baileys `getErrorCodeFromStreamError`)."
   @spec stream_error_details(Node.t()) :: {integer(), String.t()}
   def stream_error_details(node) do
+    # get_first_child_tag/1 returns "" (never nil) for a childless node, so the
+    # "unknown" fallback has to test for the empty string — `|| "unknown"` never
+    # fired, and a childless stream error surfaced as an empty reason.
     reason =
       case NodeUtils.get_first_child_tag(node) do
         "" -> "unknown"

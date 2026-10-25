@@ -81,6 +81,9 @@ defmodule Amarula.Connection.AppStateOps do
   @spec reset_collections(term(), term(), :all | [String.t()]) :: [String.t()]
   def reset_collections(scope, profile, names) do
     resolved = if names == :all, do: Sync.collections(), else: names
+    # Drop each collection's stored version/hash so the next resync_app_state/2 call
+    # requests from version 0 — the server sees the same shape of request as a
+    # first-ever sync (return_snapshot: true) and sends a full snapshot.
     Enum.each(resolved, &save_collection_state(scope, profile, &1, Patch.new_state()))
     resolved
   end
@@ -107,6 +110,11 @@ defmodule Amarula.Connection.AppStateOps do
       {:ok, changes, new_state, mismatches} =
         Sync.decode_collection(patches, prior, get_key, name)
 
+      # See Sync.decode_collection/5 moduledoc for the patch-MAC-vs-snapshot-MAC
+      # handling this reports (ported from Baileys' chat-utils.ts resilience fix,
+      # upstream PR #2456): neither kind aborts the collection outright, so a
+      # single persistently-corrupt record can no longer freeze this collection's
+      # sync at the same version forever.
       Enum.each(mismatches, fn reason ->
         Logger.warning("app-state sync for #{name}: #{inspect(reason)}")
       end)

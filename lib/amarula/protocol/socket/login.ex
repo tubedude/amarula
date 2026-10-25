@@ -243,10 +243,10 @@ defmodule Amarula.Protocol.Socket.Login do
   end
 
   @doc "Find our own push name from a `[{jid, name}]` history-sync list when `me.name` is still unset/`\"~\"`."
-  @spec own_push_name(map(), [{String.t(), String.t()}]) :: String.t() | nil
+  @spec own_push_name(map() | nil, [{String.t(), String.t()}]) :: String.t() | nil
   def own_push_name(me, push_names) do
     my_users =
-      [Map.get(me, :id), Map.get(me, :lid)]
+      [me[:id], me[:lid]]
       |> Enum.reject(&is_nil/1)
       |> Enum.map(&Amarula.Address.parse/1)
 
@@ -256,7 +256,7 @@ defmodule Amarula.Protocol.Socket.Login do
         if addr && Enum.any?(my_users, &Amarula.Address.same_account?(&1, addr)), do: name
       end)
 
-    if real_name && Map.get(me, :name) in [nil, "~"], do: real_name, else: nil
+    if real_name && me[:name] in [nil, "~"], do: real_name, else: nil
   end
 
   # --- internals ---

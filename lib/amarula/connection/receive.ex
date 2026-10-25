@@ -196,8 +196,8 @@ defmodule Amarula.Connection.Receive do
   end
 
   @doc "Our own identity as an `%Amarula.Address{}`, or empty before login."
-  def own_address(me) when is_map(me) do
-    case Map.get(me, :id) do
+  def own_address(me) do
+    case me[:id] do
       id when is_binary(id) -> Amarula.Address.parse(id) || Amarula.Address.empty()
       _ -> Amarula.Address.empty()
     end
@@ -237,7 +237,7 @@ defmodule Amarula.Connection.Receive do
   def own_account?(state, %Amarula.Address{} = addr) do
     me = Map.get(state.auth_creds, :me, %{})
 
-    [Map.get(me, :id), Map.get(me, :lid)]
+    [me[:id], me[:lid]]
     |> Enum.reject(&is_nil/1)
     |> Enum.map(&Amarula.Address.parse/1)
     |> Enum.any?(&Amarula.Address.same_account?(&1, addr))

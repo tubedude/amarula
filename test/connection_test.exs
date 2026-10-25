@@ -998,6 +998,12 @@ defmodule Amarula.ConnectionTest do
       node = own_sender_node(%{"from" => bad})
       refute Connection.own_sender?(@state, node, bad)
     end
+
+    test "returns false and does not crash when account is not paired yet (me is nil)" do
+      unpaired_state = %{auth_creds: %{me: nil}}
+      node = own_sender_node(%{"from" => @other})
+      refute Connection.own_sender?(unpaired_state, node, @other)
+    end
   end
 
   describe "duplicate_decrypt_error?/1 — consumed-key duplicate detection (receipt as delivered, not nack)" do

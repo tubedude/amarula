@@ -1893,7 +1893,7 @@ defmodule Amarula.Connection do
 
     case ConversationSender.deliver(opts, msg) do
       {:ok, sender} ->
-        state = ensure_sender_monitor(state, jid, sender)
+        state = ensure_sender_monitor(state, jid, sender, from)
         {:noreply, park_ack(state, msg_id, from, shape, jid)}
 
       {:error, reason} ->
@@ -1905,14 +1905,22 @@ defmodule Amarula.Connection do
     end
   end
 
-  # Monitor a recipient's sender once, the first time we park a send for it. The
-  # sender is per recipient and may hold several in-flight sends; one monitor
-  # covers them all. On its :DOWN we fail every parked send for this jid. A
-  # fire-and-forget send (no parked entry) needs no monitor — but harmless to set.
-  # Monitor a recipient's sender once (the self()-bound Process.monitor stays
-  # here; AckLifecycle owns the map). One monitor covers all the recipient's
-  # in-flight sends; on its :DOWN we fail every parked send for this jid.
-  defp ensure_sender_monitor(state, jid, sender) do
+  # Monitor a recipient's sender once, the first time we park a send for it
+  # (`from != nil`). The sender is per recipient and may hold several in-flight
+  # sends; one monitor covers them all. On its :DOWN we fail every parked send for
+  # this jid.
+  #
+  # A fire-and-forget send (`from == nil`, e.g. a retry resend) parks nothing in
+  # `pending_acks`, so `resolve_ack` never runs `drop_monitor_if_idle` for it.
+  # Installing a monitor when `from == nil` would leave `jid` in `sender_monitors`
+  # until the sender idle-stops 30s later — and if a tracked send starts a fresh
+  # sender while that `:normal` `:DOWN` is still queued in our mailbox,
+  # `monitored?/2` would see the stale entry, skip monitoring the new sender, and
+  # the queued `:DOWN` would then delete the map entry, leaving the new parked send
+  # unmonitored.
+  defp ensure_sender_monitor(state, _jid, _sender, nil), do: state
+
+  defp ensure_sender_monitor(state, jid, sender, _from) do
     if AckLifecycle.monitored?(state, jid) do
       state
     else
@@ -2789,7 +2797,7 @@ defmodule Amarula.Connection do
   defp maybe_migrate_sender_session(state, node) do
     author = NodeUtils.get_attr(node, "participant") || NodeUtils.get_attr(node, "from")
 
-    with true <- is_binary(author) and JID.jid_user?(author) and not JID.lid_user?(author),
+    with true <- JID.pn_user?(author),
          %{user: pn_user} <- JID.decode(author),
          false <- MapSet.member?(state.migrated_pn_sessions, pn_user),
          lid_user when is_binary(lid_user) <- LidMappingFileStore.lid_for_pn(conn(state), author),
@@ -5090,7 +5098,7 @@ defmodule Amarula.Connection do
   # `jid_user?/1` excludes groups; a jid already on `@lid` is left alone; and an
   # unmapped contact falls through unchanged rather than failing.
   defp lid_target(state, jid) do
-    if resolve_pn_to_lid?(state.config) and JID.jid_user?(jid) and not JID.lid_user?(jid) do
+    if resolve_pn_to_lid?(state.config) and JID.pn_user?(jid) do
       case LidMappingFileStore.lid_for_pn(state.conn, JID.jid_normalized_user(jid)) do
         lid when is_binary(lid) -> JID.encode(%{user: lid, server: "lid"})
         _ -> jid

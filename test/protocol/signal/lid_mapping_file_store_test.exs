@@ -25,15 +25,17 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStoreTest do
       assert Store.lid_for_pn(conn, @pn) == "20000000001"
     end
 
-    test "skips invalid pairs (two PNs, two LIDs, junk)", %{conn: conn} do
+    test "skips invalid pairs (two PNs, two LIDs, hosted.lid, junk)", %{conn: conn} do
       pairs = [
         {@pn, "10000000002@s.whatsapp.net"},
         {@lid, "20000000002@lid"},
+        {@lid, "20000000002:99@hosted.lid"},
         {"not-a-jid", "also-not"}
       ]
 
       assert {0, []} = Store.store_mappings(conn, pairs)
       assert Store.lid_for_pn(conn, @pn) == nil
+      assert Store.lid_for_pn(conn, "20000000002") == nil
     end
 
     test "counts but does not re-report a pair that already matched", %{conn: conn} do

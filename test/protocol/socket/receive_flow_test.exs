@@ -286,6 +286,12 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert resent.attrs["id"] == msg_id
       assert resent.attrs["to"] == @jid
 
+      # A fire-and-forget retry resend (`from == nil`) must NOT leave a dangling
+      # entry in `sender_monitors` once the previous tracked send has already
+      # resolved — otherwise the sender's later `:normal` idle-stop would race a
+      # fresh tracked send and strip its monitor.
+      assert :sys.get_state(ctx.pid).sender_monitors == %{}
+
       assert_receive {[:amarula, :retry, :received], ^ref, %{count: 1}, _meta}
     end
 

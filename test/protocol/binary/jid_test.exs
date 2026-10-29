@@ -144,6 +144,15 @@ defmodule Amarula.Protocol.Binary.JIDTest do
       assert JID.hosted_lid_user?("1234@lid") == false
     end
 
+    test "pn_user?/1 identifies phone-number users (standard and hosted) and excludes LIDs" do
+      assert JID.pn_user?("1234@s.whatsapp.net") == true
+      assert JID.pn_user?("1234:99@hosted") == true
+      assert JID.pn_user?("1234@lid") == false
+      assert JID.pn_user?("1234:99@hosted.lid") == false
+      assert JID.pn_user?("1234@g.us") == false
+      assert JID.pn_user?(nil) == false
+    end
+
     test "jid_status_broadcast?/1 identifies status broadcast" do
       assert JID.jid_status_broadcast?("status@broadcast") == true
       assert JID.jid_status_broadcast?("1234@broadcast") == false

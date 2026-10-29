@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.13] - 2026-10-29
+
+### Fixed
+
+- **Fire-and-forget retry resends no longer register a `ConversationSender` monitor**,
+  preventing a stale monitor's queued idle-stop `:DOWN` from unmonitoring a later
+  tracked send to the same recipient.
+- **`@hosted.lid` JIDs are no longer misclassified as phone-number JIDs** in
+  `LidMappingFileStore`, group metadata parsing, and PN↔LID session resolution
+  (new `JID.pn_user?/1`).
+
 ## [0.5.12] - 2026-10-24
 
 ### Changed
@@ -1357,7 +1368,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.12...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.13...HEAD
+[0.5.13]: https://github.com/tubedude/amarula/compare/v0.5.12...v0.5.13
 [0.5.12]: https://github.com/tubedude/amarula/compare/v0.5.11...v0.5.12
 [0.5.11]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/tubedude/amarula/compare/v0.5.9...v0.5.10

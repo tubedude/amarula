@@ -82,7 +82,7 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   """
   @spec signal_address(Conn.t(), String.t()) :: String.t()
   def signal_address(conn, jid) do
-    with true <- JID.jid_user?(jid) and not JID.lid_user?(jid),
+    with true <- JID.pn_user?(jid),
          lid_user when is_binary(lid_user) <- lid_for_pn(conn, jid),
          %{} = decoded <- JID.decode(jid) do
       device = Map.get(decoded, :device, 0) || 0
@@ -113,7 +113,7 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   """
   @spec wire_jid(Conn.t(), String.t()) :: String.t()
   def wire_jid(conn, jid) do
-    with true <- JID.jid_user?(jid) and not JID.lid_user?(jid),
+    with true <- JID.pn_user?(jid),
          lid_user when is_binary(lid_user) <- lid_for_pn(conn, jid),
          %{} = decoded <- JID.decode(jid) do
       device = Map.get(decoded, :device, 0) || 0
@@ -179,8 +179,8 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
     end
   end
 
-  # A PN user is a normal s.whatsapp.net user (not a LID/group/etc.).
-  defp pn?(jid), do: JID.jid_user?(jid) and not JID.lid_user?(jid)
+  # A PN user is a phone-number user (`@s.whatsapp.net` or `@hosted`), never `@lid` or `@hosted.lid`.
+  defp pn?(jid), do: JID.pn_user?(jid)
 
   defp user_of(jid) do
     case JID.decode(jid) do

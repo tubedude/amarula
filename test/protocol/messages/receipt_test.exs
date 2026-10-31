@@ -110,5 +110,48 @@ defmodule Amarula.Protocol.Messages.ReceiptTest do
       assert {:ok, receipts} = Receipt.parse(node)
       assert Enum.map(receipts, & &1.message_ids) == [["MSGA"], ["MSGB"]]
     end
+
+    test "status broadcast grouped receipt uses message_id and per-user type (whatsmeow #1270)" do
+      node =
+        receipt(%{"class" => "status", "from" => "status@broadcast"}, [
+          %Node{
+            tag: "participants",
+            attrs: %{"message_id" => "STATMSG1"},
+            content: [
+              %Node{
+                tag: "user",
+                attrs: %{"jid" => @u1, "t" => "1700", "type" => "delivery"},
+                content: nil
+              },
+              %Node{
+                tag: "user",
+                attrs: %{"jid" => @u2, "t" => "1705", "type" => "read"},
+                content: nil
+              },
+              %Node{
+                tag: "user",
+                attrs: %{"jid" => "333@lid", "t" => "1710", "type" => "played"},
+                content: nil
+              }
+            ]
+          }
+        ])
+
+      assert {:ok, [r1, r2, r3]} = Receipt.parse(node)
+      assert r1.message_ids == ["STATMSG1"]
+      assert r1.status == :delivered
+      assert %Address{kind: :pn, user: "111"} = r1.participant
+      assert r1.timestamp == 1700
+
+      assert r2.message_ids == ["STATMSG1"]
+      assert r2.status == :read
+      assert %Address{kind: :pn, user: "222"} = r2.participant
+      assert r2.timestamp == 1705
+
+      assert r3.message_ids == ["STATMSG1"]
+      assert r3.status == :played
+      assert %Address{kind: :lid, user: "333"} = r3.participant
+      assert r3.timestamp == 1710
+    end
   end
 end

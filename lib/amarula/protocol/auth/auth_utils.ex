@@ -164,7 +164,7 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
         secondary: Enum.at(config.version, 1),
         tertiary: Enum.at(config.version, 2)
       },
-      platform: if(android?(config.browser), do: :ANDROID, else: :WEB),
+      platform: user_agent_platform(config),
       releaseChannel: :RELEASE,
       osVersion: "0.1",
       device: "Desktop",
@@ -174,6 +174,23 @@ defmodule Amarula.Protocol.Auth.AuthUtils do
       mcc: "000",
       localeCountryIso31661Alpha2: config.country_code || "US"
     }
+  end
+
+  # WhatsApp rejects full-history Desktop pairing on macOS (`webSubPlatform: :DARWIN`)
+  # with 428 before QR unless `userAgent.platform` is `:MACOS` rather than `:WEB`
+  # (Baileys #2677 / #2693 / #2880).
+  defp user_agent_platform(config) do
+    cond do
+      android?(config.browser) ->
+        :ANDROID
+
+      config.sync_full_history and desktop_browser?(config.browser) and
+          Enum.at(config.browser, 0) == "Mac OS" ->
+        :MACOS
+
+      true ->
+        :WEB
+    end
   end
 
   @doc """

@@ -257,7 +257,7 @@ Baileys and whatsmeow for anything unmerged but worth tracking.
   WhatsApp Web service worker (and superseding Baileys' already-stale automated
   version-update branch #2818).
 
-**Ported from post-watermark upstream review (2026-10-24):**
+**Ported from post-watermark upstream review (2026-10-31):**
 
 - **[Baileys #2866](https://github.com/WhiskeySockets/Baileys/pull/2866) /
   #2858 & [whatsmeow `a238105488`](https://github.com/tulir/whatsmeow/commit/a2381054880054719843cf7e592169696b3488a5) —
@@ -268,9 +268,10 @@ Baileys and whatsmeow for anything unmerged but worth tracking.
 - **[Baileys #2872](https://github.com/WhiskeySockets/Baileys/pull/2872) /
   #2832 — link-code pairing fixes.** `link_code_pairing_nonce` is now sent as a
   1-byte zero binary (`<<0>>`) rather than ASCII `"0"`, `link_code_companion_reg`
-  notifications ignore stages other than `nil` / `"primary_hello"`, and a
-  reconnect after `request_pairing_code/3` has set `creds.me` (while
-  `registered` is still `false`) stays on the registration handshake path.
+  notifications ignore stages other than `nil` / `"primary_hello"`, QR pairing
+  sets `registered: true` on `creds`, and a reconnect after
+  `request_pairing_code/3` has set `creds.me` (while `registered` is still
+  `false`) stays on the registration handshake path.
 - **[Baileys #2840](https://github.com/WhiskeySockets/Baileys/pull/2840) /
   #2810 — `offline="0"` treated as live.** `offline_node?/1` now treats `"0"`
   alongside `nil` and `""` as online (`offline: false`).
@@ -288,20 +289,28 @@ Baileys and whatsmeow for anything unmerged but worth tracking.
   rejects mixed LID + unmapped PN audiences with
   `{:error, :mixed_status_addressing}` instead of sending a stanza that
   WhatsApp drops or rejects with `400` / `479`.
-- **[whatsmeow #1302](https://github.com/tulir/whatsmeow/issues/1302) &
+- **[whatsmeow #1302](https://github.com/tulir/whatsmeow/issues/1302) /
+  [PR #1307](https://github.com/tulir/whatsmeow/pull/1307) &
   [Baileys #2856](https://github.com/WhiskeySockets/Baileys/pull/2856) —
-  retry receipt `<keys>` bundle extraction & domain-aware `own_device?/2`.**
-  `SessionInjector.inject_retry/4` now parses the `<registration>` and `<keys>`
-  bundle directly from `<receipt type="retry">` (preserving `@hosted.lid`'s
-  `_129` Signal domain), and `ConversationSender` compares LID/hosted.lid
-  devices against `me.lid` and PN/hosted devices against `me.id`.
-- **WA protocol version** bumped `1048663002` → `1051594400`.
-
-**Watching (open upstream — do not port speculatively):**
-- **PR #2693** (closed 2026-08-20, stale-bot auto-close, never merged) —
-  broader desktop-platform fix superseding #2741: also maps `Mac OS` +
-  `Desktop` + `syncFullHistory` to `UserAgent.Platform.MACOS` (currently
-  always `WEB` unless Android). Amarula's `create_user_agent/1` has the same
-  always-`WEB`-unless-Android gap, but the PR is dead, not merely stale — no
-  longer tracking it. Re-open watching only if someone revives the idea
-  upstream.
+  hosted coexistence (`@hosted` / `@hosted.lid`) & retry receipts.**
+  `USync.Devices` maps `is_hosted: true` to `"hosted"` / `"hosted.lid"`,
+  `LidMappingFileStore` maps hosted PN devices to `@hosted.lid` (`_129` Signal
+  domain), `ConversationSender` excludes hosted devices from group SKDM
+  distribution and uses domain-aware `own_device?/2`, `SessionInjector.inject_retry/4`
+  parses inline `<registration>` + `<keys>` bundles from `<receipt type="retry">`,
+  and retry receipts with `count >= 2` and no `<keys>` wipe the requester's
+  stale session so the resend fetches a fresh prekey bundle.
+- **[whatsmeow #1270](https://github.com/tulir/whatsmeow/issues/1270) —
+  grouped `class="status"` receipts.** `Receipt.parse/1` now reads
+  `message_id` when `key` is absent on `<participants>` and maps per-`<user>`
+  `type="delivery|read|played"` attributes onto each fanned-out receipt.
+- **[whatsmeow #1278](https://github.com/tulir/whatsmeow/issues/1278) —
+  multi-child `w:gp2` group notifications & LID↔PN mappings.**
+  `GroupNotification.parse_all/1` and `GroupNotification.lid_mappings/1` extract
+  every change child and any `participant_pn` / `phone_number` / `lid` pairs so
+  `Connection` persists the mappings and emits `:group_update` for every child.
+- **[Baileys #2880](https://github.com/WhiskeySockets/Baileys/issues/2880) /
+  #2693 — macOS desktop `UserAgent.Platform`.** `AuthUtils.create_user_agent/1`
+  sets `platform: :MACOS` when `browser` is `["Mac OS", "Desktop", _]` and
+  `sync_full_history` is `true`, matching `webSubPlatform: :DARWIN`.
+- **WA protocol version** bumped `1051594400` → `1052525806`.

@@ -97,6 +97,7 @@ defmodule Amarula.Connection.Pairing do
     |> Map.put(:account, account)
     |> Map.put(:me, %{id: jid, name: biz_name || "~", lid: lid})
     |> Map.put(:platform, platform)
+    |> Map.put(:registered, true)
     |> Map.update(:signal_identities, [signal_identity], fn identities ->
       [signal_identity | identities || []]
     end)

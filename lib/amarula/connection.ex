@@ -72,6 +72,7 @@ defmodule Amarula.Connection do
   alias Amarula.Protocol.Crypto.Constants
 
   alias Amarula.Protocol.Signal.{PreKeys, SessionInjector, SessionStore}
+  alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionCustodian}
   alias Amarula.Protocol.Signal.{DeviceListCache, TcTokenStore}
   alias Amarula.Protocol.Messages.Receipt
   alias Amarula.Protocol.Groups.Notification, as: GroupNotification
@@ -2243,7 +2244,7 @@ defmodule Amarula.Connection do
         state
 
       true ->
-        state = maybe_inject_retry_keys(state, node)
+        state = maybe_inject_retry_keys(state, node, participant)
         state = bump_retry(state, msg_id)
         resend_from_cache(state, msg_id, participant)
         state
@@ -2258,16 +2259,33 @@ defmodule Amarula.Connection do
     %{state | msg_retry_counts: Map.update(state.msg_retry_counts, key, 1, &(&1 + 1))}
   end
 
-  # A retry receipt may carry a <keys> bundle (a fresh session for the requester).
-  # Inject it so our re-encrypt uses the session the requester just advertised.
-  defp maybe_inject_retry_keys(state, node) do
+  # A retry receipt may carry a <keys> bundle (a fresh session for the requester) —
+  # inject it so our re-encrypt uses the session the requester just advertised.
+  # When <keys> is absent on retry count >= 2 (e.g. hosted Cloud API / Coexistence
+  # devices, whatsmeow #1302 / #1307), wipe the requester's stale session so
+  # ConversationSender's `ensure_sessions` fetches a fresh prekey bundle on resend.
+  defp maybe_inject_retry_keys(state, node, participant) do
     case NodeUtils.get_binary_node_child(node, "keys") do
       %Node{} ->
         SessionInjector.inject_retry(node, state.auth_creds, conn(state), state.instance_id)
         state
 
       _ ->
+        if retry_node_count(node) >= 2 and is_binary(participant) do
+          addr = LidMappingFileStore.signal_address(conn(state), participant)
+          SessionCustodian.replace(state.instance_id, conn(state), addr, nil)
+        end
+
         state
+    end
+  end
+
+  defp retry_node_count(node) do
+    with %Node{} = retry <- NodeUtils.get_binary_node_child(node, "retry"),
+         {n, _} <- Integer.parse(NodeUtils.get_attr(retry, "count") || "") do
+      n
+    else
+      _ -> 1
     end
   end
 
@@ -2294,12 +2312,21 @@ defmodule Amarula.Connection do
     dispatch_notification(state, type, node)
   end
 
-  # w:gp2 — group membership/metadata change. Parse it and emit :group_update.
+  # w:gp2 — group membership/metadata change. Harvest any LID↔PN pairs across all
+  # change children first (whatsmeow #1278), then emit :group_update per change.
   defp dispatch_notification(state, "w:gp2", node) do
-    case GroupNotification.parse(node) do
-      {:ok, update} ->
-        Logger.debug("Group update (#{inspect(elem(update.action, 0))}) in #{update.group.user}")
-        emit_to_subscribers(state, :group_update, update)
+    state = learn_lid_mappings(state, GroupNotification.lid_mappings(node))
+
+    case GroupNotification.parse_all(node) do
+      {:ok, updates} ->
+        Enum.each(updates, fn update ->
+          Logger.debug(
+            "Group update (#{inspect(elem(update.action, 0))}) in #{update.group.user}"
+          )
+
+          emit_to_subscribers(state, :group_update, update)
+        end)
+
         state
 
       {:error, reason} ->

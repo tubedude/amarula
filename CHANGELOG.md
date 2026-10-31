@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Status broadcast grouped receipts (`class="status"`, `from="status@broadcast"`):** `Receipt.parse/1` now reads `message_id` on `<participants>` and maps per-`<user>` `type="delivery|read|played"` attributes onto each fanned-out receipt (whatsmeow #1270).
+- **Multi-child `w:gp2` group notifications & LID↔PN mappings:** `GroupNotification.parse_all/1` and `GroupNotification.lid_mappings/1` extract every change child and any `participant_pn` / `phone_number` / `lid` pairs so `Connection` persists the mappings and emits `:group_update` for every child (whatsmeow #1278).
+- **Hosted coexistence (`@hosted` / `@hosted.lid`) & retry receipts:** `USync.Devices` maps `is_hosted: true` to `"hosted"` / `"hosted.lid"`, `LidMappingFileStore` preserves `@hosted.lid` (`_129` Signal domain), `ConversationSender` excludes hosted devices from group SKDM fan-out and uses domain-aware `own_device?/2`, `SessionInjector.inject_retry/4` injects inline `<registration>` + `<keys>` bundles from `<receipt type="retry">`, and retry receipts with `count >= 2` and no `<keys>` wipe the requester's stale session so the resend fetches a fresh prekey bundle (whatsmeow #1302 / #1307, Baileys #2856).
+- **Phone-number (`link_code`) pairing:** `link_code_pairing_nonce` is now sent as a 1-byte zero binary (`<<0>>`), `link_code_companion_reg` ignores stages other than `nil` / `"primary_hello"`, QR pairing sets `registered: true` on `creds`, and reconnects while `pairing_code` is pending stay on the registration handshake (Baileys #2872).
+- **macOS desktop `UserAgent.Platform`:** `AuthUtils.create_user_agent/1` sets `platform: :MACOS` when `browser` is `["Mac OS", "Desktop", _]` and `sync_full_history` is `true`, matching `webSubPlatform: :DARWIN` (Baileys #2880 / #2693).
+- **Top-level `<status>` stanza ack:** top-level `<status>` nodes now route to `:status_ack` and are acknowledged with `class="status"` (Baileys #2866).
+- **`offline="0"` attribute handling:** `offline="0"` on inbound stanzas is now treated as live (`offline: false`, Baileys #2840).
+- **Undecryptable `from_me` messages:** undecryptable messages from our own devices are plain-acked without sending a retry receipt or `500` nack (Baileys #2864).
+
+### Changed
+
+- **Pinned WhatsApp Web version bumped to `2.3000.1052525806`.**
+
 ## [0.6.0-rc.4] - 2026-10-25
 
 ### Changed

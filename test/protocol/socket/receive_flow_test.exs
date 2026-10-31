@@ -396,6 +396,43 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert resent.attrs["id"] == msg_id
       assert SessionStore.load_session(ctx.conn, "10000000001.0") != nil
     end
+
+    test "a count>=2 retry receipt without <keys> wipes the stale session and fetches a fresh bundle on resend (whatsmeow #1302 / #1307)",
+         ctx do
+      msg_id = complete_send(ctx, "hosted retry without keys")
+      assert SessionStore.load_session(ctx.conn, "10000000001.0") != nil
+
+      node =
+        Node.create("receipt", %{"from" => @jid, "id" => msg_id, "type" => "retry", "t" => "2"}, [
+          Node.create("retry", %{"count" => "2", "id" => msg_id, "v" => "1"}, nil),
+          Node.create("registration", %{}, <<1234::big-unsigned-32>>)
+        ])
+
+      inject(ctx, node)
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "class") == "receipt"
+
+      # Because the stale session was wiped, the resend must issue an xmlns="encrypt"
+      # prekey-bundle IQ for @jid before framing the resent <message>.
+      encrypt_iq = recv_frame()
+      assert encrypt_iq.tag == "iq"
+      assert attr(encrypt_iq, "xmlns") == "encrypt"
+
+      requested =
+        encrypt_iq
+        |> NodeUtils.get_binary_node_child("key")
+        |> Map.get(:content)
+        |> Enum.map(&NodeUtils.get_attr(&1, "jid"))
+
+      assert @jid in requested
+      inject(ctx, bundle_reply(attr(encrypt_iq, "id"), requested))
+
+      resent = drain_to_message(ctx)
+      assert resent.attrs["id"] == msg_id
+      assert SessionStore.load_session(ctx.conn, "10000000001.0") != nil
+    end
   end
 
   defp retry_receipt(msg_id, from) do
@@ -942,6 +979,52 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
 
       assert {:participants, :add, [%{address: %Amarula.Address{user: "10000000001"}}]} =
                update.action
+    end
+
+    test "w:gp2: emits :group_update for every child and learns LID↔PN mappings (whatsmeow #1278)",
+         ctx do
+      group = "120363000000000042@g.us"
+      new_pn = "10000000099@s.whatsapp.net"
+      new_lid = "20000000099@lid"
+
+      node =
+        Node.create(
+          "notification",
+          %{
+            "type" => "w:gp2",
+            "from" => group,
+            "participant" => "20000000001@lid",
+            "participant_pn" => @jid,
+            "id" => "N5b"
+          },
+          [
+            Node.create("remove", %{}, [
+              Node.create("participant", %{"jid" => "20000000001@lid"}, nil)
+            ]),
+            Node.create("add", %{}, [
+              Node.create(
+                "participant",
+                %{"jid" => new_lid, "phone_number" => new_pn},
+                nil
+              )
+            ])
+          ]
+        )
+
+      inject(ctx, node)
+      _ack = recv_frame()
+
+      assert_receive {:amarula, :lid_mapping_update, mappings}
+      assert length(mappings) == 2
+
+      assert_receive {:amarula, :group_update,
+                      %{action: {:participants, :remove, [%{address: %{user: "20000000001"}}]}}}
+
+      assert_receive {:amarula, :group_update,
+                      %{action: {:participants, :add, [%{address: %{user: "20000000099"}}]}}}
+
+      assert LidMappingFileStore.lid_for_pn(ctx.conn, @jid) == "20000000001"
+      assert LidMappingFileStore.lid_for_pn(ctx.conn, new_pn) == "20000000099"
     end
 
     test "picture: emits a :contacts_update with img_url changed/removed", ctx do

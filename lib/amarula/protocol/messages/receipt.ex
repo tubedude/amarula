@@ -38,10 +38,11 @@ defmodule Amarula.Protocol.Messages.Receipt do
   receipt type we don't map (e.g. `retry`, handled elsewhere).
 
   A plain receipt yields a one-element list. A **grouped** group receipt — no
-  top-level `id`/`participant`, instead one `<participants key=<msg_id>>` per
-  message holding `<user jid t>` entries — yields one receipt per (message,
-  participant), so a group's per-member delivery/read acks aren't collapsed into a
-  single empty-id event.
+  top-level `id`/`participant`, instead one `<participants key=<msg_id>>` (or
+  `message_id=<msg_id>` on status broadcast receipts) per message holding `<user
+  jid t>` entries — yields one receipt per (message, participant), so a group's
+  or status post's per-member delivery/read acks aren't collapsed into a single
+  empty-id event.
   """
   @spec parse(Node.t()) :: {:ok, [t()]} | {:error, :unknown_type}
   def parse(%Node{} = node) do
@@ -70,19 +71,22 @@ defmodule Amarula.Protocol.Messages.Receipt do
   end
 
   # Fan a grouped receipt out to one entry per (message, participant): each
-  # <participants key=msg_id> carries <user jid t> children, one per member.
+  # <participants key=msg_id> (or message_id=msg_id for class="status" status
+  # broadcast receipts, whatsmeow #1270) carries <user jid t [type]> children.
   defp grouped_receipts(node, groups, status) do
     from = address(NodeUtils.get_attr(node, "from"))
 
     for group <- groups,
-        msg_id = NodeUtils.get_attr(group, "key"),
+        msg_id = NodeUtils.get_attr(group, "key") || NodeUtils.get_attr(group, "message_id"),
         not is_nil(msg_id),
-        user <- NodeUtils.get_binary_node_children(group, "user") do
+        user <- NodeUtils.get_binary_node_children(group, "user"),
+        user_status = user_status(NodeUtils.get_attr(user, "type"), status),
+        not is_nil(user_status) do
       %{
         message_ids: [msg_id],
         from: from,
         participant: address(NodeUtils.get_attr(user, "jid")),
-        status: status,
+        status: user_status,
         timestamp: timestamp(user)
       }
     end
@@ -91,6 +95,14 @@ defmodule Amarula.Protocol.Messages.Receipt do
   # A missing type means a plain delivery receipt.
   defp status(nil), do: :delivered
   defp status(type), do: Map.get(@status_map, type)
+
+  # In status broadcast receipts (`class="status"`), each `<user>` child carries
+  # its own `type="delivery|read|played"` while the outer `<receipt>` has no
+  # `type` attribute (whatsmeow #1270). Map `"delivery"` to `:delivered` and
+  # fall back to the outer receipt's status when `<user>` has no `type`.
+  defp user_status(nil, outer_status), do: outer_status
+  defp user_status("delivery", _outer_status), do: :delivered
+  defp user_status(type, _outer_status), do: Map.get(@status_map, type)
 
   # The primary id is on the receipt; a <list> child can batch more.
   defp message_ids(node) do

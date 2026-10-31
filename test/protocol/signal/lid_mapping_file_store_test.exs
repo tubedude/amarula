@@ -35,7 +35,7 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStoreTest do
 
       assert {0, []} = Store.store_mappings(conn, pairs)
       assert Store.lid_for_pn(conn, @pn) == nil
-      assert Store.lid_for_pn(conn, "20000000002") == nil
+      assert Store.lid_for_pn(conn, "10000000002") == nil
     end
 
     test "counts but does not re-report a pair that already matched", %{conn: conn} do

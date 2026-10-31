@@ -74,8 +74,9 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
   @doc """
   LID-priority signal address for a device JID, port of Baileys
   `resolveLIDSignalAddress`. If `jid` is a PN user with a stored LID mapping,
-  return the signal address under the LID identity (`<lidUser>_1.<device>`);
-  otherwise return the plain signal address of `jid`.
+  return the signal address under the LID identity (`<lidUser>_1.<device>`, or
+  `<lidUser>_129.<device>` for a `@hosted` device); otherwise return the plain
+  signal address of `jid`.
 
   Used so a session keyed by a recipient's LID is found even when we address
   them by phone number on the wire.
@@ -110,9 +111,9 @@ defmodule Amarula.Protocol.Signal.LidMappingFileStore do
 
   @doc """
   LID-priority *wire* jid: a PN device jid mapped to its LID equivalent
-  (preserving the device), else the jid unchanged. Mirrors Baileys
-  assertSessions `wireJids` — the server serves prekey bundles keyed by the LID
-  for lid-mapped users; a PN fetch for such a user goes unanswered.
+  (preserving the device and hosted domain), else the jid unchanged. Mirrors
+  Baileys `assertSessions` `wireJids` — the server serves prekey bundles keyed by
+  the LID for lid-mapped users; a PN fetch for such a user goes unanswered.
   """
   @spec wire_jid(Conn.t(), String.t()) :: String.t()
   def wire_jid(conn, jid) do

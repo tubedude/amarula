@@ -79,11 +79,58 @@ defmodule Amarula.Protocol.Groups.NotificationTest do
   test "no change child is an error" do
     node = %Node{tag: "notification", attrs: %{"type" => "w:gp2"}, content: []}
     assert {:error, :no_change_child} = Notification.parse(node)
+    assert {:error, :no_change_child} = Notification.parse_all(node)
   end
 
   test "missing participant attr yields nil author" do
     child = %Node{tag: "subject", attrs: %{"subject" => "x"}, content: nil}
     node = %Node{tag: "notification", attrs: %{"from" => @group}, content: [child]}
     assert {:ok, %{author: nil}} = Notification.parse(node)
+  end
+
+  test "parse_all/1 extracts every change child and lid_mappings/1 collects LID↔PN pairs (whatsmeow #1278)" do
+    node = %Node{
+      tag: "notification",
+      attrs: %{
+        "type" => "w:gp2",
+        "from" => @group,
+        "participant" => "111@lid",
+        "participant_pn" => @author
+      },
+      content: [
+        %Node{
+          tag: "remove",
+          attrs: %{},
+          content: [
+            %Node{
+              tag: "participant",
+              attrs: %{"jid" => "222@lid", "phone_number" => "5511777777777@s.whatsapp.net"},
+              content: nil
+            }
+          ]
+        },
+        %Node{
+          tag: "add",
+          attrs: %{},
+          content: [
+            %Node{
+              tag: "participant",
+              attrs: %{"jid" => "5511888888888@s.whatsapp.net", "lid" => "333@lid"},
+              content: nil
+            }
+          ]
+        }
+      ]
+    }
+
+    assert {:ok, [u1, u2]} = Notification.parse_all(node)
+    assert {:participants, :remove, [%{address: %Address{user: "222"}}]} = u1.action
+    assert {:participants, :add, [%{address: %Address{user: "5511888888888"}}]} = u2.action
+
+    assert Notification.lid_mappings(node) == [
+             {"111@lid", @author},
+             {"222@lid", "5511777777777@s.whatsapp.net"},
+             {"333@lid", "5511888888888@s.whatsapp.net"}
+           ]
   end
 end

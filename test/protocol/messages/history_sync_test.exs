@@ -192,8 +192,7 @@ defmodule Amarula.Protocol.Messages.HistorySyncTest do
       assert [%Msg{id: "S1", type: :text, content: "my story"} = msg] = result.status_messages
       assert result.messages == []
 
-      # `status@broadcast` isn't an addressable jid — there's nothing to reply to.
-      assert msg.channel == nil
+      assert msg.channel == Amarula.Address.status()
     end
 
     test "a HistorySyncMsg with no inner WebMessageInfo is skipped" do

@@ -683,7 +683,10 @@ defmodule Amarula.ConnectionTest do
       # On the Signal-desync path (e.g. \"Key used already\") `from` may not parse to an
       # Address. build_msg must NOT raise (a crash here loop-crashes the connection) —
       # it builds a %Msg{} with nil channel/from and falls back to to_addr.
-      bad = "x@unknown-server"
+      #
+      # A string with no server at all, which is the only thing that is still nil
+      # after #50 — an unmodelled SERVER now parses to :unsupported (next test).
+      bad = "not-a-jid"
       node = msg_node(%{"from" => bad, "id" => "M6"})
 
       msg = Connection.build_msg(@state, %Proto.Message{conversation: "?"}, node, bad, "M6", @own)
@@ -692,6 +695,58 @@ defmodule Amarula.ConnectionTest do
       refute msg.from_me
       assert is_nil(msg.channel)
       assert Address.same_account?(msg.to, @own)
+    end
+
+    test "a @hosted group participant is its PN account's hosted device (#50)" do
+      # The second headline defect in #50. `from_addr` is
+      # `participant |> maybe_address() || stanza_from`, and while an unmodelled
+      # participant parsed to nil the `||` fell through to the GROUP — so every
+      # hosted member's message looked like it was written by the group itself,
+      # silently collapsing any per-sender logic a consumer had.
+      group = "123456789@g.us"
+      node = msg_node(%{"from" => group, "participant" => "5511777:99@hosted", "id" => "M8"})
+
+      msg =
+        Connection.build_msg(@state, %Proto.Message{conversation: "g"}, node, group, "M8", @own)
+
+      assert %Address{kind: :group} = msg.channel
+      assert %Address{kind: :pn, server: "hosted", user: "5511777", device: 99} = msg.from
+      assert Address.to_jid(msg.from) == {:ok, "5511777:99@hosted"}
+      assert Address.normalize(msg.from) == Address.pn("5511777")
+      assert Address.same_account?(msg.from, Address.pn("5511777"))
+      refute Address.group?(msg.from)
+    end
+
+    test "a sender from an unmodelled chat kind carries an :unsupported channel (#50)" do
+      # Delivered, not dropped. Unlike the nil above it keeps WHICH kind it was, so
+      # the channel is inspectable — and every send to it is refused.
+      bad = "5511777@call"
+      node = msg_node(%{"from" => bad, "id" => "M7"})
+
+      msg = Connection.build_msg(@state, %Proto.Message{conversation: "?"}, node, bad, "M7", @own)
+
+      assert %Address{kind: :unsupported, server: "call"} = msg.channel
+      assert Address.to_jid(msg.channel) == {:error, {:unsupported, "call"}}
+    end
+
+    test "a status post: the channel is the status feed, from is the author" do
+      feed = "status@broadcast"
+      node = msg_node(%{"from" => feed, "participant" => "5511777@s.whatsapp.net", "id" => "S1"})
+
+      msg =
+        Connection.build_msg(
+          @state,
+          %Proto.Message{conversation: "story"},
+          node,
+          feed,
+          "S1",
+          @own
+        )
+
+      assert msg.channel == Address.status()
+      assert Address.status?(msg.channel)
+      assert %Address{kind: :pn, user: "5511777"} = msg.from
+      refute msg.from_me
     end
   end
 
@@ -942,6 +997,12 @@ defmodule Amarula.ConnectionTest do
       bad = "x@unknown-server"
       node = own_sender_node(%{"from" => bad})
       refute Connection.own_sender?(@state, node, bad)
+    end
+
+    test "returns false and does not crash when account is not paired yet (me is nil)" do
+      unpaired_state = %{auth_creds: %{me: nil}}
+      node = own_sender_node(%{"from" => @other})
+      refute Connection.own_sender?(unpaired_state, node, @other)
     end
   end
 

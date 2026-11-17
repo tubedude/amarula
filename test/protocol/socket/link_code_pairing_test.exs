@@ -177,7 +177,7 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
       # Chrome on Mac OS → platform id "1", display "Chrome (Mac OS)".
       assert child_content(reg, "companion_platform_id") == "1"
       assert child_content(reg, "companion_platform_display") == "Chrome (Mac OS)"
-      assert child_content(reg, "link_code_pairing_nonce") == "0"
+      assert child_content(reg, "link_code_pairing_nonce") == <<0>>
 
       # The wrapped key is salt(32)+iv(16)+ciphered(32) = 80 bytes.
       wrapped = child_content(reg, "link_code_pairing_wrapped_companion_ephemeral_pub")
@@ -186,6 +186,7 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
       creds = Connection.get_auth_creds(pid)
       assert creds.pairing_code == code
       assert creds.me.id == "15551234567@s.whatsapp.net"
+      assert Amarula.Protocol.Socket.ConnectionValidator.registration_handshake?(creds)
     end
 
     test "strips non-digits from the phone number", %{pid: pid} do
@@ -266,8 +267,29 @@ defmodule Amarula.Protocol.Socket.LinkCodePairingTest do
 
       after_creds = Connection.get_auth_creds(pid)
       assert after_creds.registered
+      refute Amarula.Protocol.Socket.ConnectionValidator.registration_handshake?(after_creds)
       assert after_creds.adv_secret_key != before.adv_secret_key
       assert_receive {:amarula, :pairing_success, %{via: :link_code}}
+    end
+
+    test "ignores a notification whose stage is not primary_hello (Baileys #2872)", %{pid: pid} do
+      {:ok, _code} = Connection.request_pairing_code(pid, "15551234567")
+      _hello = recv_frame()
+
+      notif =
+        Node.create("notification", %{"type" => "link_code_companion_reg", "id" => "n-stage"}, [
+          Node.create("link_code_companion_reg", %{"stage" => "companion_hello"}, [
+            Node.create("link_code_pairing_ref", %{}, "pair-ref-123"),
+            Node.create("primary_identity_pub", %{}, <<1::256>>),
+            Node.create("link_code_pairing_wrapped_primary_ephemeral_pub", %{}, <<0::640>>)
+          ])
+        ])
+
+      send(pid, {:inject_node, notif})
+
+      refute_receive {:frame_out, %Node{tag: "iq"}}, 200
+      assert Process.alive?(pid)
+      refute Connection.get_auth_creds(pid).registered
     end
 
     test "a fieldless notification is skipped, not a crash (Baileys #2600)", %{pid: pid} do

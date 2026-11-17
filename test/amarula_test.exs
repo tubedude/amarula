@@ -172,8 +172,6 @@ defmodule AmarulaTest do
   end
 
   describe "outbound MessageKey carries from_me (#46)" do
-    import ExUnit.CaptureIO
-
     @pn "5511888888888@s.whatsapp.net"
     @pn_dev "5511888888888:29@s.whatsapp.net"
 
@@ -195,24 +193,42 @@ defmodule AmarulaTest do
       assert out.reactionMessage.key.participant == @pn
     end
 
-    test "a self-op (send_edit) defaults the deprecated 2-tuple to fromMe: true", %{conn: conn} do
-      # send_edit/revoke/pin/keep act on OUR OWN messages, so `false` (the old
-      # hardcoded value) was the wrong default — the edit silently matched nothing.
-      warning =
-        capture_io(:stderr, fn -> Amarula.send_edit(conn, {@pn, "ABC"}, "v2") end)
+    # Removed in 0.6.0. These two previously asserted the guess it made per
+    # operation (`true` for self-ops like send_edit, `false` elsewhere) — the guess
+    # is the whole reason it went: getting it wrong makes an edit or revoke match
+    # nothing, silently, because the payload is E2E-encrypted.
+    # Built at runtime so the compiler's type checker can't narrow it: passing a
+    # literal 2-tuple now warns at compile time (that is the 0.5.7 type narrowing
+    # working), which would be noise in a test that exists to exercise the removed
+    # path on purpose.
+    defp deprecated_ref, do: List.to_tuple([@pn, "ABC"])
 
-      assert warning =~ "deprecated"
-      assert_received {:got, {:send_message, @pn, out}}
-      assert out.protocolMessage.key.fromMe == true
+    test "the 2-tuple raises instead of guessing, on every ref-taking helper", %{conn: conn} do
+      ref = deprecated_ref()
+
+      for call <- [
+            fn -> Amarula.send_edit(conn, ref, "v2") end,
+            fn -> Amarula.send_reaction(conn, ref, "👍") end,
+            fn -> Amarula.send_revoke(conn, ref) end,
+            fn -> Amarula.pin_message(conn, ref) end,
+            fn -> Amarula.keep_message(conn, ref) end
+          ] do
+        assert_raise ArgumentError, call
+      end
+
+      # Nothing was relayed — it fails before building a stanza, so no half-formed
+      # operation reaches the server.
+      refute_received {:got, {:send_message, _, _}}
     end
 
-    test "send_reaction defaults the deprecated 2-tuple to fromMe: false", %{conn: conn} do
-      warning =
-        capture_io(:stderr, fn -> Amarula.send_reaction(conn, {@pn, "ABC"}, "👍") end)
+    test "the raise says what to pass instead, echoing the caller's own values", %{conn: conn} do
+      err =
+        assert_raise ArgumentError, fn -> Amarula.send_reaction(conn, deprecated_ref(), "x") end
 
-      assert warning =~ "deprecated"
-      assert_received {:got, {:send_message, @pn, out}}
-      assert out.reactionMessage.key.fromMe == false
+      assert err.message =~ "removed in 0.6.0"
+      # The suggested replacement is concrete, not generic advice.
+      assert err.message =~ ~s({"#{@pn}", "ABC", from_me})
+      assert err.message =~ "content.key"
     end
 
     test "a %Amarula.Msg{} carries its own from_me through", %{conn: conn} do

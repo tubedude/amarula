@@ -7,7 +7,7 @@ and receive messages from Elixir.
 These rules describe how to **use** the `Amarula.*` public API correctly. They are for
 agents writing consumer code against the library, not for working on the library itself.
 
-These rules track Amarula **0.5.13**. They are a curated subset, not the full API — do
+These rules track Amarula **0.6.0**. They are a curated subset, not the full API — do
 not assume an undocumented function exists. When a signature, return shape, or option is
 unclear, **read the `@doc`/`@spec` on the relevant `Amarula.*` module (hexdocs) before
 calling it** rather than guessing.
@@ -124,6 +124,39 @@ WhatsApp multi-device uses both **LID** (`<n>@lid`) and **phone-number**
 (`<n>@s.whatsapp.net`) addresses for the same person. Amarula tracks the mapping and
 resolves addressing for you on send, so you rarely need to convert by hand.
 
+**Not every chat can be replied to in the same way (0.6.0+).** `msg.channel` has a
+`kind`, and some kinds refuse sends with `{:error, reason}` (never a crash, never a
+silent retarget):
+
+| kind | what it is | sends |
+|---|---|---|
+| `:status` | status posts (`status@broadcast`); the author is `msg.from` | refused: `:status_post_unsupported` |
+| `:newsletter` | WhatsApp Channel posts; carry `msg.server_id` | refused: `:newsletter_send_unsupported` |
+| `:broadcast` | a broadcast list your own phone sent to | refused: `:broadcast_list_send_unsupported` |
+| `:bot` | Meta AI (`<id>@bot`) | refused: `:bot_send_unsupported` |
+| `:unsupported` | a server Amarula does not know; carries the raw `server` | refused: `{:unsupported, server}` |
+
+Hosted business devices (Cloud API, `<n>:99@hosted` / `@hosted.lid`) are ordinary
+`:pn` / `:lid` devices of their account, so replies to them work as usual.
+
+If your bot replies to whatever arrives, branch on the kind:
+
+```elixir
+cond do
+  # A status post: reply privately to the author, quoting the status.
+  Amarula.Address.status?(msg.channel) -> Amarula.send_text(conn, msg.from, "nice!", quoted: msg)
+  msg.channel.kind in [:pn, :lid, :group] -> Amarula.send_text(conn, msg.channel, "pong")
+  true -> :skip
+end
+```
+
+Do not rebuild a jid string to get around a refusal. Sending to `status@broadcast` is
+how one *posts a status* — an echo bot that did that would publish a story to all of
+the account's contacts. To post a status on purpose, use
+`Amarula.post_status(conn, text, to: audience)`. `audience` is required: WhatsApp
+encrypts a status like a group message, and only the accounts you list (plus your own
+devices) get the key. Amarula cannot read the phone's status-privacy setting.
+
 ## Sending
 
 All sends return `{:ok, msg_id}` or `{:error, reason}` (e.g. `:not_on_whatsapp`).
@@ -149,12 +182,18 @@ Amarula.send_contact(conn, jid, display_name, vcard)
 Reactions/edits/deletes — and `fetch_history/4` — point at a message via a
 **`message_ref`**: pass either the **`%Amarula.Msg{}` you received** as-is, a
 received `content.key`, or a **`{jid, msg_id, from_me}` tuple** (`from_me` = did
-*you* send the target). The bare `{jid, msg_id}` 2-tuple still works but is
-deprecated — it can't say whose message it is, so it guesses, and a wrong guess makes
-an edit/revoke silently match nothing. It is out of the published type (so
-`mix dialyzer` flags it) and is **removed in 0.6.0** — always pass `from_me`.
+*you* send the target). The bare `{jid, msg_id}` 2-tuple was **removed in 0.6.0** and
+now raises — it couldn't say whose message it was, so it guessed, and a wrong guess
+makes an edit/revoke silently match nothing. Always pass `from_me`.
 (`mark_read/4` is different — it takes a list of plain
 message-id strings, not a `message_ref`.)
+
+> **If you synced this file from Amarula 0.5.6 or earlier, it taught you the
+> 2-tuple.** Versions up to 0.5.6 listed `{jid, msg_id}` here as a first-class
+> option and never mentioned `from_me` at all, while the library had already been
+> warning about it since 0.5.4 — so code generated from that guidance is wrong and,
+> on 0.6.0, raises. Re-run `mix usage_rules.sync` and search your project for
+> 2-element message refs.
 
 Presence/typing: `set_presence/2` (`:available`/`:unavailable`),
 `send_chatstate/3` (`:composing`/`:recording`/`:paused`), `subscribe_presence/2`,
@@ -196,6 +235,16 @@ lazily:
 ```elixir
 %Amarula.Msg{type: :media} = msg
 {:ok, bytes} = Amarula.download_media(msg)   # {:error, :bad_mac | :bad_file_hash} on integrity failure
+```
+
+`download_media/1` never raises, and only ever fetches from `*.whatsapp.net`. If you
+**stored** a descriptor or rebuilt one from your own metadata, rehydrate it with
+`Amarula.Content.Media.new/1` (atom or string keys) instead of `struct/2` — it validates
+the kind, the 32-byte key/hashes, and the locator:
+
+```elixir
+{:ok, media} = Amarula.Content.Media.new(stored)   # {:error, {:invalid, field}}
+{:ok, bytes} = Amarula.download_media(media)
 ```
 
 ### Avoiding self-send feedback loops

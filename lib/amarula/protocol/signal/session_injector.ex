@@ -48,6 +48,33 @@ defmodule Amarula.Protocol.Signal.SessionInjector do
     end)
   end
 
+  @doc """
+  Extract and inject a fresh E2E session from a retry `<receipt>` node carrying a
+  `<keys>` bundle (ported from Baileys `extractE2ESessionFromRetryReceipt`).
+
+  Unlike an `encrypt`/`get` IQ reply (`<list><user jid=...>`), a retry receipt
+  carries `<registration/>` at the receipt root, `<identity/>`, `<skey/>`, and an
+  optional `<key/>` inside `<keys>`, and names the requester via `participant` (or
+  `from` for a 1:1 retry). Falls back to `inject/5` if `<list>` is present.
+  """
+  @spec inject_retry(map(), map(), Amarula.Conn.t(), reference()) :: non_neg_integer()
+  def inject_retry(receipt, creds, conn, instance_id) do
+    if NodeUtils.get_binary_node_child(receipt, "list") do
+      inject(receipt, creds, conn, instance_id, :always)
+    else
+      store = SessionStore.build(creds)
+      jid = NodeUtils.get_attr(receipt, "participant") || NodeUtils.get_attr(receipt, "from")
+
+      with jid when is_binary(jid) <- jid,
+           {:ok, device} <- parse_retry_bundle(receipt),
+           :ok <- inject_device(jid, device, store, conn, instance_id, :always) do
+        1
+      else
+        _ -> 0
+      end
+    end
+  end
+
   defp inject_user(user, store, conn, instance_id, mode) do
     jid = NodeUtils.get_attr(user, "jid")
 
@@ -61,24 +88,80 @@ defmodule Amarula.Protocol.Signal.SessionInjector do
 
       true ->
         device = parse_bundle(user)
-        # LID-priority: store under the recipient's LID address when mapped, so
-        # the send path (which also resolves LID) finds the injected session. The
-        # write goes through the record's custodian (the per-record lock).
-        addr = LidMappingFileStore.signal_address(conn, jid)
+        inject_device(jid, device, store, conn, instance_id, mode)
+    end
+  end
 
-        case SessionCustodian.inject(instance_id, conn, addr, device, store, mode) do
-          :ok ->
-            Logger.debug("Injected session for #{jid} (#{addr})")
-            :ok
+  defp inject_device(jid, device, store, conn, instance_id, mode) do
+    # LID-priority: store under the recipient's LID address when mapped, so
+    # the send path (which also resolves LID) finds the injected session. The
+    # write goes through the record's custodian (the per-record lock).
+    addr = LidMappingFileStore.signal_address(conn, jid)
 
-          {:skipped, :session_exists} ->
-            Logger.debug("Session for #{jid} (#{addr}) already present — inject skipped")
-            :skipped
+    case SessionCustodian.inject(instance_id, conn, addr, device, store, mode) do
+      :ok ->
+        Logger.debug("Injected session for #{jid} (#{addr})")
+        :ok
 
-          other ->
-            Logger.warning("Inject failed for #{jid} (#{addr}): #{inspect(other)}")
-            other
-        end
+      {:skipped, :session_exists} ->
+        Logger.debug("Session for #{jid} (#{addr}) already present — inject skipped")
+        :skipped
+
+      other ->
+        Logger.warning("Inject failed for #{jid} (#{addr}): #{inspect(other)}")
+        other
+    end
+  end
+
+  defp parse_retry_bundle(receipt) do
+    with keys when not is_nil(keys) <- NodeUtils.get_binary_node_child(receipt, "keys"),
+         true <- valid_bundle_type?(child_content(keys, "type")),
+         reg when is_binary(reg) and byte_size(reg) == 4 <-
+           child_content(receipt, "registration") || child_content(keys, "registration"),
+         identity when is_binary(identity) and byte_size(identity) in [32, 33] <-
+           child_content(keys, "identity"),
+         {:ok, skey} <- parse_retry_key(NodeUtils.get_binary_node_child(keys, "skey"), true),
+         {:ok, pre_key} <-
+           parse_optional_retry_key(NodeUtils.get_binary_node_child(keys, "key")) do
+      bundle = %{
+        registration_id: :binary.decode_unsigned(reg, :big),
+        identity_key: wire_key(identity),
+        signed_pre_key: skey
+      }
+
+      {:ok, if(pre_key, do: Map.put(bundle, :pre_key, pre_key), else: bundle)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp valid_bundle_type?(nil), do: true
+  defp valid_bundle_type?(<<5>>), do: true
+  defp valid_bundle_type?(_), do: false
+
+  defp parse_optional_retry_key(nil), do: {:ok, nil}
+  defp parse_optional_retry_key(node), do: parse_retry_key(node, false)
+
+  defp parse_retry_key(nil, _signed), do: :error
+
+  defp parse_retry_key(node, signed) do
+    id = child_content(node, "id")
+    val = child_content(node, "value")
+    sig = child_content(node, "signature")
+
+    cond do
+      not is_binary(id) or byte_size(id) == 0 ->
+        :error
+
+      not is_binary(val) or byte_size(val) not in [32, 33] ->
+        :error
+
+      signed and not is_binary(sig) ->
+        :error
+
+      true ->
+        base = %{key_id: :binary.decode_unsigned(id, :big), public: wire_key(val)}
+        {:ok, if(signed, do: Map.put(base, :signature, sig), else: base)}
     end
   end
 

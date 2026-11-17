@@ -51,14 +51,21 @@ defmodule Amarula.Protocol.USync.Devices do
     end)
   end
 
-  defp expand_device(%{id: device, key_index: key_index}, ctx) do
+  defp expand_device(%{id: device, key_index: key_index} = entry, ctx) do
     if keep_device?(device, key_index, ctx) do
-      jid = JID.encode(%{user: ctx.user, server: ctx.server, device: device})
-      [%{user: ctx.user, device: device, server: ctx.server, jid: jid}]
+      server = device_server(ctx.server, Map.get(entry, :is_hosted, false))
+      jid = JID.encode(%{user: ctx.user, server: server, device: device})
+      [%{user: ctx.user, device: device, server: server, jid: jid}]
     else
       []
     end
   end
+
+  # A device on Meta's hosting (a Cloud API business) lives on the hosted server of
+  # its identity's domain (Baileys `extractDeviceJids`).
+  defp device_server("lid", true), do: "hosted.lid"
+  defp device_server(_server, true), do: "hosted"
+  defp device_server(server, false), do: server
 
   # Three-part filter, matching Baileys' condition exactly.
   defp keep_device?(device, key_index, ctx) do

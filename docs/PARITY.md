@@ -14,8 +14,8 @@ This document tracks our current Baileys review watermark and serves as a runboo
 | Field | Value |
 | --- | --- |
 | Baileys version | `7.0.0-rc14` (master, unreleased) |
-| Commit | `0af2386292907f7d9742d8d41f830d8c48208fa1` |
-| Date | 2026-08-05 |
+| Commit | `81345beb67ca3fb0eb79a2c20cd4ac24da517929` |
+| Date | 2026-10-26 |
 
 *(To re-verify: dereference `refs/tags/v7.0.0-rc14` on the real Baileys repo to get the commit the tag resolves to, rather than the tag object's own SHA.)*
 
@@ -257,11 +257,77 @@ Baileys and whatsmeow for anything unmerged but worth tracking.
   WhatsApp Web service worker (and superseding Baileys' already-stale automated
   version-update branch #2818).
 
-**Watching (open upstream — do not port speculatively):**
-- **PR #2693** (closed 2026-08-20, stale-bot auto-close, never merged) —
-  broader desktop-platform fix superseding #2741: also maps `Mac OS` +
-  `Desktop` + `syncFullHistory` to `UserAgent.Platform.MACOS` (currently
-  always `WEB` unless Android). Amarula's `create_user_agent/1` has the same
-  always-`WEB`-unless-Android gap, but the PR is dead, not merely stale — no
-  longer tracking it. Re-open watching only if someone revives the idea
-  upstream.
+**Ported from post-watermark upstream review (2026-10-31):**
+
+- **[Baileys #2866](https://github.com/WhiskeySockets/Baileys/pull/2866) /
+  #2858 & [whatsmeow `a238105488`](https://github.com/tulir/whatsmeow/commit/a2381054880054719843cf7e592169696b3488a5) —
+  top-level `<status>` stanza ack.** Top-level `<status>` nodes now route to
+  `:status_ack` and are acknowledged with `send_message_ack/2`, preventing
+  WhatsApp from disconnecting the socket after ~60–90 s when an unacked
+  `<status>` node arrives.
+- **[Baileys #2872](https://github.com/WhiskeySockets/Baileys/pull/2872) /
+  #2832 — link-code pairing fixes.** `link_code_pairing_nonce` is now sent as a
+  1-byte zero binary (`<<0>>`) rather than ASCII `"0"`, `link_code_companion_reg`
+  notifications ignore stages other than `nil` / `"primary_hello"`, QR pairing
+  sets `registered: true` on `creds`, and a reconnect after
+  `request_pairing_code/3` has set `creds.me` (while `registered` is still
+  `false`) stays on the registration handshake path.
+- **[Baileys #2840](https://github.com/WhiskeySockets/Baileys/pull/2840) /
+  #2810 — `offline="0"` treated as live.** `offline_node?/1` now treats `"0"`
+  alongside `nil` and `""` as online (`offline: false`).
+- **[Baileys #2864](https://github.com/WhiskeySockets/Baileys/pull/2864) —
+  undecryptable `from_me` messages.** When a message from one of our own
+  devices (`own_sender?`) fails to decrypt, it is plain-acked without sending a
+  `<receipt type="retry">` or `500` error nack, avoiding retry loops against
+  stale companion sessions.
+- **[Baileys #2841](https://github.com/WhiskeySockets/Baileys/pull/2841) /
+  #2794 & [whatsmeow #1294](https://github.com/tulir/whatsmeow/pull/1294) /
+  #1293 — `status@broadcast` LID audience & own-identity consistency.**
+  `post_status/3` now resolves PN audience members via `LidMappingFileStore`
+  when `me.lid` is present, pairs a LID audience with `me.lid` (`:lid`
+  addressing mode) and a PN audience with `me.id` (`:pn` addressing mode), and
+  rejects mixed LID + unmapped PN audiences with
+  `{:error, :mixed_status_addressing}` instead of sending a stanza that
+  WhatsApp drops or rejects with `400` / `479`.
+- **[whatsmeow #1302](https://github.com/tulir/whatsmeow/issues/1302) /
+  [PR #1307](https://github.com/tulir/whatsmeow/pull/1307) &
+  [Baileys #2856](https://github.com/WhiskeySockets/Baileys/pull/2856) —
+  hosted coexistence (`@hosted` / `@hosted.lid`) & retry receipts.**
+  `USync.Devices` maps `is_hosted: true` to `"hosted"` / `"hosted.lid"`,
+  `LidMappingFileStore` maps hosted PN devices to `@hosted.lid` (`_129` Signal
+  domain), `ConversationSender` excludes hosted devices from group SKDM
+  distribution and uses domain-aware `own_device?/2`, `SessionInjector.inject_retry/4`
+  parses inline `<registration>` + `<keys>` bundles from `<receipt type="retry">`,
+  and retry receipts with `count >= 2` and no `<keys>` wipe the requester's
+  stale session so the resend fetches a fresh prekey bundle.
+- **[whatsmeow #1270](https://github.com/tulir/whatsmeow/issues/1270) —
+  grouped `class="status"` receipts.** `Receipt.parse/1` now reads
+  `message_id` when `key` is absent on `<participants>` and maps per-`<user>`
+  `type="delivery|read|played"` attributes onto each fanned-out receipt.
+- **[whatsmeow #1278](https://github.com/tulir/whatsmeow/issues/1278) —
+  multi-child `w:gp2` group notifications & LID↔PN mappings.**
+  `GroupNotification.parse_all/1` and `GroupNotification.lid_mappings/1` extract
+  every change child and any `participant_pn` / `phone_number` / `lid` pairs so
+  `Connection` persists the mappings and emits `:group_update` for every child.
+- **[Baileys #2880](https://github.com/WhiskeySockets/Baileys/issues/2880) /
+  #2693 — macOS desktop `UserAgent.Platform`.** `AuthUtils.create_user_agent/1`
+  sets `platform: :MACOS` when `browser` is `["Mac OS", "Desktop", _]` and
+  `sync_full_history` is `true`, matching `webSubPlatform: :DARWIN`.
+- **WA protocol version** bumped `1051594400` → `1054943879`.
+
+**Ported from upstream review (2026-11-08):**
+
+Baileys `master` gained only a copyright commit (#2868). Everything below comes from
+whatsmeow `main` or from open Baileys PRs.
+
+- **[Baileys #2837](https://github.com/WhiskeySockets/Baileys/pull/2837) (open) —
+  view-once `<meta>`.** View-once sends carry `<meta view_once="true"/>`, resends too.
+- **[Baileys #2887](https://github.com/WhiskeySockets/Baileys/pull/2887) (open) —
+  `pollResultSnapshotMessageV3` is field 115.** Patched in `wa_proto.pb.ex`.
+- **[whatsmeow #1319](https://github.com/tulir/whatsmeow/pull/1319) — LTHash mismatch.**
+  Decoding continues when the patch MAC is valid and the patch follows local state.
+- **[whatsmeow #1313](https://github.com/tulir/whatsmeow/pull/1313) — app-state backoff.**
+  whatsmeow waits per collection, one IQ per collection. Amarula's IQ can name several
+  collections, so its wait covers them all.
+- **[whatsmeow #1309](https://github.com/tulir/whatsmeow/pull/1309) — contact removal.**
+  Surfaces as `%Amarula.Contact{removed: true}`.

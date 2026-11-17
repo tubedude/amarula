@@ -69,7 +69,13 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
           %Amarula.Msg{} = msg ->
             %Proto.ContextInfo{
               stanzaId: msg.id,
-              participant: msg.from && Amarula.Address.to_jid!(msg.from),
+              # Same reasoning as `mentionedJid` below: quoting a message whose
+              # sender we cannot address (an unmodelled chat kind) must not
+              # raise in the Connection process. The quote still carries stanzaId.
+              participant: msg.from |> addressable_jid() |> List.first(),
+              # A status reply goes 1:1 to the author, so the quote has to name the
+              # chat it came from (Baileys sets `remoteJid` whenever it differs).
+              remoteJid: if(Amarula.Address.status?(msg.channel), do: "status@broadcast"),
               quotedMessage: strip_quoted(msg.raw)
             }
 
@@ -83,7 +89,22 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
             %Proto.ContextInfo{}
         end
 
-      %{base | mentionedJid: Enum.map(mentions, &Amarula.Address.to_jid!/1)}
+      # Skip mentions we cannot address (kind `:unsupported`).
+      # `to_jid!/1` here would raise INSIDE the Connection GenServer, so the
+      # documented round-trip `send_text(conn, chan, text, mentions: msg.mentions)`
+      # would take the connection down over a mention we merely failed to model
+      # (#50). The mention text still sends; only the jid annotation is dropped.
+      %{base | mentionedJid: Enum.flat_map(mentions, &addressable_jid/1)}
+    end
+  end
+
+  # `[jid]` when the address can be addressed, `[]` when it cannot (nil, the empty
+  # address, or an unmodelled chat kind). Returning a list lets callers either
+  # flat_map it away or take the first element as an optional field.
+  defp addressable_jid(addr) do
+    case Amarula.Address.to_jid(addr) do
+      {:ok, jid} -> [jid]
+      {:error, _} -> []
     end
   end
 

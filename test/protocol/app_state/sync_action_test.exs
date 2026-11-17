@@ -46,6 +46,13 @@ defmodule Amarula.Protocol.AppState.SyncActionTest do
     assert {:chat, %Chat{unread: -1}} = SyncAction.decode(mut(unread, ["markChatAsRead", @jid]))
   end
 
+  test "a removed contact → %Contact{removed: true} with no names" do
+    mutation = %{operation: :remove, action: %{value: nil}, index: ["contact", @jid]}
+
+    assert {:contact, %Contact{address: %Address{}, removed: true, full_name: nil}} =
+             SyncAction.decode(mutation)
+  end
+
   test "contact action → %Contact{}" do
     v = %V{contactAction: %V.ContactAction{fullName: "Bob B", firstName: "Bob"}}
 

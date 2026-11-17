@@ -1,12 +1,12 @@
 defmodule Amarula.Connection.AppStateOps do
   @moduledoc """
-  Pure app-state-sync helpers for `Amarula.Connection`.
-
-  The sync flow is Storage- and IQ-bound — requesting patches, persisting
-  collection state, decoding against stored keys, emitting events — and stays on
-  `Connection`. What's pure lives here: pulling shared sync-keys out of incoming
-  messages, and partitioning decoded changes into the chat/contact event lists.
+  App-state-sync helpers and storage/decode orchestration for `Amarula.Connection`.
   """
+
+  require Logger
+
+  alias Amarula.Protocol.AppState.{Keys, Patch, Sync}
+  alias Amarula.Protocol.Binary.{Node, NodeUtils}
 
   @doc """
   Extract any `appStateSyncKeyShare` keys carried in a message as
@@ -38,5 +38,124 @@ defmodule Amarula.Connection.AppStateOps do
     chats = for {:chat, c} <- changes, do: c
     contacts = for {:contact, c} <- changes, do: c
     {chats, contacts}
+  end
+
+  @doc """
+  Extract and persist any `appStateSyncKeyShare` keys in `messages`.
+  Returns the number of keys stored (`0` when none were stored). A key we
+  already hold with different data is ignored, not overwritten (whatsmeow #1333).
+  """
+  @spec store_shared_keys(term(), term(), Enumerable.t()) :: non_neg_integer()
+  def store_shared_keys(scope, profile, messages) do
+    messages
+    |> sync_keys_in()
+    |> Enum.count(&store_shared_key(scope, profile, &1))
+  end
+
+  defp store_shared_key(scope, profile, {key_id_b64, key_data}) do
+    case Amarula.Storage.get(scope, profile, :app_state_sync_key, key_id_b64) do
+      {:ok, existing} when is_binary(existing) and existing != "" and existing != key_data ->
+        Logger.warning("Ignoring app-state sync key #{key_id_b64}: stored key has different data")
+        false
+
+      _ ->
+        Amarula.Storage.put(scope, profile, :app_state_sync_key, key_id_b64, key_data)
+        true
+    end
+  end
+
+  @doc """
+  The server's requested wait, in seconds, from a rate-limited (code 429) app-state
+  IQ reply. `nil` for any other failure (whatsmeow #1313).
+  """
+  @spec rate_limit_backoff(term()) :: pos_integer() | nil
+  def rate_limit_backoff(%Node{} = reply) do
+    with %Node{} = error <- NodeUtils.get_binary_node_child(reply, "error"),
+         "429" <- NodeUtils.get_attr(error, "code"),
+         {seconds, ""} when seconds > 0 <-
+           Integer.parse(NodeUtils.get_attr(error, "backoff") || "") do
+      seconds
+    else
+      _ -> nil
+    end
+  end
+
+  def rate_limit_backoff(_reply), do: nil
+
+  @doc """
+  Build the `<iq xmlns=\"w:sync:app:state\">` request stanza for `names` using
+  each collection's stored version.
+  """
+  @spec resync_iq(term(), term(), [String.t()]) :: Node.t()
+  def resync_iq(scope, profile, names) do
+    collections =
+      Enum.map(names, fn name ->
+        st = load_collection_state(scope, profile, name)
+        {name, st.version, st.version == 0}
+      end)
+
+    Sync.request_iq(collections)
+  end
+
+  @doc """
+  Reset the stored state of `names` (`:all` or list of collection names) to version 0
+  and return the resolved list of collection names.
+  """
+  @spec reset_collections(term(), term(), :all | [String.t()]) :: [String.t()]
+  def reset_collections(scope, profile, names) do
+    resolved = if names == :all, do: Sync.collections(), else: names
+    # Drop each collection's stored version/hash so the next resync_app_state/2 call
+    # requests from version 0 — the server sees the same shape of request as a
+    # first-ever sync (return_snapshot: true) and sends a full snapshot.
+    Enum.each(resolved, &save_collection_state(scope, profile, &1, Patch.new_state()))
+    resolved
+  end
+
+  @doc """
+  Decode an app-state sync IQ `reply` against stored keys/versions, persist the
+  updated collection state, and immediately invoke `on_collection.(chats, contacts)`
+  for each collection.
+  """
+  @spec apply_reply(term(), term(), Node.t(), ([term()], [term()] -> any())) :: :ok
+  def apply_reply(scope, profile, reply, on_collection \\ fn _chats, _contacts -> :ok end) do
+    get_key = fn id_b64 ->
+      case Amarula.Storage.get(scope, profile, :app_state_sync_key, id_b64) do
+        {:ok, key_data} -> Keys.expand(key_data)
+        :error -> nil
+      end
+    end
+
+    reply
+    |> Sync.extract_collections()
+    |> Enum.each(fn %{name: name, patches: patches} ->
+      prior = load_collection_state(scope, profile, name)
+
+      {:ok, changes, new_state, mismatches} =
+        Sync.decode_collection(patches, prior, get_key, name)
+
+      # See Sync.decode_collection/5 moduledoc for the patch-MAC-vs-snapshot-MAC
+      # handling this reports (ported from Baileys' chat-utils.ts resilience fix,
+      # upstream PR #2456): neither kind aborts the collection outright, so a
+      # single persistently-corrupt record can no longer freeze this collection's
+      # sync at the same version forever.
+      Enum.each(mismatches, fn reason ->
+        Logger.warning("app-state sync for #{name}: #{inspect(reason)}")
+      end)
+
+      save_collection_state(scope, profile, name, new_state)
+      {chats, contacts} = partition_changes(changes)
+      on_collection.(chats, contacts)
+    end)
+  end
+
+  defp load_collection_state(scope, profile, name) do
+    case Amarula.Storage.get(scope, profile, :app_state_version, name) do
+      {:ok, st} -> st
+      :error -> Patch.new_state()
+    end
+  end
+
+  defp save_collection_state(scope, profile, name, st) do
+    Amarula.Storage.put(scope, profile, :app_state_version, name, st)
   end
 end

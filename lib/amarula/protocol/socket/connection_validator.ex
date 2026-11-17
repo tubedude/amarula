@@ -107,12 +107,15 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
               "After process_handshake: preserved sent_intro=#{preserved_noise_state.sent_intro}"
             )
 
-            # Generate ClientPayload
+            # Generate ClientPayload. Link-code pairing sets `creds.me` up front so
+            # the `companion_hello` IQ carries the user's JID, while `registered`
+            # stays false until `companion_finish`. A reconnect in that window must
+            # still take the registration path (Baileys #2872).
             client_payload =
-              if state.auth_creds.me do
-                AuthUtils.generate_login_node(state.auth_creds.me.id, state.socket_config)
-              else
+              if registration_handshake?(state.auth_creds) do
                 AuthUtils.generate_registration_node(state.auth_creds, state.socket_config)
+              else
+                AuthUtils.generate_login_node(state.auth_creds.me.id, state.socket_config)
               end
 
             # Encode payload
@@ -147,5 +150,10 @@ defmodule Amarula.Protocol.Socket.ConnectionValidator do
             {:error, reason}
         end
     end
+  end
+
+  @doc false
+  def registration_handshake?(creds) do
+    is_nil(creds.me) or (is_binary(creds[:pairing_code]) and creds[:registered] != true)
   end
 end

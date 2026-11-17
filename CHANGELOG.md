@@ -7,6 +7,273 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-17
+
+The stable 0.6 release. It contains everything in the `0.6.0-rc.*` entries below.
+
+**Coming from 0.5, you must check two breaking changes** (details under 0.6.0-rc.1
+below):
+
+- `Amarula.Address.parse/1` no longer returns `nil` for chat kinds it doesn't model.
+- The bare `{jid, msg_id}` message ref is gone and raises `ArgumentError`. Re-run
+  `mix usage_rules.sync` if you synced `usage-rules.md` from 0.5.6 or earlier.
+
+### Changed
+
+- **Pinned WhatsApp Web version bumped to `2.3000.1054943879`.**
+- **`:group_update` fires once per change child.** A `w:gp2` notification with several
+  children used to emit only the first (whatsmeow #1278).
+- **App-state decoding continues past an LTHash mismatch** when the patch MAC is valid
+  and the patch directly follows local state. It still stops on a skipped version or
+  an empty local hash (whatsmeow #1319).
+- **App-state resyncs respect the server's rate limit.** After a 429 with a `backoff`,
+  no resync goes out until the wait ends, `force_resync` included (whatsmeow #1313).
+
+### Added
+
+- **`%Amarula.Contact{removed: boolean()}`.** A contact removed in app-state now arrives
+  on `:contacts_update` with `removed: true` and `nil` names (whatsmeow #1309).
+
+### Fixed
+
+- **Status posts in a top-level `<status>` stanza are delivered.** Some contacts'
+  statuses (mostly from Android) now arrive as `<status>` with an `<enc>` child. These
+  were acked and dropped; now they are decrypted like a `<message>` and arrive on
+  `:messages_upsert` (whatsmeow `06b1c299bb`).
+- **A shared app-state key never overwrites a stored key with different data.**
+  The share is ignored and logged (whatsmeow #1333).
+- **`view_once: true` sends now carry `<meta view_once="true"/>`.** Without it, the
+  recipient can see a regular message (Baileys #2837, open upstream).
+- **`pollResultSnapshotMessageV3` is proto field 115, not 114** (Baileys #2887, open
+  upstream; whatsmeow's proto agrees).
+- **Status broadcast grouped receipts (`class="status"`):** `Receipt.parse/1` reads
+  `message_id` on `<participants>` and maps each `<user>`'s `type` onto its receipt
+  (whatsmeow #1270).
+- **LID↔PN mappings from `w:gp2` notifications are persisted**, across every change
+  child (whatsmeow #1278).
+- **Hosted coexistence (`@hosted` / `@hosted.lid`):** `USync.Devices` maps `is_hosted`
+  devices to the hosted servers, `LidMappingFileStore` keeps the `_129` Signal domain,
+  and hosted devices are excluded from group SKDM fan-out. A retry receipt with
+  `count >= 2` and no `<keys>` wipes the requester's stale session, so the resend
+  fetches a fresh prekey bundle (whatsmeow #1302 / #1307).
+- **QR pairing sets `registered: true` on `creds`** (Baileys #2872).
+- **macOS desktop `UserAgent.Platform`:** `platform: :MACOS` when `browser` is
+  `["Mac OS", "Desktop", _]` and `sync_full_history` is `true`, so WhatsApp no longer
+  rejects full-history pairing with 428 (Baileys #2880 / #2693).
+
+## [0.6.0-rc.4] - 2026-10-25
+
+### Changed
+
+- Extracted pure protocol, crypto, and store operations out of `Amarula.Connection`
+  into `Amarula.Connection.{AppStateOps, Notifications, Pairing, Receive, SendOps, SessionOps}`
+  and `Amarula.Protocol.Socket.Login`, shrinking `lib/amarula/connection.ex` by ~30%.
+
+### Fixed
+
+- **Fire-and-forget retry resends no longer register a `ConversationSender` monitor**
+  (`from == nil` in `ensure_sender_monitor/4`), preventing a stale monitor's queued
+  idle-stop `:DOWN` from unmonitoring a subsequent tracked send to the same recipient.
+- **`@hosted.lid` JIDs are no longer misclassified as phone-number (`@s.whatsapp.net`)
+  JIDs** across `LidMappingFileStore`, `HistorySync`, group metadata parsing, and
+  outbound/inbound PN↔LID session resolution (`JID.pn_user?/1` and `JID.any_lid_user?/1`).
+
+## [0.6.0-rc.3] - 2026-10-24
+
+### Changed
+
+- Includes 0.5.12: default WhatsApp Web protocol version bumped to `[2, 3000, 1_051_594_400]`.
+
+### Fixed
+
+- **Top-level `<status>` stanzas are now acknowledged** (Baileys #2858 / #2866,
+  whatsmeow `a238105488`). Previously, `<status>` fell through to `:unhandled`
+  without an `<ack class="status">`, causing WhatsApp to close the socket after
+  ~60–90 seconds.
+- **Phone-number link-code pairing hardening** (Baileys #2832 / #2872):
+  `link_code_pairing_nonce` is now encoded as a single zero byte (`<<0>>`)
+  instead of ASCII `"0"`, `link_code_companion_reg` notifications with a stage
+  other than `"primary_hello"` are ignored, and reconnecting while link-code
+  pairing is in progress (`creds.me` set, `registered: false`) stays on the
+  registration handshake instead of attempting a login handshake.
+- **`offline="0"` on inbound `<message>` stanzas now produces `offline: false`**
+  (Baileys #2810 / #2840).
+- **Undecryptable messages from our own devices (`from_me`) are plain-acked
+  without sending a retry receipt or `500` nack** (Baileys #2864), preventing
+  retry loops against stale companion sessions.
+- **`Amarula.post_status/3` normalizes audience addressing and matches own-device
+  identity** (Baileys #2794 / #2841, whatsmeow #1293 / #1294). When `me.lid` is
+  present, PN audience members with known LID mappings are resolved to LIDs and
+  paired with `me.lid` (`addressing_mode: :lid`); all-PN audiences use `me.id`
+  (`addressing_mode: :pn`); mixed LID and unmapped PN audiences fail early with
+  `{:error, :mixed_status_addressing}` instead of sending a stanza that WhatsApp
+  drops or rejects with `400` / `479`.
+- **Inbound `<receipt type="retry">` carrying `<registration>` and `<keys>` now
+  injects the fresh Signal session** via `SessionInjector.inject_retry/4`
+  (preserving `@hosted.lid` domain separation, whatsmeow #1302), and
+  `ConversationSender` checks `own_device?/2` within the matching PN or LID
+  domain (Baileys #2856).
+
+### Security
+
+- Includes 0.5.12: `plug_crypto` updated in `mix.lock` to `2.2.1` (CVE-2026-33957 /
+  GHSA-ffw9-w85g-f2vh).
+
+## [0.6.0-rc.2] - 2026-10-20
+
+### Added
+
+- Includes 0.5.11: `%Amarula.Msg{offline: boolean()}` (#95).
+
+### Security
+
+- Includes 0.5.11: `protobuf` floor raised to `>= 0.17.1` (CVE-2026-104635).
+
+## [0.6.0-rc.1] - 2026-09-30
+
+A release candidate: the chat kinds below need live traffic to confirm. Please report
+anything odd with status posts, channels, hosted businesses, broadcast lists or Meta AI.
+
+### Added
+
+- **Status posts are a modelled chat kind.** `status@broadcast` parses to
+  `kind: :status` (`Amarula.Address.status/0`, `status?/1`). A status post arrives
+  on `:messages_upsert` with that `channel` and the author as `from`; replying with
+  `send_text(conn, msg.from, text, quoted: msg)` quotes it the way WhatsApp does.
+  Sends *to* the status channel are refused with `{:error, :status_post_unsupported}`,
+  since that would post a status. Own-device status receipts now use the plain
+  `to`/`participant` form, as in Baileys.
+- **`Amarula.post_status/3` posts a text status** to an explicit audience
+  (`to: [addresses]`). WhatsApp encrypts a status like a group message and its server
+  does not know who may see it, so the sender must list the viewers (Baileys'
+  `statusJidList`). It is the only path that can send to `status@broadcast`.
+- **Channel (newsletter) posts are delivered.** `@newsletter` parses to
+  `kind: :newsletter` (`Amarula.Address.newsletter/1`, `newsletter?/1`), and
+  `%Amarula.Msg{}` gains `server_id`, the channel's id for the post. Sends to a
+  channel are refused with `{:error, :newsletter_send_unsupported}`.
+- **Broadcast lists are a modelled chat kind.** `<id>@broadcast` (other than
+  `status@broadcast`) parses to `kind: :broadcast` (`Amarula.Address.broadcast?/1`).
+  It is the `channel` of a message your phone sent to a list; sends to it are refused
+  with `{:error, :broadcast_list_send_unsupported}`. Our own-device receipt for such a
+  message now uses the plain `to`/`participant` form, as in Baileys.
+- **Meta AI is a modelled chat kind.** `<id>@bot` parses to `kind: :bot`
+  (`Amarula.Address.bot?/1`); its messages are delivered with that `channel`. Sends to
+  it are refused with `{:error, :bot_send_unsupported}`.
+- **`Amarula.Content.Media.new/1` — a validated constructor for a media descriptor
+  you did not get off the socket.** Inbound media arrives as a
+  `%Amarula.Content.Media{}` built by `from_proto/2`, which trusts its input because
+  the protobuf already guarantees the shape. A consumer that persists a descriptor,
+  sends it across a transport, or rebuilds it from its own normalized metadata had no
+  equivalent: it had to hand-roll the 32-byte key/hash checks, the kind enum, and the
+  "`direct_path` beats `url`" rule — Amarula's domain knowledge, reimplemented where
+  a mistake is likelier and unreviewed.
+
+  `new/1` takes a plain map with atom **or** string keys (a JSON round-trip needs no
+  glue), ignores unknown keys, and returns `{:ok, media}` or `{:error, {:invalid,
+  field}}` naming what failed. It requires a `:kind`, a raw 32-byte `:media_key`, and
+  a locator it is willing to fetch — see Security below.
+
+### Changed
+
+- **`Amarula.Address.parse/1` no longer returns `nil` for a chat kind we don't
+  model** ([#50]). A jid on a server Amarula does not know now
+  parses to `kind: :unsupported` carrying a new `:server` field, so it can be
+  inspected and matched like any address. `nil` now means only "not a jid at all"
+  (no `@server` part). New `Amarula.Address.unsupported?/1`.
+
+  Such an address is deliberately **not addressable**: `to_jid/1` returns
+  `{:error, {:unsupported, server}}` rather than rebuilding the string: we cannot
+  know what a send to an unmodelled kind would do.
+
+  If you nil-checked `parse/1` to detect these, match `unsupported?/1` instead.
+
+### Removed
+
+- **The bare `{jid, msg_id}` message ref is gone; passing one now raises
+  `ArgumentError`** ([#46], [#47]). Deprecated with a runtime warning since 0.5.4
+  and dropped from the published type in 0.5.7, as promised there.
+
+  > **If your project was written against `usage-rules.md` from 0.5.6 or earlier,
+  > this is likely to hit you — and you will not have seen a deprecation warning.**
+  > That file listed the 2-tuple as a first-class option and never mentioned
+  > `from_me`, from 0.5.4 (when the library started warning) through 0.5.6. It ships
+  > inside the package and consumers **copy it locally** via
+  > `mix usage_rules.sync`, so a stale synced copy keeps teaching the removed form
+  > no matter which Amarula version you upgrade to. Re-sync it, and grep your
+  > project for 2-element message refs. This was reported from the field, not
+  > theorised: a consumer's reaction bug traced back to exactly this guidance.
+
+  It raises from a dedicated clause rather than falling through to a
+  `FunctionClauseError` on a private function — the error names the form to use and
+  echoes your own jid and id back, since a no-clause error would have told you
+  nothing about what to change.
+
+  `message_key/2`'s `default_from_me` argument went with it: it existed only to
+  guess the missing `from_me` (`true` for self-ops like `send_edit`, `false`
+  elsewhere), and that guess was the whole problem — get it wrong and an edit or
+  revoke silently matches nothing, because the payload is E2E-encrypted and the
+  server cannot reject it.
+
+  Pass `{jid, msg_id, from_me}`, or the `%Amarula.Msg{}` / `content.key` you
+  received, which carries `from_me` already remapped to your perspective.
+
+### Fixed
+
+- **Channel posts no longer fail to decrypt.** They arrive as a bare `<plaintext>`
+  child, not `<enc>`, so Amarula found nothing to decrypt and answered every one with
+  a retry request and an error NACK. They are now decoded, and acked without a
+  delivery receipt, as in Baileys. An undecodable one gets a plain ack.
+- **Cloud API (hosted) business devices are addressed correctly.** A device list entry
+  flagged `is_hosted` now gets its `@hosted` / `@hosted.lid` jid instead of a plain
+  `@s.whatsapp.net` / `@lid` one; a hosted PN maps to the hosted LID domain; and hosted
+  devices are left out of group sender-key distribution, all as in Baileys.
+- **A `@hosted` / `@hosted.lid` jid is a PN / LID device, not an unsupported kind.** It
+  parses to `kind: :pn` / `:lid` with `server` set to the hosted server, is the same
+  account as the plain PN/LID, and normalizes to it — so a hosted business writing in
+  a group or 1:1 can be replied to and mentioned.
+- **Replying to a status post no longer takes the connection down** ([#50]).
+  `status@broadcast` is ordinary traffic — any contact posting a Story produced a
+  `%Msg{channel: nil}`, and the documented reply (`send_text(conn, msg.channel, …)`)
+  hit `to_jid!/1` *inside* the Connection GenServer, so the socket died and
+  restarted rather than the send failing. Sends now refuse an unaddressable target
+  with `{:error, reason}`, in sandbox mode as well as live. Status posts now arrive
+  with a `:status` channel (see Added).
+- **A `@hosted` group participant is no longer attributed to the group** ([#50]).
+  `from` fell back to the group address whenever the participant's jid didn't
+  parse, so every hosted member's message looked like the group had written it —
+  silently collapsing per-sender logic. Hosted business accounts are ordinary
+  group members. Mentions and quotes naming an unaddressable user no longer crash the
+  connection either; the jid annotation is dropped and the message still sends.
+
+### Security
+
+- **`download_media/1` now only fetches from WhatsApp's own media domain.** The
+  descriptor's `:direct_path` was already safe — it is a path joined onto
+  `mmg.whatsapp.net`, so it names a file, not a server. But the `:url` fallback was
+  passed to `Req.get/2` verbatim, with no scheme or host check. For a descriptor
+  taken straight off the socket that is fine; for one rehydrated from storage or
+  received over a transport, an attacker-influenced `:url` made Amarula fetch from
+  any host it named (SSRF), which is why a consumer doing exactly that had to
+  sanitize descriptors before every call.
+
+  A `:url` is now used only when it is `https://` on `whatsapp.net` or a subdomain,
+  with no userinfo (`https://mmg.whatsapp.net@evil.example.com/x` names `evil.example.com`,
+  and is refused). `:direct_path` still wins when present, and must start at the root
+  with no whitespace or control bytes, so it cannot reach the authority either.
+  `Amarula.Content.Media.new/1` applies the same rule and keeps only the locator that
+  survives it. New error reasons: `:untrusted_media_url` and `:unsafe_direct_path`.
+
+  Consumers who pass descriptors straight from `:messages_upsert` — the normal case —
+  see no change.
+
+- **`download_media/1` no longer raises on a response that is not a media blob.** A
+  200 carrying a CDN error page or a truncated body reached `binary_part/3` and the
+  AES primitive with a length they reject, so an `ArgumentError` escaped a function
+  specced `{:ok, binary()} | {:error, term()}` — enough for a consumer to wrap the
+  call in a `rescue` at its transport boundary. Short, misaligned, and badly padded
+  blobs are now `{:error, :bad_mac}` / `{:error, :bad_padding}`, and an unknown media
+  type is `{:error, :invalid_media}` instead of a `KeyError` from key derivation.
+
 ## [0.5.13] - 2026-10-29
 
 ### Fixed
@@ -343,6 +610,7 @@ API change.
   `:chats_update`/`:contacts_update` events.
 
 [#59]: https://github.com/tubedude/amarula/issues/59
+[#50]: https://github.com/tubedude/amarula/issues/50
 [#61]: https://github.com/tubedude/amarula/pull/61
 [#62]: https://github.com/tubedude/amarula/issues/62
 [#64]: https://github.com/tubedude/amarula/issues/64
@@ -1368,7 +1636,12 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.5.13...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/tubedude/amarula/compare/v0.5.13...v0.6.0
+[0.6.0-rc.4]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.3...v0.6.0-rc.4
+[0.6.0-rc.3]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.2...v0.6.0-rc.3
+[0.6.0-rc.2]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.1...v0.6.0-rc.2
+[0.6.0-rc.1]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.6.0-rc.1
 [0.5.13]: https://github.com/tubedude/amarula/compare/v0.5.12...v0.5.13
 [0.5.12]: https://github.com/tubedude/amarula/compare/v0.5.11...v0.5.12
 [0.5.11]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.5.11

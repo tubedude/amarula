@@ -52,6 +52,17 @@ defmodule Amarula.Protocol.Messages.MessageContent do
   end
 
   @doc """
+  True when an *outgoing* message is view-once. WhatsApp needs a
+  `<meta view_once="true"/>` on the stanza as well as the proto wrapper, or the
+  recipient sees a regular message (Baileys #2837).
+  """
+  @spec view_once?(Proto.Message.t()) :: boolean()
+  def view_once?(%Proto.Message{viewOnceMessage: m}) when not is_nil(m), do: true
+  def view_once?(%Proto.Message{viewOnceMessageV2: m}) when not is_nil(m), do: true
+  def view_once?(%Proto.Message{viewOnceMessageV2Extension: m}) when not is_nil(m), do: true
+  def view_once?(%Proto.Message{}), do: false
+
+  @doc """
   The `mediatype` stanza attribute for an *outgoing* message (Baileys
   `getMediaType`), unwrapping view-once/ephemeral envelopes first. Returns `nil` for
   a message that carries no media type (plain text, etc.).

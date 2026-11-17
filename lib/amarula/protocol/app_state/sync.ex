@@ -10,7 +10,7 @@ defmodule Amarula.Protocol.AppState.Sync do
   pure glue between them and the decode stack.
   """
 
-  alias Amarula.Protocol.AppState.{Mutation, Patch, SyncAction}
+  alias Amarula.Protocol.AppState.{LTHash, Mutation, Patch, SyncAction}
   alias Amarula.Protocol.Binary.{Node, NodeUtils}
   alias Amarula.Protocol.Proto
 
@@ -80,9 +80,9 @@ defmodule Amarula.Protocol.AppState.Sync do
   patch's mutations) and **snapshot MAC** (authenticating the resulting LTHash) are
   checked against the app-state-sync key, in addition to the per-record value/index
   MACs `Patch.decode_mutations/4` already enforces per record. The two checks are
-  NOT equivalent to a single collection abort — ported exactly from Baileys'
-  resilience fix (`chat-utils.ts` `decodeSyncdPatch` / `decodePatches`, upstream
-  PR #2456), each is handled differently:
+  NOT equivalent to a single collection abort (Baileys `chat-utils.ts`
+  `decodeSyncdPatch` / `decodePatches`, upstream PR #2456), each is handled
+  differently:
 
   - A **patch MAC** mismatch means the patch's mutations aren't authenticated
     against this collection at all — they are dropped entirely (never decoded),
@@ -95,10 +95,10 @@ defmodule Amarula.Protocol.AppState.Sync do
   - A **snapshot MAC** mismatch means the resulting LTHash doesn't match the
     server's bookkeeping. Since every record's *individual* value/index MAC
     already authenticated it before this check runs, the patch's own mutations
-    still apply (matching Baileys applying them before its `break`) — but
-    decoding **stops for the rest of this batch**, since subsequent patches'
-    hashes are chained onto a state that's now diverged from the server's; they
-    are picked up on the next resync instead.
+    still apply. Decoding continues when the patch directly follows the local
+    state, as WhatsApp Web does (whatsmeow #1319). It **stops for the rest of this
+    batch** when local state is obviously missing: a skipped version, or an empty
+    hash on a patch other than the first. The rest is picked up on the next resync.
 
   A patch whose key isn't available yet decodes to no mutations, so there is
   nothing to authenticate (not a mismatch).
@@ -125,8 +125,8 @@ defmodule Amarula.Protocol.AppState.Sync do
 
   # One reduce_while step: bump the version, then patchMac ⇒ snapshotMac. See the
   # decode_collection/5 moduledoc for what each branch means.
-  defp decode_one_patch(patch, {acc, st, mismatches}, validate?, get_key, name) do
-    st = bump(st, patch)
+  defp decode_one_patch(patch, {acc, prior, mismatches}, validate?, get_key, name) do
+    st = bump(prior, patch)
 
     case verify_patch_mac(validate?, patch, st, name, get_key) do
       :ok ->
@@ -134,18 +134,42 @@ defmodule Amarula.Protocol.AppState.Sync do
           Patch.decode_mutations(patch.mutations, st, get_key, validate_macs: validate?)
 
         changes = acc ++ Enum.map(muts, &SyncAction.decode/1)
-        continue_after_decode(patch, changes, new_st, mismatches, validate?, get_key, name)
+
+        continue_after_decode(
+          patch,
+          changes,
+          new_st,
+          prior,
+          mismatches,
+          {validate?, get_key, name}
+        )
 
       {:error, reason} ->
         {:cont, {acc, st, [reason | mismatches]}}
     end
   end
 
-  defp continue_after_decode(patch, changes, new_st, mismatches, validate?, get_key, name) do
+  defp continue_after_decode(
+         patch,
+         changes,
+         new_st,
+         prior,
+         mismatches,
+         {validate?, get_key, name}
+       ) do
     case verify_snapshot_mac(validate?, patch, new_st, name, get_key) do
-      :ok -> {:cont, {changes, new_st, mismatches}}
-      {:error, reason} -> {:halt, {changes, new_st, [reason | mismatches]}}
+      :ok ->
+        {:cont, {changes, new_st, mismatches}}
+
+      {:error, reason} ->
+        step = if follows_local_state?(prior, new_st), do: :cont, else: :halt
+        {step, {changes, new_st, [reason | mismatches]}}
     end
+  end
+
+  defp follows_local_state?(prior, new_st) do
+    new_st.version == prior.version + 1 and
+      (new_st.version == 1 or prior.hash != LTHash.zero())
   end
 
   # The patch MAC covers the patch's OWN value MACs (as sent by the server, off
@@ -180,9 +204,8 @@ defmodule Amarula.Protocol.AppState.Sync do
 
   # The snapshot MAC covers the resulting LTHash after this patch's mutations are
   # applied — checked AFTER decoding, against the post-decode state. A mismatch
-  # doesn't undo the mutations that already applied (matching decodePatches
-  # logging + breaking rather than throwing), but the caller must stop decoding
-  # further patches in this batch since their chained hashes are now unreliable.
+  # doesn't undo the mutations that already applied; the caller decides whether
+  # to keep decoding this batch.
   defp verify_snapshot_mac(false, _patch, _st, _name, _get_key), do: :ok
 
   defp verify_snapshot_mac(true, patch, st, name, get_key) do

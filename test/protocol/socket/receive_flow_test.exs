@@ -355,6 +355,84 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       refute_receive {:frame_out, _}, 150
       assert Process.alive?(ctx.pid)
     end
+
+    test "a retry receipt carrying <registration> and <keys> injects a fresh session and resends",
+         ctx do
+      msg_id = complete_send(ctx, "rebuild session")
+      bundle = @bundle_path |> File.read!() |> JSON.decode!()
+
+      # Corrupt/wipe the stored session so the resend can only succeed if the
+      # retry receipt's inline <keys> bundle was injected.
+      :ok = Amarula.Storage.delete(ctx.conn.storage, ctx.conn.profile, :session, "10000000001.0")
+
+      node =
+        Node.create("receipt", %{"from" => @jid, "id" => msg_id, "type" => "retry", "t" => "2"}, [
+          Node.create("retry", %{"count" => "2", "id" => msg_id, "v" => "1"}, nil),
+          Node.create("registration", %{}, <<bundle["registrationId"]::big-unsigned-32>>),
+          Node.create("keys", %{}, [
+            Node.create("type", %{}, <<5>>),
+            Node.create("identity", %{}, raw(d64(bundle["identityPub"]))),
+            Node.create("skey", %{}, [
+              Node.create("id", %{}, <<bundle["signedPreKeyId"]::big-unsigned-24>>),
+              Node.create("value", %{}, raw(d64(bundle["signedPreKeyPub"]))),
+              Node.create("signature", %{}, d64(bundle["signedPreKeySig"]))
+            ]),
+            Node.create("key", %{}, [
+              Node.create("id", %{}, <<bundle["preKeyId"]::big-unsigned-24>>),
+              Node.create("value", %{}, raw(d64(bundle["preKeyPub"])))
+            ])
+          ])
+        ])
+
+      inject(ctx, node)
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "class") == "receipt"
+
+      # The resend goes out directly with the injected session (no encrypt IQ needed
+      # for the recipient device).
+      resent = drain_to_message(ctx)
+      assert resent.attrs["id"] == msg_id
+      assert SessionStore.load_session(ctx.conn, "10000000001.0") != nil
+    end
+
+    test "a count>=2 retry receipt without <keys> wipes the stale session and fetches a fresh bundle on resend (whatsmeow #1302 / #1307)",
+         ctx do
+      msg_id = complete_send(ctx, "hosted retry without keys")
+      assert SessionStore.load_session(ctx.conn, "10000000001.0") != nil
+
+      node =
+        Node.create("receipt", %{"from" => @jid, "id" => msg_id, "type" => "retry", "t" => "2"}, [
+          Node.create("retry", %{"count" => "2", "id" => msg_id, "v" => "1"}, nil),
+          Node.create("registration", %{}, <<1234::big-unsigned-32>>)
+        ])
+
+      inject(ctx, node)
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "class") == "receipt"
+
+      # Because the stale session was wiped, the resend must issue an xmlns="encrypt"
+      # prekey-bundle IQ for @jid before framing the resent <message>.
+      encrypt_iq = recv_frame()
+      assert encrypt_iq.tag == "iq"
+      assert attr(encrypt_iq, "xmlns") == "encrypt"
+
+      requested =
+        encrypt_iq
+        |> NodeUtils.get_binary_node_child("key")
+        |> Map.get(:content)
+        |> Enum.map(&NodeUtils.get_attr(&1, "jid"))
+
+      assert @jid in requested
+      inject(ctx, bundle_reply(attr(encrypt_iq, "id"), requested))
+
+      resent = drain_to_message(ctx)
+      assert resent.attrs["id"] == msg_id
+      assert SessionStore.load_session(ctx.conn, "10000000001.0") != nil
+    end
   end
 
   defp retry_receipt(msg_id, from) do
@@ -396,6 +474,151 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert_receive {[:amarula, :retry, :sent], ^ref, %{count: 1, attempt: 1}, _meta}
     end
 
+    test "a status post is delivered on the status channel and receipted to the feed", ctx do
+      author = "5511777777777@s.whatsapp.net"
+
+      inject(
+        ctx,
+        plaintext_message("STATUS1", "status@broadcast", %Proto.Message{conversation: "story"}, %{
+          "participant" => author
+        })
+      )
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert msg.channel == Amarula.Address.status()
+      assert msg.from == Amarula.Address.parse(author)
+      assert msg.content == "story"
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "to") == "status@broadcast"
+      assert attr(receipt, "participant") == author
+      assert attr(receipt, "type") == nil
+    end
+
+    test "a status post in a top-level <status> stanza is delivered and acked class=status (whatsmeow 06b1c299bb)",
+         ctx do
+      author = "5511777777777@s.whatsapp.net"
+
+      node =
+        plaintext_message("STATUS3", "status@broadcast", %Proto.Message{conversation: "story"}, %{
+          "participant" => author
+        })
+
+      inject(ctx, %{node | tag: "status"})
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert msg.channel == Amarula.Address.status()
+      assert msg.content == "story"
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "to") == "status@broadcast"
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "id") == "STATUS3"
+      assert attr(ack, "class") == "status"
+    end
+
+    test "our own status post (from another device) gets a plain sender receipt", ctx do
+      inject(
+        ctx,
+        plaintext_message("STATUS2", "status@broadcast", %Proto.Message{conversation: "mine"}, %{
+          "participant" => @me_jid
+        })
+      )
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert msg.from_me
+      assert msg.channel == Amarula.Address.status()
+
+      receipt = recv_frame()
+      assert attr(receipt, "to") == "status@broadcast"
+      assert attr(receipt, "participant") == @me_jid
+      assert attr(receipt, "recipient") == nil
+      assert attr(receipt, "type") == "sender"
+    end
+
+    test "a channel post arrives as a bare <plaintext>, is delivered, and is only acked", ctx do
+      channel = "120363000000000000@newsletter"
+
+      body =
+        Node.create("plaintext", %{}, Proto.Message.encode(%Proto.Message{conversation: "news"}))
+
+      inject(
+        ctx,
+        Node.create(
+          "message",
+          %{"from" => channel, "id" => "NL1", "t" => "1700000000", "server_id" => "118"},
+          [body]
+        )
+      )
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert msg.channel == Amarula.Address.newsletter(channel)
+      assert msg.content == "news"
+      assert msg.server_id == "118"
+
+      # No delivery receipt for a channel post — only the stanza ack.
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "id") == "NL1"
+      assert attr(ack, "error") == nil
+      refute_receive {:frame_out, _}, 150
+    end
+
+    test "an undecodable channel post is plain-acked, with no retry and no nack", ctx do
+      channel = "120363000000000000@newsletter"
+      bad = Node.create("plaintext", %{}, <<0xFF, 0xFF, 0xFF>>)
+
+      inject(ctx, Node.create("message", %{"from" => channel, "id" => "NL2", "t" => "1"}, [bad]))
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "id") == "NL2"
+      assert attr(ack, "error") == nil
+      refute_receive {:frame_out, _}, 150
+      assert Process.alive?(ctx.pid)
+    end
+
+    test "our own broadcast-list send is delivered on the list, with a plain sender receipt",
+         ctx do
+      list = "1700000000@broadcast"
+
+      inject(
+        ctx,
+        plaintext_message("BL1", list, %Proto.Message{conversation: "to all"}, %{
+          "participant" => @me_jid
+        })
+      )
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert msg.channel == Amarula.Address.parse(list)
+      assert Amarula.Address.broadcast?(msg.channel)
+      assert msg.from_me
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "to") == list
+      assert attr(receipt, "participant") == @me_jid
+      assert attr(receipt, "recipient") == nil
+      assert attr(receipt, "type") == "sender"
+    end
+
+    test "a Meta AI message is delivered on a :bot channel and receipted", ctx do
+      bot = "13135550002@bot"
+      inject(ctx, plaintext_message("BOT1", bot, %Proto.Message{conversation: "hello"}))
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert Amarula.Address.bot?(msg.channel)
+      assert msg.content == "hello"
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "to") == bot
+    end
+
     test "an undecryptable status is retried then plain-acked without a nack", ctx do
       ref = attach_telemetry([[:amarula, :decrypt, :exception], [:amarula, :retry, :sent]])
       inject(ctx, undecryptable_message("STATUSFAIL1", "status@broadcast"))
@@ -417,6 +640,25 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
 
       assert_receive {[:amarula, :retry, :sent], ^ref, %{count: 1, attempt: 1}, _meta}
 
+      refute_receive {:frame_out, _}, 150
+      assert Process.alive?(ctx.pid)
+    end
+
+    test "an undecryptable from_me message is plain-acked without retry or 500 nack (Baileys #2864)",
+         ctx do
+      ref = attach_telemetry([[:amarula, :decrypt, :exception], [:amarula, :retry, :sent]])
+      inject(ctx, undecryptable_message("OWNFAIL1", @me_jid))
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "id") == "OWNFAIL1"
+      assert attr(ack, "class") == "message"
+      assert attr(ack, "error") == nil
+
+      assert_receive {[:amarula, :decrypt, :exception], ^ref, %{count: 1},
+                      %{reason: :nothing_decrypted}}
+
+      refute_receive {[:amarula, :retry, :sent], ^ref, _, _}, 100
       refute_receive {:frame_out, _}, 150
       assert Process.alive?(ctx.pid)
     end
@@ -764,6 +1006,52 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
                update.action
     end
 
+    test "w:gp2: emits :group_update for every child and learns LID↔PN mappings (whatsmeow #1278)",
+         ctx do
+      group = "120363000000000042@g.us"
+      new_pn = "10000000099@s.whatsapp.net"
+      new_lid = "20000000099@lid"
+
+      node =
+        Node.create(
+          "notification",
+          %{
+            "type" => "w:gp2",
+            "from" => group,
+            "participant" => "20000000001@lid",
+            "participant_pn" => @jid,
+            "id" => "N5b"
+          },
+          [
+            Node.create("remove", %{}, [
+              Node.create("participant", %{"jid" => "20000000001@lid"}, nil)
+            ]),
+            Node.create("add", %{}, [
+              Node.create(
+                "participant",
+                %{"jid" => new_lid, "phone_number" => new_pn},
+                nil
+              )
+            ])
+          ]
+        )
+
+      inject(ctx, node)
+      _ack = recv_frame()
+
+      assert_receive {:amarula, :lid_mapping_update, mappings}
+      assert length(mappings) == 2
+
+      assert_receive {:amarula, :group_update,
+                      %{action: {:participants, :remove, [%{address: %{user: "20000000001"}}]}}}
+
+      assert_receive {:amarula, :group_update,
+                      %{action: {:participants, :add, [%{address: %{user: "20000000099"}}]}}}
+
+      assert LidMappingFileStore.lid_for_pn(ctx.conn, @jid) == "20000000001"
+      assert LidMappingFileStore.lid_for_pn(ctx.conn, new_pn) == "20000000099"
+    end
+
     test "picture: emits a :contacts_update with img_url changed/removed", ctx do
       changed =
         Node.create("notification", %{"type" => "picture", "from" => @jid, "id" => "N6"}, [
@@ -1070,6 +1358,30 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert receipt.message_ids == ["3EB0AAAA"]
       assert %Amarula.Address{user: "10000000001"} = receipt.from
     end
+
+    test "a top-level <status> stanza is acked with class=status (Baileys #2866)", ctx do
+      node =
+        Node.create(
+          "status",
+          %{
+            "from" => "status@broadcast",
+            "id" => "STATNODE1",
+            "participant" => @jid,
+            "type" => "media"
+          },
+          nil
+        )
+
+      inject(ctx, node)
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "class") == "status"
+      assert attr(ack, "id") == "STATNODE1"
+      assert attr(ack, "to") == "status@broadcast"
+      assert attr(ack, "participant") == @jid
+      assert attr(ack, "type") == "media"
+    end
   end
 
   # --- learn_own_push_name (PUSH_NAME history sync) ---
@@ -1350,6 +1662,14 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       inject(ctx, plaintext_message("OFFIMG1", @jid, image, %{"offline" => "1"}))
 
       assert_receive {:amarula, :messages_upsert, %{messages: [%{type: :media, offline: true}]}}
+    end
+
+    test "offline=\"0\" is treated as live (offline: false, Baileys #2840)", ctx do
+      text = %Proto.Message{conversation: "online with zero"}
+      inject(ctx, plaintext_message("OFFZERO1", @jid, text, %{"offline" => "0"}))
+
+      assert_receive {:amarula, :messages_upsert,
+                      %{id: "OFFZERO1", messages: [%{type: :text, offline: false}]}}
     end
   end
 

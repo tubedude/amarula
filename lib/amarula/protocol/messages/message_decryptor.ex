@@ -7,7 +7,8 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
     * `pkmsg` / `msg` → 1:1 Signal session, decrypted through the record's
       `SessionCustodian` (the per-record lock, so an overlapping send-side encrypt
       can't clobber the ratchet)
-    * `plaintext`     → passthrough
+    * `plaintext`     → passthrough (also a bare `<plaintext>` child — how
+      newsletter messages arrive, with no `<enc>` at all)
     * `skmsg`         → group sender-key
 
   The decrypted bytes are unpadded (random-max-16) and decoded as a
@@ -61,15 +62,22 @@ defmodule Amarula.Protocol.Messages.MessageDecryptor do
 
     {messages, used_pre_key_ids, errors} =
       node
-      |> NodeUtils.get_binary_node_children("enc")
+      |> payload_children()
       |> Enum.reduce({[], [], []}, &reduce_enc(&1, &2, ctx))
 
     {:ok, Enum.reverse(messages), Enum.reverse(used_pre_key_ids), Enum.reverse(errors)}
   end
 
-  # Decrypt one <enc> child and fold it into {messages, used_pre_key_ids, errors}.
+  # `<enc>` children, plus any bare `<plaintext>` (a newsletter message), in order.
+  defp payload_children(%{content: children}) when is_list(children) do
+    Enum.filter(children, &match?(%{tag: tag} when tag in ["enc", "plaintext"], &1))
+  end
+
+  defp payload_children(_node), do: []
+
+  # Decrypt one payload child and fold it into {messages, used_pre_key_ids, errors}.
   defp reduce_enc(enc, {msgs, used_ids, errs}, ctx) do
-    type = NodeUtils.get_attr(enc, "type")
+    type = if enc.tag == "plaintext", do: "plaintext", else: NodeUtils.get_attr(enc, "type")
 
     case decrypt_enc(type, enc.content, ctx) do
       {:ok, msg, pre_key_id} ->

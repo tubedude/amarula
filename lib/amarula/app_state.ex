@@ -25,7 +25,8 @@ defmodule Amarula.AppState do
 
   Fire-and-forget — this returns as soon as the request is queued, not once the
   server replies. Results land the same way any other app-state resync's do:
-  `:chats_update` / `:contacts_update` events to `parent_pid`.
+  `:chats_update` / `:contacts_update` events to `parent_pid`. While the server's
+  rate-limit wait (code 429) is running, no request goes out.
 
   `names` is `:all` (the default) or a list drawn from the five collections:
   `"critical_block"`, `"critical_unblock_low"`, `"regular_high"`, `"regular"`,

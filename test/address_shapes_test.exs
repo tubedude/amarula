@@ -34,15 +34,37 @@ defmodule Amarula.AddressShapesTest do
     end
   end
 
-  describe "unresolvable servers are nil today — documents the #50 contract" do
+  describe "servers we do not model yet parse to :unsupported (#50)" do
     for {label, jid} <- AddressFixtures.unresolvable() do
-      test "#{label}: Address.parse/1 is nil; jid_normalized_user passes it through" do
-        assert Address.parse(unquote(jid)) == nil
+      test "#{label}: parses to :unsupported carrying its server; cannot be addressed" do
+        addr = Address.parse(unquote(jid))
+
+        # NOT nil: a real address, so it can never reach a field typed non-nil as
+        # a nil, and a consumer can match on it instead of nil-checking.
+        assert %Address{kind: :unsupported} = addr
+        assert Address.unsupported?(addr)
+        assert addr.server == unquote(jid) |> String.split("@", parts: 2) |> List.last()
+
+        # But it has no destination — refused, not rebuilt. Rebuilding would make
+        # a reply to a status post publish a status.
+        assert {:error, {:unsupported, _}} = Address.to_jid(addr)
+        assert_raise ArgumentError, fn -> Address.to_jid!(addr) end
 
         # `key_jid/1` relies on the non-empty normalization: an unresolvable jid
         # rides through untouched rather than crashing a send.
         assert JID.jid_normalized_user(unquote(jid)) == unquote(jid)
       end
+    end
+
+    test "nil still means 'not a jid at all', which is a different thing" do
+      assert Address.parse("not-a-jid") == nil
+      assert Address.parse("s.whatsapp.net") == nil
+      assert Address.parse(nil) == nil
+    end
+
+    test "two unsupported addresses differing only by server are not the same account" do
+      refute Address.same_account?(Address.parse("5@hosted"), Address.parse("5@newsletter"))
+      assert Address.same_account?(Address.parse("5@hosted"), Address.parse("5@hosted"))
     end
   end
 end

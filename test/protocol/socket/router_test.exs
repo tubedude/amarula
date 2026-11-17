@@ -23,6 +23,27 @@ defmodule Amarula.Protocol.Socket.RouterTest do
     assert Router.route(n("xmlstreamend")) == :xml_stream_end
   end
 
+  describe "messages route regardless of chat kind (#50)" do
+    # Unmodelled kinds (status, newsletter, hosted) are delivered, not declined:
+    # dropping one at the router left it un-acked in the server's queue.
+    test "every chat kind, and a missing or bare-server `from`, routes as :message" do
+      for from <- [
+            "5511@s.whatsapp.net",
+            "5511:3@s.whatsapp.net",
+            "5511@lid",
+            "120@g.us",
+            "status@broadcast",
+            "x@newsletter",
+            "5511@hosted",
+            "s.whatsapp.net"
+          ] do
+        assert Router.route(n("message", %{"from" => from})) == :message, from
+      end
+
+      assert Router.route(n("message")) == :message
+    end
+  end
+
   test "ping is disambiguated by xmlns / direction" do
     assert Router.route(n("iq", %{"type" => "get", "xmlns" => "urn:xmpp:ping"})) == :server_ping
     assert Router.route(n("iq", %{}, [child("ping")])) == :ping_response
@@ -52,6 +73,13 @@ defmodule Amarula.Protocol.Socket.RouterTest do
     assert Router.route(n("receipt", %{"type" => "read"})) == :receipt_ack
     assert Router.route(n("receipt")) == :receipt_ack
     assert Router.route(n("call")) == :call_ack
+    assert Router.route(n("status")) == :status_ack
+  end
+
+  test "a <status> carrying a payload routes as :message (whatsmeow 06b1c299bb)" do
+    assert Router.route(n("status", %{}, [child("enc")])) == :message
+    assert Router.route(n("status", %{}, [child("meta"), child("enc")])) == :message
+    assert Router.route(n("status", %{}, [child("plaintext")])) == :message
   end
 
   test "presence + chatstate route to :presence" do

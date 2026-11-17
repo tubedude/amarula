@@ -442,6 +442,9 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     assert %Node{content: identity} = NodeUtils.get_binary_node_child(message, "device-identity")
     assert is_binary(identity) and byte_size(identity) > 0
 
+    # Only a view-once send carries <meta>.
+    assert NodeUtils.get_binary_node_child(message, "meta") == nil
+
     # Ack-on-send: the caller stays blocked until the server confirms the msg_id.
     ack(ctx, msg_id)
     assert {:ok, ^msg_id} = await_send_result(task)
@@ -1018,6 +1021,46 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     assert is_binary(frame.attrs["id"])
   end
 
+  defp view_once_message do
+    inner = %Proto.Message{conversation: "once"}
+    %Proto.Message{viewOnceMessage: %Proto.Message.FutureProofMessage{message: inner}}
+  end
+
+  test "a view-once DM carries <meta view_once=true>", ctx do
+    task = Task.async(fn -> Connection.send_message(ctx.pid, @jid, view_once_message()) end)
+    usync_iq = recv_frame()
+    inject(ctx, usync_devices_reply(attr(usync_iq, "id")))
+    bundle_iq = recv_frame()
+    inject(ctx, bundle_reply(attr(bundle_iq, "id")))
+
+    message = recv_frame()
+
+    assert %Node{attrs: %{"view_once" => "true"}} =
+             NodeUtils.get_binary_node_child(message, "meta")
+
+    ack(ctx, message.attrs["id"])
+    assert {:ok, _} = await_send_result(task)
+  end
+
+  test "a view-once group send carries <meta view_once=true>", ctx do
+    group = "120363000000000001@g.us"
+    members = [@me_jid, @jid]
+
+    task = Task.async(fn -> Connection.send_message(ctx.pid, group, view_once_message()) end)
+    meta_iq = recv_frame()
+    inject(ctx, group_metadata_reply(attr(meta_iq, "id"), group, members))
+    usync_iq = recv_frame()
+    inject(ctx, usync_members_reply(attr(usync_iq, "id"), members))
+
+    message = drain_until_message(ctx)
+
+    assert %Node{attrs: %{"view_once" => "true"}} =
+             NodeUtils.get_binary_node_child(message, "meta")
+
+    ack(ctx, message.attrs["id"])
+    assert {:ok, _} = await_send_result(task)
+  end
+
   test "group send: metadata → participant USync → skmsg + SKDM fan-out", ctx do
     group = "120363000000000001@g.us"
     # Group has us + one other member (both PN-addressed).
@@ -1065,6 +1108,87 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     # One group message stanza ⇒ one server ack completes the send.
     ack(ctx, msg_id)
     assert {:ok, ^msg_id} = await_send_result(task)
+  end
+
+  test "post_status: USyncs the audience, no metadata fetch, skmsg + SKDM to status@broadcast",
+       ctx do
+    task =
+      Task.async(fn ->
+        GenServer.call(ctx.pid, {:post_status, "my story", [Amarula.Address.parse(@jid)]})
+      end)
+
+    # No group metadata: the audience is given. Straight to USync.
+    usync_iq = recv_frame()
+    assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
+    inject(ctx, usync_members_reply(attr(usync_iq, "id"), [@me_jid, @jid]))
+
+    message = drain_until_message(ctx)
+    msg_id = message.attrs["id"]
+    assert message.attrs["to"] == "status@broadcast"
+    assert NodeUtils.get_binary_node_child(message, "enc").attrs["type"] == "skmsg"
+    assert NodeUtils.get_binary_node_child(message, "participants").content != []
+
+    ack(ctx, msg_id)
+    assert {:ok, ^msg_id} = await_send_result(task)
+  end
+
+  test "post_status refuses an audience entry that is not a PN/LID account", ctx do
+    assert {:error, {:invalid_audience, "120@g.us"}} =
+             GenServer.call(ctx.pid, {:post_status, "x", ["120@g.us"]})
+
+    assert {:error, {:invalid_audience, :empty}} =
+             GenServer.call(ctx.pid, {:post_status, "x", []})
+  end
+
+  @tag me_lid: "20000000002@lid"
+  test "post_status resolves mapped PN audience to LID and uses me.lid as own identity (Baileys #2841, whatsmeow #1294)",
+       ctx do
+    member_lid = "20000000001@lid"
+    me_lid = "20000000002@lid"
+    LidMappingFileStore.store_mappings(ctx.conn, [{member_lid, @jid}])
+
+    task =
+      Task.async(fn ->
+        GenServer.call(ctx.pid, {:post_status, "lid story", [Amarula.Address.parse(@jid)]})
+      end)
+
+    usync_iq = recv_frame()
+    assert NodeUtils.get_attr(usync_iq, "xmlns") == "usync"
+
+    queried =
+      usync_iq
+      |> NodeUtils.get_binary_node_child("usync")
+      |> NodeUtils.get_binary_node_child("list")
+      |> Map.get(:content)
+      |> Enum.map(&NodeUtils.get_attr(&1, "jid"))
+
+    assert member_lid in queried
+    assert me_lid in queried
+    refute @jid in queried
+    refute @me_jid in queried
+
+    inject(ctx, usync_members_reply(attr(usync_iq, "id"), [me_lid, member_lid]))
+
+    message = drain_until_message(ctx)
+    msg_id = message.attrs["id"]
+    assert message.attrs["to"] == "status@broadcast"
+
+    ack(ctx, msg_id)
+    assert {:ok, ^msg_id} = await_send_result(task)
+  end
+
+  @tag me_lid: "20000000002@lid"
+  test "post_status rejects a mixed LID and unmapped PN audience with :mixed_status_addressing",
+       ctx do
+    assert {:error, :mixed_status_addressing} =
+             GenServer.call(
+               ctx.pid,
+               {:post_status, "mixed",
+                [
+                  Amarula.Address.parse("20000000001@lid"),
+                  Amarula.Address.parse(@jid)
+                ]}
+             )
   end
 
   test "lid group: USyncs participants by PN (not lid) and stores LID mappings", ctx do

@@ -133,6 +133,28 @@ defmodule Amarula.Msg do
   creds. The one exception is a **nested quoted message** (`quoted.message`): it carries
   `channel`/`from` but `to: nil` (a quote isn't independently addressed to you).
 
+  > #### Non-nil is not the same as addressable {: .warning}
+  >
+  > An address can be present and still have nowhere to send: `Amarula.Address`
+  > parses a jid whose server Amarula does not model to `kind: :unsupported`,
+  > carrying its raw `server`.
+  >
+  > They compare and inspect like any address, but every send refuses them with
+  > `{:error, {:unsupported, server}}` rather than guessing a destination. Check
+  > `Amarula.Address.unsupported?/1` before replying to an address that came off
+  > the wire. Messages *from* such a chat are delivered like any other, with that
+  > address as their `channel`.
+  >
+  > A status post has `channel` `Amarula.Address.status/0` and the author as
+  > `from`. Sends to the status channel are refused (`:status_post_unsupported`) —
+  > it would *post* a status. Reply to the author instead:
+  > `send_text(conn, msg.from, text, quoted: msg)`. To post a status on purpose, use
+  > `Amarula.post_status/3`.
+  >
+  > A channel post has a `:newsletter` `channel` and carries `server_id`, the
+  > channel's own id for the post. Sends to a channel are refused
+  > (`:newsletter_send_unsupported`).
+
   ## `offline`
 
   `offline` is `true` when WhatsApp delivered the message from its offline queue —
@@ -212,6 +234,7 @@ defmodule Amarula.Msg do
           from_me: boolean(),
           pushname: String.t() | nil,
           timestamp: integer() | nil,
+          server_id: String.t() | nil,
           type: atom(),
           content: term(),
           quoted: quoted() | nil,
@@ -231,6 +254,7 @@ defmodule Amarula.Msg do
     :from_me,
     :pushname,
     :timestamp,
+    :server_id,
     :type,
     :content,
     :quoted,
@@ -247,8 +271,9 @@ defmodule Amarula.Msg do
   `meta` carries the stanza fields: `:id`, `:channel` (the room `Address`), `:from`
   (the writer `Address` — participant in a group, else the channel), `:to` (the
   addressed identity `Address`), `:from_me`, `:pushname` (the sender's display name
-  off the stanza, `nil` when absent), `:timestamp`, `:offline` (delivered from the
-  offline queue; `false` when absent).
+  off the stanza, `nil` when absent), `:timestamp`, `:server_id` (a channel post's
+  server-side id, `nil` elsewhere), `:offline` (delivered
+  from the offline queue; `false` when absent).
 
   `:channel` is normalized to its account-level address here (device stripped) — it
   is the reply handle, and a device-bound one is rejected on send. `:from` keeps its
@@ -268,6 +293,7 @@ defmodule Amarula.Msg do
       from_me: meta[:from_me] || false,
       pushname: meta[:pushname],
       timestamp: meta[:timestamp],
+      server_id: meta[:server_id],
       type: type,
       content: content,
       quoted: quoted(ctx, channel),
@@ -369,8 +395,14 @@ defmodule Amarula.Msg do
   # a list (proto3 repeated field), so these two clauses are total.
   defp mentions(nil), do: []
 
+  # Unparseable mentions are dropped rather than carried as nil (#50). A mention of
+  # an unmodelled kind arrives inside an ordinary group message — and a nil in this
+  # list is a live grenade: the documented
+  # round-trip `send_text(conn, chan, text, mentions: msg.mentions)` feeds it to
+  # `to_jid!/1` inside the Connection GenServer. Dropping also makes the list match
+  # its declared `[Address.t()]` type.
   defp mentions(%Proto.ContextInfo{mentionedJid: jids}) when is_list(jids),
-    do: Enum.map(jids, &Address.parse/1)
+    do: jids |> Enum.map(&Address.parse/1) |> Enum.reject(&is_nil/1)
 
   # Whether the message was forwarded (ContextInfo.isForwarded, field 22). The
   # proto3-optional field is nil when unset, so only an explicit `true` counts.

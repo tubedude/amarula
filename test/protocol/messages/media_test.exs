@@ -111,6 +111,29 @@ defmodule Amarula.Protocol.Messages.MediaTest do
       assert {:error, :invalid_media} = Media.download(%{}, :image)
     end
 
+    # A 200 whose body is not a media blob at all (a CDN error page, a truncated
+    # response) must come back as an error tuple. These used to raise out of
+    # binary_part/crypto — which is why consumers wrapped the call in a rescue.
+    test "a 200 that is not a blob errors instead of raising" do
+      for body <- ["", "nope", "<html>404</html>", :crypto.strong_rand_bytes(11)] do
+        Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, body) end)
+
+        ref = %{direct_path: "/v/t62/enc", media_key: :crypto.strong_rand_bytes(32)}
+        assert {:error, reason} = Media.download(ref, :image)
+        assert reason in [:bad_mac, :bad_padding]
+      end
+    end
+
+    test "an unknown media type errors instead of raising in key derivation" do
+      ref = %{direct_path: "/v/t62/enc", media_key: :crypto.strong_rand_bytes(32)}
+      assert {:error, :invalid_media} = Media.download(ref, :gif)
+    end
+
+    test "a wrong-sized media key returns {:error, :invalid_media}" do
+      ref = %{direct_path: "/v/t62/enc", media_key: <<0::248>>}
+      assert {:error, :invalid_media} = Media.download(ref, :image)
+    end
+
     test "a corrupt blob fails the MAC check" do
       data = :crypto.strong_rand_bytes(200)
       {:ok, e} = Media.encrypt(data, :image)
@@ -120,6 +143,71 @@ defmodule Amarula.Protocol.Messages.MediaTest do
 
       ref = %{direct_path: "/v/t62/enc", media_key: e.media_key}
       assert {:error, :bad_mac} = Media.download(ref, :image)
+    end
+  end
+
+  # A descriptor rebuilt from stored or transported data can name any host in its
+  # `:url`. download/2 decides where to fetch from, so the check belongs here — not
+  # in every consumer that rehydrates one.
+  describe "download/2 locator validation" do
+    setup do
+      Application.put_env(:amarula, :req_options, plug: {Req.Test, Media})
+      on_exit(fn -> Application.delete_env(:amarula, :req_options) end)
+
+      # Any request at all is a failure in this block: validation runs before Req.
+      Req.Test.stub(Media, fn conn ->
+        flunk("download/2 issued an HTTP request to #{conn.host}#{conn.request_path}")
+      end)
+    end
+
+    test "refuses a :url that is not https on a WhatsApp host" do
+      for url <- [
+            "https://evil.example.com/v/enc",
+            "https://mmg.whatsapp.net.evil.example.com/v/enc",
+            "http://mmg.whatsapp.net/v/enc",
+            "https://mmg.whatsapp.net@evil.example.com/v/enc",
+            "https://mmg.whatsapp.net/v/ enc",
+            "https://mmg.whatsapp.net/v/enc\r\nX-Injected: 1",
+            "file:///etc/passwd"
+          ] do
+        ref = %{url: url, media_key: :crypto.strong_rand_bytes(32)}
+
+        assert {:error, :untrusted_media_url} = Media.download(ref, :image),
+               "expected #{url} to be refused"
+      end
+    end
+
+    test "refuses a :direct_path that could reach the authority" do
+      for path <- ["@evil.example.com/v/enc", "v/enc", "/v/enc\r\nX: 1"] do
+        ref = %{direct_path: path, media_key: :crypto.strong_rand_bytes(32)}
+
+        assert {:error, :unsafe_direct_path} = Media.download(ref, :image),
+               "expected #{inspect(path)} to be refused"
+      end
+    end
+
+    test "an untrusted :url alongside a good :direct_path is simply not used" do
+      data = :crypto.strong_rand_bytes(64)
+      {:ok, e} = Media.encrypt(data, :image)
+      Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, e.enc) end)
+
+      ref = %{
+        direct_path: "/v/t62/enc",
+        url: "https://evil.example.com/x",
+        media_key: e.media_key
+      }
+
+      assert {:ok, ^data} = Media.download(ref, :image)
+    end
+
+    test "accepts a WhatsApp :url when it is the only locator (any subdomain, any case)" do
+      data = :crypto.strong_rand_bytes(64)
+      {:ok, e} = Media.encrypt(data, :image)
+      Req.Test.stub(Media, fn conn -> Plug.Conn.send_resp(conn, 200, e.enc) end)
+
+      for url <- ["https://media-fra3-1.whatsapp.net/v/enc", "https://MMG.WhatsApp.NET/v/enc"] do
+        assert {:ok, ^data} = Media.download(%{url: url, media_key: e.media_key}, :image)
+      end
     end
   end
 

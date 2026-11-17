@@ -102,6 +102,21 @@ defmodule Amarula.Protocol.Auth.AuthUtilsTest do
       ua = AuthUtils.create_user_agent(%{@config | country_code: nil})
       assert ua.localeCountryIso31661Alpha2 == "US"
     end
+
+    test "maps Mac OS Desktop with sync_full_history to :MACOS alongside :DARWIN webSubPlatform (Baileys #2880)" do
+      macos_desktop = %{
+        @config
+        | browser: ["Mac OS", "Desktop", "14.4.1"],
+          sync_full_history: true
+      }
+
+      assert AuthUtils.create_user_agent(macos_desktop).platform == :MACOS
+      assert AuthUtils.create_web_info(macos_desktop).webSubPlatform == :DARWIN
+
+      # Without sync_full_history, stays :WEB
+      no_sync = %{macos_desktop | sync_full_history: false}
+      assert AuthUtils.create_user_agent(no_sync).platform == :WEB
+    end
   end
 
   describe "create_device_props/1" do

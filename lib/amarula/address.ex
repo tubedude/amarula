@@ -4,13 +4,25 @@ defmodule Amarula.Address do
   for or from. A friendly value you can build, inspect, and pass to sends, instead
   of juggling raw `"user@server"` jid strings.
 
-  Four kinds, distinguished by `:kind`:
+  Distinguished by `:kind`:
 
     * `:pn`    — a phone-number identity (`<number>@s.whatsapp.net`).
     * `:lid`   — a privacy "Linked ID" (`<id>@lid`). WhatsApp's wire-preferred
       identity; the same person has both a PN and a LID.
     * `:group` — a group chat (`<id>@g.us`). A *container* of participants, not a
       person; its members are fetched separately (group metadata), not stored here.
+    * `:status` — the status (Stories) feed, `status@broadcast`. Status posts arrive
+      with it as their `channel`; the author is the message's `from`. Reply to the
+      author, not to this: sending to it would *post* a status, so sends refuse it.
+    * `:newsletter` — a WhatsApp Channel (`<id>@newsletter`). Its posts arrive with
+      it as their `channel`. Followers can't post to it, and Amarula does not send
+      as a channel admin yet, so sends refuse it.
+    * `:broadcast` — a broadcast list (`<id>@broadcast`, not `status@broadcast`).
+      You only see one as the `channel` of a message your own phone sent to it
+      (recipients get an ordinary 1:1). Its members are unknown here, so sends
+      refuse it.
+    * `:bot` — Meta AI (`<id>@bot`). Its messages are delivered with it as their
+      `channel`; sending to it is not implemented, so sends refuse it.
     * `:none`  — the **empty** address (`empty/0`): "no identity". A stand-in for
       "we don't have one yet" (e.g. `Amarula.own_address/1` before login) — returned
       instead of `nil`, so you never have to nil-check. It names nothing: every
@@ -20,6 +32,11 @@ defmodule Amarula.Address do
 
   `:device` is the device number (`nil` = account-level / primary). An address
   with `device: nil` names the whole account; with a device it names one client.
+
+  A device on Meta's hosting (a Cloud API business, `<n>:99@hosted` /
+  `<n>:99@hosted.lid`) is a `:pn` / `:lid` device like any other, with `:server`
+  set to `"hosted"` / `"hosted.lid"` so its jid round-trips. It is the same
+  account as the plain PN/LID, and `normalize/1` returns that plain address.
 
   ## Parsed-only
 
@@ -40,13 +57,38 @@ defmodule Amarula.Address do
 
   alias Amarula.Protocol.Binary.JID
 
-  @type kind :: :pn | :lid | :group | :none
-  @type t :: %__MODULE__{user: String.t(), kind: kind(), device: non_neg_integer() | nil}
+  @type kind ::
+          :pn
+          | :lid
+          | :group
+          | :status
+          | :newsletter
+          | :broadcast
+          | :bot
+          | :none
+          | :unsupported
+  @type t :: %__MODULE__{
+          user: String.t(),
+          kind: kind(),
+          device: non_neg_integer() | nil,
+          server: String.t() | nil
+        }
 
   @enforce_keys [:user, :kind]
-  defstruct [:user, :kind, :device]
+  # `server` is the raw server string, set ONLY for `:unsupported` and for a hosted
+  # PN/LID device — otherwise the server is implied by `kind` (see `@server` below),
+  # so carrying it twice would just be a second source of truth to keep in sync.
+  defstruct [:user, :kind, :device, :server]
 
-  @server %{pn: "s.whatsapp.net", lid: "lid", group: "g.us"}
+  @server %{
+    pn: "s.whatsapp.net",
+    lid: "lid",
+    group: "g.us",
+    status: "broadcast",
+    newsletter: "newsletter",
+    broadcast: "broadcast",
+    bot: "bot"
+  }
 
   @doc "A PN address from a bare number or full jid string."
   @spec pn(String.t()) :: t()
@@ -60,6 +102,14 @@ defmodule Amarula.Address do
   @spec group(String.t()) :: t()
   def group(id), do: %__MODULE__{user: user_of(id), kind: :group, device: nil}
 
+  @doc "The status (Stories) feed, `status@broadcast` (see the `:status` kind)."
+  @spec status() :: t()
+  def status, do: %__MODULE__{user: "status", kind: :status, device: nil}
+
+  @doc "A channel (newsletter) address from a bare id or full `@newsletter` jid string."
+  @spec newsletter(String.t()) :: t()
+  def newsletter(id), do: %__MODULE__{user: user_of(id), kind: :newsletter, device: nil}
+
   @doc "The empty address — \"no identity\". Returned instead of `nil` (see the `:none` kind)."
   @spec empty() :: t()
   def empty, do: %__MODULE__{user: "", kind: :none, device: nil}
@@ -67,20 +117,40 @@ defmodule Amarula.Address do
   @doc """
   Parse a jid string into an `Address` (via `JID.decode/1`). An already-parsed
   `Address` passes through unchanged, and `nil` passes through as `nil` — so it's
-  safe to call on an optional `String.t() | nil` field without wrapping. Also
-  returns `nil` for an unparseable or unknown-server string; use `parse!/1` when a
-  bad jid should raise instead.
+  safe to call on an optional `String.t() | nil` field without wrapping.
+
+  `nil` means **"not a jid"** — an unparseable string with no server part. A jid
+  whose server we do not model yet (`@hosted`, a broadcast list)
+  is NOT nil: it parses to `kind: :unsupported` carrying the raw `server`, so it
+  can be inspected, matched and logged like any other address. It cannot be
+  addressed — `to_jid/1` refuses it (see `unsupported?/1`).
+
+      iex> Amarula.Address.parse("status@broadcast")
+      %Amarula.Address{user: "status", kind: :status, device: nil, server: nil}
+
+      iex> Amarula.Address.parse("x@call")
+      %Amarula.Address{user: "x", kind: :unsupported, device: nil, server: "call"}
+
+      iex> Amarula.Address.parse("not-a-jid")
+      nil
   """
   @spec parse(String.t() | t() | nil) :: t() | nil
   def parse(nil), do: nil
   def parse(%__MODULE__{} = address), do: address
 
   def parse(jid) when is_binary(jid) do
-    with %{user: user, server: server} = decoded <- JID.decode(jid),
-         k when not is_nil(k) <- kind_of(server) do
-      %__MODULE__{user: user, kind: k, device: Map.get(decoded, :device)}
-    else
-      _ -> nil
+    case JID.decode(jid) do
+      %{user: user, server: server} = decoded ->
+        device = Map.get(decoded, :device)
+
+        case kind_of(user, server) do
+          nil -> %__MODULE__{user: user, kind: :unsupported, device: device, server: server}
+          {k, hosted} -> %__MODULE__{user: user, kind: k, device: device, server: hosted}
+          k -> %__MODULE__{user: user, kind: k, device: device}
+        end
+
+      _ ->
+        nil
     end
   end
 
@@ -102,11 +172,20 @@ defmodule Amarula.Address do
       iex> Amarula.Address.to_jid(Amarula.Address.pn("5511999999999"))
       {:ok, "5511999999999@s.whatsapp.net"}
   """
-  @spec to_jid(String.t() | t()) :: {:ok, String.t()} | {:error, :no_jid}
+  @spec to_jid(String.t() | t() | nil) ::
+          {:ok, String.t()} | {:error, :no_jid | {:unsupported, String.t()}}
   def to_jid(%__MODULE__{kind: :none}), do: {:error, :no_jid}
 
-  def to_jid(%__MODULE__{user: user, kind: kind, device: device}) do
-    {:ok, JID.encode(%{user: user, server: Map.fetch!(@server, kind), device: device})}
+  # Refused DELIBERATELY, even though `user` + `server` would rebuild the string
+  # perfectly: we cannot know what sending to an unmodelled kind would do (#50).
+  def to_jid(%__MODULE__{kind: :unsupported, server: server}),
+    do: {:error, {:unsupported, server}}
+
+  # `parse/1` yields nil only for a string that is not a jid at all.
+  def to_jid(nil), do: {:error, :no_jid}
+
+  def to_jid(%__MODULE__{user: user, kind: kind, device: device, server: server}) do
+    {:ok, JID.encode(%{user: user, server: server || Map.fetch!(@server, kind), device: device})}
   end
 
   def to_jid(jid) when is_binary(jid), do: {:ok, jid}
@@ -115,16 +194,35 @@ defmodule Amarula.Address do
   @spec to_jid!(String.t() | t()) :: String.t()
   def to_jid!(jid) when is_binary(jid), do: jid
 
+  # Deliberately still raises — `!` promises a bare string. But it names the reason
+  # rather than surfacing a bare FunctionClauseError. `nil` reaching here means a
+  # string that is not a jid at all (no server part); an unmodelled *kind* is a
+  # separate, more likely case handled by the `:unsupported` clause below.
+  def to_jid!(nil) do
+    raise ArgumentError,
+          "address is nil: `Amarula.Address.parse/1` returns nil for a string that is not a " <>
+            "jid (no \"@server\" part). Match on nil before calling to_jid!/1."
+  end
+
   def to_jid!(%__MODULE__{} = addr) do
     case to_jid(addr) do
-      {:ok, jid} -> jid
-      {:error, :no_jid} -> raise ArgumentError, "address has no jid: #{inspect(addr)}"
+      {:ok, jid} ->
+        jid
+
+      {:error, :no_jid} ->
+        raise ArgumentError, "address has no jid: #{inspect(addr)}"
+
+      {:error, {:unsupported, server}} ->
+        raise ArgumentError,
+              "cannot address a #{inspect(server)} jid: Amarula does not model this chat kind " <>
+                "yet, so it has no safe destination. Match `Amarula.Address.unsupported?/1` first."
     end
   end
 
-  @doc "The account-level address (device stripped)."
+  @doc "The account-level address (device stripped; a hosted device becomes its plain PN/LID)."
   @spec normalize(t()) :: t()
-  def normalize(%__MODULE__{} = a), do: %{a | device: nil}
+  def normalize(%__MODULE__{kind: :unsupported} = a), do: %{a | device: nil}
+  def normalize(%__MODULE__{} = a), do: %{a | device: nil, server: nil}
 
   @doc """
   Whether two addresses name the same account (same user+kind, ignoring device). The
@@ -134,6 +232,18 @@ defmodule Amarula.Address do
   @spec same_account?(t(), t()) :: boolean()
   def same_account?(%__MODULE__{kind: :none}, _b), do: false
   def same_account?(_a, %__MODULE__{kind: :none}), do: false
+
+  # Two unsupported addresses match only if the SERVER matches too — `kind` alone
+  # is `:unsupported` for every unmodelled server, so the generic user+kind clause
+  # below would equate `5@broadcast` with `5@newsletter`.
+  def same_account?(
+        %__MODULE__{kind: :unsupported, user: u, server: s},
+        %__MODULE__{kind: :unsupported, user: u, server: s}
+      ),
+      do: true
+
+  def same_account?(%__MODULE__{kind: :unsupported}, _b), do: false
+  def same_account?(_a, %__MODULE__{kind: :unsupported}), do: false
   def same_account?(%__MODULE__{user: u, kind: k}, %__MODULE__{user: u, kind: k}), do: true
   def same_account?(_a, _b), do: false
 
@@ -145,6 +255,22 @@ defmodule Amarula.Address do
   def lid?(%__MODULE__{kind: :lid}), do: true
   def lid?(_), do: false
 
+  @spec status?(t()) :: boolean()
+  def status?(%__MODULE__{kind: :status}), do: true
+  def status?(_), do: false
+
+  @spec newsletter?(t()) :: boolean()
+  def newsletter?(%__MODULE__{kind: :newsletter}), do: true
+  def newsletter?(_), do: false
+
+  @spec broadcast?(t()) :: boolean()
+  def broadcast?(%__MODULE__{kind: :broadcast}), do: true
+  def broadcast?(_), do: false
+
+  @spec bot?(t()) :: boolean()
+  def bot?(%__MODULE__{kind: :bot}), do: true
+  def bot?(_), do: false
+
   @spec group?(t()) :: boolean()
   def group?(%__MODULE__{kind: :group}), do: true
   def group?(_), do: false
@@ -154,13 +280,33 @@ defmodule Amarula.Address do
   def empty?(%__MODULE__{kind: :none}), do: true
   def empty?(_), do: false
 
+  @doc """
+  Whether this is a real jid whose chat kind Amarula does not model yet
+  (`@hosted`, a broadcast list, …).
+
+  Such an address carries its raw `server` and can be inspected and compared, but
+  has no safe destination — `to_jid/1` returns `{:error, {:unsupported, server}}`
+  and sends to it are refused. Match this before addressing an address that came
+  off the wire.
+  """
+  @spec unsupported?(t()) :: boolean()
+  def unsupported?(%__MODULE__{kind: :unsupported}), do: true
+  def unsupported?(_), do: false
+
   # --- internals ---
 
-  defp kind_of("s.whatsapp.net"), do: :pn
-  defp kind_of("c.us"), do: :pn
-  defp kind_of("lid"), do: :lid
-  defp kind_of("g.us"), do: :group
-  defp kind_of(_), do: nil
+  defp kind_of(_user, "s.whatsapp.net"), do: :pn
+  defp kind_of(_user, "c.us"), do: :pn
+  defp kind_of(_user, "lid"), do: :lid
+  defp kind_of(_user, "g.us"), do: :group
+  defp kind_of(_user, "newsletter"), do: :newsletter
+  defp kind_of(_user, "bot"), do: :bot
+  defp kind_of(_user, "hosted"), do: {:pn, "hosted"}
+  defp kind_of(_user, "hosted.lid"), do: {:lid, "hosted.lid"}
+  # The status feed; any other `@broadcast` is a broadcast list.
+  defp kind_of("status", "broadcast"), do: :status
+  defp kind_of(_user, "broadcast"), do: :broadcast
+  defp kind_of(_user, _server), do: nil
 
   # The user part of a bare id or full jid: strip @server, then the `:device` and
   # `_agent` segments, in that order.

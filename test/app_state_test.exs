@@ -95,6 +95,54 @@ defmodule Amarula.AppStateTest do
     assert NodeUtils.get_attr(c, "return_snapshot") == "true"
   end
 
+  describe "rate limit (code 429)" do
+    @describetag :capture_log
+
+    defp reject_with_429(pid, backoff) do
+      AppState.force_resync(pid, ["regular"])
+      {"id", id} = List.keyfind(recv_iq().attrs, "id", 0)
+
+      error = %Amarula.Protocol.Binary.Node{
+        tag: "error",
+        attrs: %{"code" => "429", "backoff" => backoff},
+        content: nil
+      }
+
+      reply = %Amarula.Protocol.Binary.Node{
+        tag: "iq",
+        attrs: %{"type" => "error", "id" => id},
+        content: [error]
+      }
+
+      send(pid, {:inject_node, reply})
+      # A sync call: the injected reply above has been handled when this returns.
+      :sys.get_state(pid)
+    end
+
+    test "no resync goes out during the server's wait", %{pid: pid} do
+      assert %{app_state_backoff_until: until} = reject_with_429(pid, "3600")
+      assert is_integer(until)
+
+      AppState.force_resync(pid, ["regular"])
+      refute_receive {:frame_out, %{tag: "iq"}}, 100
+    end
+
+    test "a resync goes out again after the wait", %{pid: pid} do
+      reject_with_429(pid, "3600")
+
+      :sys.replace_state(pid, fn state ->
+        %{state | app_state_backoff_until: System.monotonic_time(:millisecond) - 1}
+      end)
+
+      AppState.force_resync(pid, ["regular"])
+      assert %{tag: "iq"} = recv_iq()
+    end
+
+    test "a 429 without a usable backoff sets no wait", %{pid: pid} do
+      assert %{app_state_backoff_until: nil} = reject_with_429(pid, "0")
+    end
+  end
+
   test "a reply to a forced resync feeds the normal apply/emit path (no snapshot content needed)",
        %{pid: pid, storage: storage, profile: profile} do
     seed_version(storage, profile, "regular", 5)

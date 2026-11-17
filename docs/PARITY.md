@@ -14,8 +14,8 @@ This document tracks our current Baileys review watermark and serves as a runboo
 | Field | Value |
 | --- | --- |
 | Baileys version | `7.0.0-rc14` (master, unreleased) |
-| Commit | `0af2386292907f7d9742d8d41f830d8c48208fa1` |
-| Date | 2026-08-05 |
+| Commit | `81345beb67ca3fb0eb79a2c20cd4ac24da517929` |
+| Date | 2026-10-26 |
 
 *(To re-verify: dereference `refs/tags/v7.0.0-rc14` on the real Baileys repo to get the commit the tag resolves to, rather than the tag object's own SHA.)*
 
@@ -313,4 +313,21 @@ Baileys and whatsmeow for anything unmerged but worth tracking.
   #2693 — macOS desktop `UserAgent.Platform`.** `AuthUtils.create_user_agent/1`
   sets `platform: :MACOS` when `browser` is `["Mac OS", "Desktop", _]` and
   `sync_full_history` is `true`, matching `webSubPlatform: :DARWIN`.
-- **WA protocol version** bumped `1051594400` → `1052525806`.
+- **WA protocol version** bumped `1051594400` → `1054943879`.
+
+**Ported from upstream review (2026-11-08):**
+
+Baileys `master` gained only a copyright commit (#2868). Everything below comes from
+whatsmeow `main` or from open Baileys PRs.
+
+- **[Baileys #2837](https://github.com/WhiskeySockets/Baileys/pull/2837) (open) —
+  view-once `<meta>`.** View-once sends carry `<meta view_once="true"/>`, resends too.
+- **[Baileys #2887](https://github.com/WhiskeySockets/Baileys/pull/2887) (open) —
+  `pollResultSnapshotMessageV3` is field 115.** Patched in `wa_proto.pb.ex`.
+- **[whatsmeow #1319](https://github.com/tulir/whatsmeow/pull/1319) — LTHash mismatch.**
+  Decoding continues when the patch MAC is valid and the patch follows local state.
+- **[whatsmeow #1313](https://github.com/tulir/whatsmeow/pull/1313) — app-state backoff.**
+  whatsmeow waits per collection, one IQ per collection. Amarula's IQ can name several
+  collections, so its wait covers them all.
+- **[whatsmeow #1309](https://github.com/tulir/whatsmeow/pull/1309) — contact removal.**
+  Surfaces as `%Amarula.Contact{removed: true}`.

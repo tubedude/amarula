@@ -147,14 +147,13 @@ defmodule Amarula.Protocol.AppState.SyncTest do
       assert mismatches == [{:patch_mac_mismatch, "regular"}]
     end
 
-    test "a mismatched snapshot MAC applies its own patch but stops the rest of the batch", %{
+    test "a mismatched snapshot MAC on a contiguous patch does not stop the batch", %{
       keys: keys,
       get_key: gk
     } do
       # First patch (v1) is legitimate. Second patch (v2)'s snapshotMac is
-      # corrupted — its own mutations still apply (individually authenticated),
-      # but a third patch (v3) that would have followed must NOT be processed:
-      # its hash chains onto state that's now diverged from the server's.
+      # corrupted, but its patch MAC is valid and it directly follows local state,
+      # so the third patch (v3) is still processed (whatsmeow #1319).
       patch_1 = pin_patch(keys, 1, "regular")
       blob_1 = hd(patch_1.mutations).record.value.blob
       value_mac_1 = binary_part(blob_1, byte_size(blob_1) - 32, 32)
@@ -208,11 +207,38 @@ defmodule Amarula.Protocol.AppState.SyncTest do
       {:ok, changes, new_state, mismatches} =
         Sync.decode_collection([patch_1, patch_2, patch_3], Patch.new_state(), gk, "regular")
 
-      assert [{:chat, %Amarula.Chat{pinned: true}}, {:chat, %Amarula.Chat{pinned: false}}] =
-               changes
+      assert [
+               {:chat, %Amarula.Chat{pinned: true}},
+               {:chat, %Amarula.Chat{pinned: false}},
+               {:chat, %Amarula.Chat{pinned: true}}
+             ] = changes
 
-      assert new_state.version == 2
-      assert mismatches == [{:snapshot_mac_mismatch, "regular"}]
+      assert new_state.version == 3
+      assert Enum.uniq(mismatches) == [{:snapshot_mac_mismatch, "regular"}]
+    end
+
+    test "a mismatched snapshot MAC stops the batch when a version was skipped", %{
+      keys: keys,
+      get_key: gk
+    } do
+      prior = %{Patch.new_state() | version: 4, hash: :crypto.strong_rand_bytes(128)}
+      skipped = pin_patch(keys, 6, "regular")
+      next = pin_patch(keys, 7, "regular")
+
+      assert {:ok, [_only_first], %{version: 6}, [{:snapshot_mac_mismatch, "regular"}]} =
+               Sync.decode_collection([skipped, next], prior, gk, "regular")
+    end
+
+    test "a mismatched snapshot MAC stops the batch when local state is empty", %{
+      keys: keys,
+      get_key: gk
+    } do
+      prior = %{Patch.new_state() | version: 4}
+      patch = keys |> pin_patch(5, "regular") |> with_bad_snapshot_mac(keys, 5)
+      next = pin_patch(keys, 6, "regular")
+
+      assert {:ok, [_only_first], %{version: 5}, [{:snapshot_mac_mismatch, "regular"}]} =
+               Sync.decode_collection([patch, next], prior, gk, "regular")
     end
 
     test "validate_macs: false skips the collection MACs", %{keys: keys, get_key: gk} do
@@ -308,6 +334,27 @@ defmodule Amarula.Protocol.AppState.SyncTest do
       snapshotMac: snapshot_mac,
       patchMac: patch_mac
     }
+  end
+
+  # A patch whose patch MAC verifies, but whose snapshot MAC doesn't match local state.
+  defp with_bad_snapshot_mac(patch, keys, version) do
+    snapshot_mac = :crypto.strong_rand_bytes(32)
+
+    value_macs =
+      Enum.map(patch.mutations, fn %{record: %{value: %{blob: b}}} ->
+        binary_part(b, byte_size(b) - 32, 32)
+      end)
+
+    patch_mac =
+      Mutation.generate_patch_mac(
+        snapshot_mac,
+        value_macs,
+        version,
+        "regular",
+        keys.patch_mac_key
+      )
+
+    %{patch | snapshotMac: snapshot_mac, patchMac: patch_mac}
   end
 
   defp sync_reply(name, patch_blobs) do

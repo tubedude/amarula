@@ -1,5 +1,5 @@
 defmodule Amarula.Connection.AppStateOpsTest do
-  @moduledoc "Pure unit tests for the app-state helpers — no socket, no storage."
+  @moduledoc "Unit tests for the app-state helpers — no socket."
   use ExUnit.Case, async: true
 
   alias Amarula.Connection.AppStateOps
@@ -51,6 +51,37 @@ defmodule Amarula.Connection.AppStateOpsTest do
 
       assert AppStateOps.sync_keys_in(messages) ==
                [{Base.encode64("A"), "D"}, {Base.encode64("B"), "D"}]
+    end
+  end
+
+  describe "store_shared_keys/3" do
+    @describetag :tmp_dir
+
+    test "stores new keys but never overwrites one with different data (whatsmeow #1333)",
+         %{tmp_dir: dir} do
+      conn = Amarula.TestConn.new(dir)
+
+      share = fn id, data ->
+        %{
+          protocolMessage: %{
+            appStateSyncKeyShare: %{keys: [%{keyId: %{keyId: id}, keyData: %{keyData: data}}]}
+          }
+        }
+      end
+
+      store = &AppStateOps.store_shared_keys(conn.storage, conn.profile, &1)
+
+      get =
+        &Amarula.Storage.get(conn.storage, conn.profile, :app_state_sync_key, Base.encode64(&1))
+
+      assert store.([share.("A", "OLD")]) == 1
+
+      assert ExUnit.CaptureLog.capture_log(fn -> assert store.([share.("A", "NEW")]) == 0 end) =~
+               "Ignoring app-state sync key"
+
+      assert get.("A") == {:ok, "OLD"}
+      assert store.([share.("A", "OLD"), share.("B", "D")]) == 2
+      assert get.("B") == {:ok, "D"}
     end
   end
 

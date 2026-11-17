@@ -110,6 +110,24 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     assert {:media, :image, _} = MessageContent.classify(wrapped)
   end
 
+  describe "view_once?/1" do
+    test "true for all three view-once wrappers, false otherwise" do
+      wrapper = %Proto.Message.FutureProofMessage{message: %Proto.Message{}}
+
+      assert MessageContent.view_once?(%Proto.Message{viewOnceMessage: wrapper})
+      assert MessageContent.view_once?(%Proto.Message{viewOnceMessageV2: wrapper})
+      assert MessageContent.view_once?(%Proto.Message{viewOnceMessageV2Extension: wrapper})
+      refute MessageContent.view_once?(%Proto.Message{conversation: "hi"})
+    end
+  end
+
+  test "pollResultSnapshotMessageV3 is field 115 (tag bytes 0x9A 0x07)" do
+    snapshot = %Proto.Message.PollResultSnapshotMessage{name: "p"}
+
+    assert <<0x9A, 0x07, _::binary>> =
+             Proto.Message.encode(%Proto.Message{pollResultSnapshotMessageV3: snapshot})
+  end
+
   describe "media_type/1 (outgoing stanza mediatype, #2435)" do
     test "maps each media message to its wire type" do
       assert MessageContent.media_type(MessageEncoder.media(:image, @info, [])) == "image"

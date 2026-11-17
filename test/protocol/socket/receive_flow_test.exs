@@ -496,6 +496,31 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
       assert attr(receipt, "type") == nil
     end
 
+    test "a status post in a top-level <status> stanza is delivered and acked class=status (whatsmeow 06b1c299bb)",
+         ctx do
+      author = "5511777777777@s.whatsapp.net"
+
+      node =
+        plaintext_message("STATUS3", "status@broadcast", %Proto.Message{conversation: "story"}, %{
+          "participant" => author
+        })
+
+      inject(ctx, %{node | tag: "status"})
+
+      assert_receive {:amarula, :messages_upsert, %{messages: [msg]}}
+      assert msg.channel == Amarula.Address.status()
+      assert msg.content == "story"
+
+      receipt = recv_frame()
+      assert receipt.tag == "receipt"
+      assert attr(receipt, "to") == "status@broadcast"
+
+      ack = recv_frame()
+      assert ack.tag == "ack"
+      assert attr(ack, "id") == "STATUS3"
+      assert attr(ack, "class") == "status"
+    end
+
     test "our own status post (from another device) gets a plain sender receipt", ctx do
       inject(
         ctx,

@@ -86,8 +86,18 @@ defmodule Amarula.Protocol.Socket.Router do
       {"receipt", "retry", _, _} -> :retry_receipt
       {"receipt", _, _, _} -> :receipt_ack
       {"call", _, _, _} -> :call_ack
-      {"status", _, _, _} -> :status_ack
+      {"status", _, _, _} -> status_route(node)
       _ -> :unhandled
     end
+  end
+
+  # Some status posts arrive as a top-level <status> carrying an <enc> (or a
+  # channel's <plaintext>) instead of a <message>: decrypt them like a message
+  # (whatsmeow 06b1c299bb). Without a payload, just ack.
+  defp status_route(node) do
+    if NodeUtils.get_binary_node_child(node, "enc") ||
+         NodeUtils.get_binary_node_child(node, "plaintext"),
+       do: :message,
+       else: :status_ack
   end
 end

@@ -8509,7 +8509,7 @@ defmodule Amarula.Protocol.Proto.Message do
     type: Amarula.Protocol.Proto.Message.NewsletterFollowerInviteMessage
   )
 
-  field(:pollResultSnapshotMessageV3, 114,
+  field(:pollResultSnapshotMessageV3, 115,
     proto3_optional: true,
     type: Amarula.Protocol.Proto.Message.PollResultSnapshotMessage
   )

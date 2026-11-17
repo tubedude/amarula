@@ -76,6 +76,12 @@ defmodule Amarula.Protocol.Socket.RouterTest do
     assert Router.route(n("status")) == :status_ack
   end
 
+  test "a <status> carrying a payload routes as :message (whatsmeow 06b1c299bb)" do
+    assert Router.route(n("status", %{}, [child("enc")])) == :message
+    assert Router.route(n("status", %{}, [child("meta"), child("enc")])) == :message
+    assert Router.route(n("status", %{}, [child("plaintext")])) == :message
+  end
+
   test "presence + chatstate route to :presence" do
     assert Router.route(n("presence")) == :presence
     assert Router.route(n("chatstate", %{}, [child("composing")])) == :presence

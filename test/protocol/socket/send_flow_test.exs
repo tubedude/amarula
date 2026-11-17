@@ -442,6 +442,9 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     assert %Node{content: identity} = NodeUtils.get_binary_node_child(message, "device-identity")
     assert is_binary(identity) and byte_size(identity) > 0
 
+    # Only a view-once send carries <meta>.
+    assert NodeUtils.get_binary_node_child(message, "meta") == nil
+
     # Ack-on-send: the caller stays blocked until the server confirms the msg_id.
     ack(ctx, msg_id)
     assert {:ok, ^msg_id} = await_send_result(task)
@@ -1016,6 +1019,46 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
     assert frame.tag == "message"
     assert is_binary(frame.attrs["id"])
+  end
+
+  defp view_once_message do
+    inner = %Proto.Message{conversation: "once"}
+    %Proto.Message{viewOnceMessage: %Proto.Message.FutureProofMessage{message: inner}}
+  end
+
+  test "a view-once DM carries <meta view_once=true>", ctx do
+    task = Task.async(fn -> Connection.send_message(ctx.pid, @jid, view_once_message()) end)
+    usync_iq = recv_frame()
+    inject(ctx, usync_devices_reply(attr(usync_iq, "id")))
+    bundle_iq = recv_frame()
+    inject(ctx, bundle_reply(attr(bundle_iq, "id")))
+
+    message = recv_frame()
+
+    assert %Node{attrs: %{"view_once" => "true"}} =
+             NodeUtils.get_binary_node_child(message, "meta")
+
+    ack(ctx, message.attrs["id"])
+    assert {:ok, _} = await_send_result(task)
+  end
+
+  test "a view-once group send carries <meta view_once=true>", ctx do
+    group = "120363000000000001@g.us"
+    members = [@me_jid, @jid]
+
+    task = Task.async(fn -> Connection.send_message(ctx.pid, group, view_once_message()) end)
+    meta_iq = recv_frame()
+    inject(ctx, group_metadata_reply(attr(meta_iq, "id"), group, members))
+    usync_iq = recv_frame()
+    inject(ctx, usync_members_reply(attr(usync_iq, "id"), members))
+
+    message = drain_until_message(ctx)
+
+    assert %Node{attrs: %{"view_once" => "true"}} =
+             NodeUtils.get_binary_node_child(message, "meta")
+
+    ack(ctx, message.attrs["id"])
+    assert {:ok, _} = await_send_result(task)
   end
 
   test "group send: metadata → participant USync → skmsg + SKDM fan-out", ctx do

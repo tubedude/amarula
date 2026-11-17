@@ -58,6 +58,11 @@ defmodule Amarula.Protocol.AppState.SyncAction do
 
   # --- contact / push name ---
 
+  # A removed contact carries no usable contactAction (whatsmeow #1309).
+  defp classify(_value, ["contact", id | _], :remove) do
+    {:contact, %Contact{address: addr(id), removed: true}}
+  end
+
   defp classify(%{contactAction: %{} = c}, [_type, id | _], _op) do
     {:contact, %Contact{address: addr(id), full_name: c.fullName, first_name: c.firstName}}
   end

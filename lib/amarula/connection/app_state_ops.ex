@@ -6,7 +6,7 @@ defmodule Amarula.Connection.AppStateOps do
   require Logger
 
   alias Amarula.Protocol.AppState.{Keys, Patch, Sync}
-  alias Amarula.Protocol.Binary.Node
+  alias Amarula.Protocol.Binary.{Node, NodeUtils}
 
   @doc """
   Extract any `appStateSyncKeyShare` keys carried in a message as
@@ -42,22 +42,45 @@ defmodule Amarula.Connection.AppStateOps do
 
   @doc """
   Extract and persist any `appStateSyncKeyShare` keys in `messages`.
-  Returns the number of keys stored (`0` when none were present).
+  Returns the number of keys stored (`0` when none were stored). A key we
+  already hold with different data is ignored, not overwritten (whatsmeow #1333).
   """
   @spec store_shared_keys(term(), term(), Enumerable.t()) :: non_neg_integer()
   def store_shared_keys(scope, profile, messages) do
-    case sync_keys_in(messages) do
-      [] ->
-        0
+    messages
+    |> sync_keys_in()
+    |> Enum.count(&store_shared_key(scope, profile, &1))
+  end
 
-      keys ->
-        Enum.each(keys, fn {key_id_b64, key_data} ->
-          Amarula.Storage.put(scope, profile, :app_state_sync_key, key_id_b64, key_data)
-        end)
+  defp store_shared_key(scope, profile, {key_id_b64, key_data}) do
+    case Amarula.Storage.get(scope, profile, :app_state_sync_key, key_id_b64) do
+      {:ok, existing} when is_binary(existing) and existing != "" and existing != key_data ->
+        Logger.warning("Ignoring app-state sync key #{key_id_b64}: stored key has different data")
+        false
 
-        length(keys)
+      _ ->
+        Amarula.Storage.put(scope, profile, :app_state_sync_key, key_id_b64, key_data)
+        true
     end
   end
+
+  @doc """
+  The server's requested wait, in seconds, from a rate-limited (code 429) app-state
+  IQ reply. `nil` for any other failure (whatsmeow #1313).
+  """
+  @spec rate_limit_backoff(term()) :: pos_integer() | nil
+  def rate_limit_backoff(%Node{} = reply) do
+    with %Node{} = error <- NodeUtils.get_binary_node_child(reply, "error"),
+         "429" <- NodeUtils.get_attr(error, "code"),
+         {seconds, ""} when seconds > 0 <-
+           Integer.parse(NodeUtils.get_attr(error, "backoff") || "") do
+      seconds
+    else
+      _ -> nil
+    end
+  end
+
+  def rate_limit_backoff(_reply), do: nil
 
   @doc """
   Build the `<iq xmlns=\"w:sync:app:state\">` request stanza for `names` using

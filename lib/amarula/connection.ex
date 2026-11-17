@@ -115,6 +115,7 @@ defmodule Amarula.Connection do
     :handshake_state,
     :noise_state,
     :keep_alive_timer,
+    :app_state_backoff_until,
     :last_recv_time,
     :message_counter,
     :message_tag_prefix,
@@ -167,6 +168,7 @@ defmodule Amarula.Connection do
           handshake_state: ConnectionValidator.handshake_state() | nil,
           noise_state: NoiseHandler.noise_state() | nil,
           keep_alive_timer: reference() | nil,
+          app_state_backoff_until: integer() | nil,
           last_recv_time: non_neg_integer() | nil,
           message_counter: non_neg_integer(),
           message_tag_prefix: String.t(),
@@ -658,6 +660,7 @@ defmodule Amarula.Connection do
       handshake_state: nil,
       noise_state: nil,
       keep_alive_timer: nil,
+      app_state_backoff_until: nil,
       last_recv_time: nil,
       message_counter: 0,
       message_tag_prefix: generate_message_tag_prefix(),
@@ -2034,7 +2037,7 @@ defmodule Amarula.Connection do
   # Incoming call (offer/terminate/accept/reject/...). Always ack first (stops
   # the server retransmitting), then surface it as :call_update.
   defp dispatch_node(state, :call_ack, node), do: handle_call(state, node)
-  # Top-level <status> stanza (server-side rollout for contacts' status updates,
+  # Top-level <status> stanza with no payload (one with <enc> routes to :message;
   # Baileys #2858 / #2866, whatsmeow a238105488). Plain-ack with class="status"
   # so the server doesn't close the stream after 50 minutes with `<stream:error><ack class="status"/>`.
   defp dispatch_node(state, :status_ack, node), do: send_message_ack(state, node)
@@ -3371,7 +3374,13 @@ defmodule Amarula.Connection do
   # A channel post gets no delivery receipt, only the stanza ack (Baileys:
   # "processed newsletter message without receipts").
   defp send_delivery_receipt(state, node) do
-    send_binary_node(state, Receive.delivery_receipt(state, node))
+    state = send_binary_node(state, Receive.delivery_receipt(state, node))
+
+    # A <status> stanza also needs its class="status" ack, or the server closes
+    # the stream (Baileys #2866). A channel's receipt already is that ack.
+    if node.tag == "status" and not JID.jid_newsletter?(NodeUtils.get_attr(node, "from")),
+      do: send_message_ack(state, node),
+      else: state
   end
 
   # Retry receipt for a message we failed to decrypt, ported from Baileys
@@ -3458,10 +3467,21 @@ defmodule Amarula.Connection do
   end
 
   defp do_resync_app_state(state, names) do
-    iq = AppStateOps.resync_iq(scope(state), profile(state), names)
-    # Tracked (not blocking): the reply continues in handle_tracked_iq(:app_state_sync).
-    send_tracked_iq(state, iq, :app_state_sync)
+    if app_state_backed_off?(state) do
+      # The stored versions are kept, so the next trigger after the wait catches up.
+      Logger.debug("Skipping app-state resync: the server asked us to back off")
+      state
+    else
+      iq = AppStateOps.resync_iq(scope(state), profile(state), names)
+      # Tracked (not blocking): the reply continues in handle_tracked_iq(:app_state_sync).
+      send_tracked_iq(state, iq, :app_state_sync)
+    end
   end
+
+  defp app_state_backed_off?(%{app_state_backoff_until: nil}), do: false
+
+  defp app_state_backed_off?(%{app_state_backoff_until: until}),
+    do: System.monotonic_time(:millisecond) < until
 
   defp apply_app_state_reply(state, reply) do
     AppStateOps.apply_reply(scope(state), profile(state), reply, fn chats, contacts ->
@@ -3735,7 +3755,16 @@ defmodule Amarula.Connection do
 
   defp handle_tracked_iq(:app_state_sync, {:error, reason}, state) do
     Logger.warning("app-state sync IQ failed: #{inspect(reason)}")
-    state
+
+    # One IQ can name several collections, so the wait covers all of them.
+    case AppStateOps.rate_limit_backoff(reason) do
+      nil ->
+        state
+
+      seconds ->
+        until = System.monotonic_time(:millisecond) + seconds * 1000
+        %{state | app_state_backoff_until: until}
+    end
   end
 
   defp handle_tracked_iq(:prekey_count, {:ok, node}, state) do

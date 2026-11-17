@@ -7,20 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [0.6.0] - 2026-11-17
 
-- **Status broadcast grouped receipts (`class="status"`, `from="status@broadcast"`):** `Receipt.parse/1` now reads `message_id` on `<participants>` and maps per-`<user>` `type="delivery|read|played"` attributes onto each fanned-out receipt (whatsmeow #1270).
-- **Multi-child `w:gp2` group notifications & LID↔PN mappings:** `GroupNotification.parse_all/1` and `GroupNotification.lid_mappings/1` extract every change child and any `participant_pn` / `phone_number` / `lid` pairs so `Connection` persists the mappings and emits `:group_update` for every child (whatsmeow #1278).
-- **Hosted coexistence (`@hosted` / `@hosted.lid`) & retry receipts:** `USync.Devices` maps `is_hosted: true` to `"hosted"` / `"hosted.lid"`, `LidMappingFileStore` preserves `@hosted.lid` (`_129` Signal domain), `ConversationSender` excludes hosted devices from group SKDM fan-out and uses domain-aware `own_device?/2`, `SessionInjector.inject_retry/4` injects inline `<registration>` + `<keys>` bundles from `<receipt type="retry">`, and retry receipts with `count >= 2` and no `<keys>` wipe the requester's stale session so the resend fetches a fresh prekey bundle (whatsmeow #1302 / #1307, Baileys #2856).
-- **Phone-number (`link_code`) pairing:** `link_code_pairing_nonce` is now sent as a 1-byte zero binary (`<<0>>`), `link_code_companion_reg` ignores stages other than `nil` / `"primary_hello"`, QR pairing sets `registered: true` on `creds`, and reconnects while `pairing_code` is pending stay on the registration handshake (Baileys #2872).
-- **macOS desktop `UserAgent.Platform`:** `AuthUtils.create_user_agent/1` sets `platform: :MACOS` when `browser` is `["Mac OS", "Desktop", _]` and `sync_full_history` is `true`, matching `webSubPlatform: :DARWIN` (Baileys #2880 / #2693).
-- **Top-level `<status>` stanza ack:** top-level `<status>` nodes now route to `:status_ack` and are acknowledged with `class="status"` (Baileys #2866).
-- **`offline="0"` attribute handling:** `offline="0"` on inbound stanzas is now treated as live (`offline: false`, Baileys #2840).
-- **Undecryptable `from_me` messages:** undecryptable messages from our own devices are plain-acked without sending a retry receipt or `500` nack (Baileys #2864).
+The stable 0.6 release. It contains everything in the `0.6.0-rc.*` entries below.
+
+**Coming from 0.5, you must check two breaking changes** (details under 0.6.0-rc.1
+below):
+
+- `Amarula.Address.parse/1` no longer returns `nil` for chat kinds it doesn't model.
+- The bare `{jid, msg_id}` message ref is gone and raises `ArgumentError`. Re-run
+  `mix usage_rules.sync` if you synced `usage-rules.md` from 0.5.6 or earlier.
 
 ### Changed
 
-- **Pinned WhatsApp Web version bumped to `2.3000.1052525806`.**
+- **Pinned WhatsApp Web version bumped to `2.3000.1054943879`.**
+- **`:group_update` fires once per change child.** A `w:gp2` notification with several
+  children used to emit only the first (whatsmeow #1278).
+- **App-state decoding continues past an LTHash mismatch** when the patch MAC is valid
+  and the patch directly follows local state. It still stops on a skipped version or
+  an empty local hash (whatsmeow #1319).
+- **App-state resyncs respect the server's rate limit.** After a 429 with a `backoff`,
+  no resync goes out until the wait ends, `force_resync` included (whatsmeow #1313).
+
+### Added
+
+- **`%Amarula.Contact{removed: boolean()}`.** A contact removed in app-state now arrives
+  on `:contacts_update` with `removed: true` and `nil` names (whatsmeow #1309).
+
+### Fixed
+
+- **Status posts in a top-level `<status>` stanza are delivered.** Some contacts'
+  statuses (mostly from Android) now arrive as `<status>` with an `<enc>` child. These
+  were acked and dropped; now they are decrypted like a `<message>` and arrive on
+  `:messages_upsert` (whatsmeow `06b1c299bb`).
+- **A shared app-state key never overwrites a stored key with different data.**
+  The share is ignored and logged (whatsmeow #1333).
+- **`view_once: true` sends now carry `<meta view_once="true"/>`.** Without it, the
+  recipient can see a regular message (Baileys #2837, open upstream).
+- **`pollResultSnapshotMessageV3` is proto field 115, not 114** (Baileys #2887, open
+  upstream; whatsmeow's proto agrees).
+- **Status broadcast grouped receipts (`class="status"`):** `Receipt.parse/1` reads
+  `message_id` on `<participants>` and maps each `<user>`'s `type` onto its receipt
+  (whatsmeow #1270).
+- **LID↔PN mappings from `w:gp2` notifications are persisted**, across every change
+  child (whatsmeow #1278).
+- **Hosted coexistence (`@hosted` / `@hosted.lid`):** `USync.Devices` maps `is_hosted`
+  devices to the hosted servers, `LidMappingFileStore` keeps the `_129` Signal domain,
+  and hosted devices are excluded from group SKDM fan-out. A retry receipt with
+  `count >= 2` and no `<keys>` wipes the requester's stale session, so the resend
+  fetches a fresh prekey bundle (whatsmeow #1302 / #1307).
+- **QR pairing sets `registered: true` on `creds`** (Baileys #2872).
+- **macOS desktop `UserAgent.Platform`:** `platform: :MACOS` when `browser` is
+  `["Mac OS", "Desktop", _]` and `sync_full_history` is `true`, so WhatsApp no longer
+  rejects full-history pairing with 428 (Baileys #2880 / #2693).
 
 ## [0.6.0-rc.4] - 2026-10-25
 
@@ -234,6 +273,17 @@ anything odd with status posts, channels, hosted businesses, broadcast lists or 
   call in a `rescue` at its transport boundary. Short, misaligned, and badly padded
   blobs are now `{:error, :bad_mac}` / `{:error, :bad_padding}`, and an unknown media
   type is `{:error, :invalid_media}` instead of a `KeyError` from key derivation.
+
+## [0.5.13] - 2026-10-29
+
+### Fixed
+
+- **Fire-and-forget retry resends no longer register a `ConversationSender` monitor**,
+  preventing a stale monitor's queued idle-stop `:DOWN` from unmonitoring a later
+  tracked send to the same recipient.
+- **`@hosted.lid` JIDs are no longer misclassified as phone-number JIDs** in
+  `LidMappingFileStore`, group metadata parsing, and PN↔LID session resolution
+  (new `JID.pn_user?/1`).
 
 ## [0.5.12] - 2026-10-24
 
@@ -1586,11 +1636,13 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.4...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/tubedude/amarula/compare/v0.5.13...v0.6.0
 [0.6.0-rc.4]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.3...v0.6.0-rc.4
 [0.6.0-rc.3]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.2...v0.6.0-rc.3
 [0.6.0-rc.2]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.1...v0.6.0-rc.2
 [0.6.0-rc.1]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.6.0-rc.1
+[0.5.13]: https://github.com/tubedude/amarula/compare/v0.5.12...v0.5.13
 [0.5.12]: https://github.com/tubedude/amarula/compare/v0.5.11...v0.5.12
 [0.5.11]: https://github.com/tubedude/amarula/compare/v0.5.10...v0.5.11
 [0.5.10]: https://github.com/tubedude/amarula/compare/v0.5.9...v0.5.10

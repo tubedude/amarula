@@ -26,7 +26,7 @@ Linked Devices**) so a stale credential isn't left sitting on disk.
 
 ```elixir
 Mix.install([
-  {:amarula, "~> 0.5"},
+  {:amarula, "~> 0.6"},
   {:kino, "~> 0.14"}
 ])
 

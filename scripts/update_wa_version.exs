@@ -5,7 +5,7 @@
 #
 # Usage:
 #   mix run scripts/update_wa_version.exs          # fetch + rewrite the source literals
-#   mix run scripts/update_wa_version.exs --check   # print live vs pinned, change nothing
+#   mix run scripts/update_wa_version.exs --check   # print live vs pinned, change nothing (exit 1 if stale)
 #
 # WhatsApp bumps this version periodically; a stale value silently breaks new-device
 # pairing (see docs / CLAUDE.md "WhatsApp Version"). This is a maintainer tool — the
@@ -72,6 +72,7 @@ case fetch_latest.() do
 
       check_only? ->
         IO.puts("\nOut of date. Re-run without --check to rewrite the source literals.")
+        System.halt(1)
 
       true ->
         new_literal = "@wa_version [2, 3000, #{group.(rev)}]"

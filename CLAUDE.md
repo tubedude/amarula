@@ -75,8 +75,14 @@ mix run examples/send_message.exs "<number>" "hello"
 
 ### Protocol Buffer Compilation
 ```bash
-# Regenerate lib/amarula/protocol/proto/wa_proto.pb.ex when proto/wa_proto.proto changes
-protoc -I proto --elixir_out=package_prefix=amarula.protocol:lib/amarula/protocol/proto wa_proto.proto
+# 1. Re-extract proto/wa_proto.proto from live WhatsApp Web (needs node; CI runs
+#    this weekly and fails on new Message fields — deps-freshness.yml)
+scripts/extract_proto.sh proto/wa_proto.proto
+
+# 2. Regenerate lib/amarula/protocol/proto/wa_proto.pb.ex
+#    (needs protoc + `mix escript.install hex protobuf 0.17.1`)
+protoc -I proto --elixir_out=package_prefix=amarula.protocol:lib wa_proto.proto
+mix format lib/amarula/protocol/proto/wa_proto.pb.ex
 ```
 
 ## Architecture
@@ -326,6 +332,7 @@ WhatsApp bumps this version periodically. **When you should suspect it's stale:*
 
 ```bash
 # Compare the pinned version against the live WhatsApp Web version — changes nothing
+# (exit 1 if stale; CI runs it weekly — deps-freshness.yml)
 mix run scripts/update_wa_version.exs --check
 
 # If out of date: rewrite the pinned literal in config.ex + constants.ex

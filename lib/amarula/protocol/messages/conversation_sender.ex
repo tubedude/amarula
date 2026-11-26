@@ -743,9 +743,9 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         ctx.participants,
         ctx.creds.account,
         edit: ctx.edit_attr,
-        extra_attrs: ctx.stanza_attrs,
+        extra_attrs: stanza_attrs(ctx),
         enc_attrs: ctx.enc_attrs,
-        extra_children: view_once_children(ctx)
+        extra_children: meta_children(ctx)
       )
 
     # relay_stanza enqueues the frame on the socket and replies :ok (it can't know
@@ -769,9 +769,9 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         ctx.participants,
         ctx.creds.account,
         edit: ctx.edit_attr,
-        extra_attrs: ctx.stanza_attrs,
+        extra_attrs: stanza_attrs(ctx),
         enc_attrs: ctx.enc_attrs,
-        extra_children: tctoken_children(ctx) ++ view_once_children(ctx)
+        extra_children: tctoken_children(ctx) ++ meta_children(ctx)
       )
 
     result = Connection.relay_stanza(ctx.cm, stanza)
@@ -785,10 +785,25 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
     result
   end
 
-  defp view_once_children(ctx) do
-    if MessageContent.view_once?(ctx.message),
-      do: [Node.create("meta", %{"view_once" => "true"}, nil)],
-      else: []
+  defp meta_children(ctx) do
+    view_once =
+      if MessageContent.view_once?(ctx.message),
+        do: [Node.create("meta", %{"view_once" => "true"}, nil)],
+        else: []
+
+    case MessageContent.stanza_meta(ctx.message) do
+      {_type, attrs} -> view_once ++ [Node.create("meta", attrs, nil)]
+      nil -> view_once
+    end
+  end
+
+  # Polls and events go out as type="poll"/"event", not "text". Explicit
+  # stanza_attrs (e.g. a media send's "media") still win.
+  defp stanza_attrs(ctx) do
+    case MessageContent.stanza_meta(ctx.message) do
+      {type, _attrs} -> Map.merge(%{"type" => type}, ctx.stanza_attrs)
+      nil -> ctx.stanza_attrs
+    end
   end
 
   # True for a plain 1:1 send — not a group, not a peer stanza

@@ -121,6 +121,31 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     end
   end
 
+  describe "stanza_meta/1" do
+    test "polls and events get their stanza type and meta attrs" do
+      {poll, _secret} = MessageEncoder.poll("Lunch?", ["Yes", "No"], [])
+      {multi, _secret} = MessageEncoder.poll("Pick", ["A", "B"], selectable: 0)
+      {announce, _secret} = MessageEncoder.poll("News", ["A", "B"], announcement: true)
+
+      ephemeral = %Proto.Message{
+        ephemeralMessage: %Proto.Message.FutureProofMessage{message: poll}
+      }
+
+      vote = %Proto.Message{pollUpdateMessage: %Proto.Message.PollUpdateMessage{}}
+
+      assert {"poll", %{"polltype" => "creation"}} = MessageContent.stanza_meta(poll)
+      assert {"poll", %{"polltype" => "creation"}} = MessageContent.stanza_meta(multi)
+      assert {"poll", %{"polltype" => "creation"}} = MessageContent.stanza_meta(announce)
+      assert {"poll", %{"polltype" => "creation"}} = MessageContent.stanza_meta(ephemeral)
+      assert {"poll", %{"polltype" => "vote"}} = MessageContent.stanza_meta(vote)
+
+      assert {"event", %{"event_type" => "creation"}} =
+               MessageContent.stanza_meta(MessageEncoder.event("Party"))
+
+      assert MessageContent.stanza_meta(%Proto.Message{conversation: "hi"}) == nil
+    end
+  end
+
   test "pollResultSnapshotMessageV3 is field 115 (tag bytes 0x9A 0x07)" do
     snapshot = %Proto.Message.PollResultSnapshotMessage{name: "p"}
 

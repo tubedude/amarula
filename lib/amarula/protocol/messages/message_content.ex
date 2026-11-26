@@ -63,6 +63,31 @@ defmodule Amarula.Protocol.Messages.MessageContent do
   def view_once?(%Proto.Message{}), do: false
 
   @doc """
+  The stanza `type` and `<meta>` attributes for an *outgoing* poll or event
+  (Baileys `getMessageType`, whatsmeow `getTypeFromMessage`/`getMessageContent`).
+  `nil` for anything else.
+  """
+  @spec stanza_meta(Proto.Message.t()) :: {String.t(), %{String.t() => String.t()}} | nil
+  def stanza_meta(%Proto.Message{} = message), do: message |> unwrap() |> do_stanza_meta()
+
+  @poll_creation_fields [
+    :pollCreationMessage,
+    :pollCreationMessageV2,
+    :pollCreationMessageV3
+  ]
+
+  defp do_stanza_meta(%Proto.Message{pollUpdateMessage: m}) when not is_nil(m),
+    do: {"poll", %{"polltype" => "vote"}}
+
+  defp do_stanza_meta(%Proto.Message{eventMessage: m}) when not is_nil(m),
+    do: {"event", %{"event_type" => "creation"}}
+
+  defp do_stanza_meta(message) do
+    if Enum.any?(@poll_creation_fields, &Map.get(message, &1)),
+      do: {"poll", %{"polltype" => "creation"}}
+  end
+
+  @doc """
   The `mediatype` stanza attribute for an *outgoing* message (Baileys
   `getMediaType`), unwrapping view-once/ephemeral envelopes first. Returns `nil` for
   a message that carries no media type (plain text, etc.).

@@ -30,7 +30,7 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
 
   alias Amarula.Protocol.Binary.{JID, Node, NodeUtils}
   alias Amarula.Protocol.Crypto.Crypto
-  alias Amarula.Protocol.Messages.ConversationSender
+  alias Amarula.Protocol.Messages.{ConversationSender, MessageEncoder}
   alias Amarula.Protocol.Proto
   alias Amarula.Protocol.Signal.{LidMappingFileStore, SessionStore}
   alias Amarula.Storage
@@ -1055,6 +1055,48 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     message = drain_until_message(ctx)
 
     assert %Node{attrs: %{"view_once" => "true"}} =
+             NodeUtils.get_binary_node_child(message, "meta")
+
+    ack(ctx, message.attrs["id"])
+    assert {:ok, _} = await_send_result(task)
+  end
+
+  test "a poll DM goes out as type=poll with <meta polltype=creation>", ctx do
+    {poll, _secret} = MessageEncoder.poll("Lunch?", ["Yes", "No"], [])
+    task = Task.async(fn -> Connection.send_message(ctx.pid, @jid, poll) end)
+    usync_iq = recv_frame()
+    inject(ctx, usync_devices_reply(attr(usync_iq, "id")))
+    bundle_iq = recv_frame()
+    inject(ctx, bundle_reply(attr(bundle_iq, "id")))
+
+    message = recv_frame()
+
+    assert message.attrs["type"] == "poll"
+
+    assert %Node{attrs: %{"polltype" => "creation"}} =
+             NodeUtils.get_binary_node_child(message, "meta")
+
+    ack(ctx, message.attrs["id"])
+    assert {:ok, _} = await_send_result(task)
+  end
+
+  test "an event group send goes out as type=event with <meta event_type=creation>", ctx do
+    group = "120363000000000001@g.us"
+    members = [@me_jid, @jid]
+
+    task =
+      Task.async(fn -> Connection.send_message(ctx.pid, group, MessageEncoder.event("Party")) end)
+
+    meta_iq = recv_frame()
+    inject(ctx, group_metadata_reply(attr(meta_iq, "id"), group, members))
+    usync_iq = recv_frame()
+    inject(ctx, usync_members_reply(attr(usync_iq, "id"), members))
+
+    message = drain_until_message(ctx)
+
+    assert message.attrs["type"] == "event"
+
+    assert %Node{attrs: %{"event_type" => "creation"}} =
              NodeUtils.get_binary_node_child(message, "meta")
 
     ack(ctx, message.attrs["id"])

@@ -26,7 +26,8 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     * `{:other, message}`                          — anything not yet classified
 
   WhatsApp may wrap the real content in `deviceSentMessage` (our own other
-  devices) or `ephemeralMessage`; those are unwrapped first.
+  devices), `ephemeralMessage`, a view-once wrapper or `documentWithCaptionMessage`;
+  those are unwrapped first.
   """
 
   alias Amarula.Protocol.Proto
@@ -63,29 +64,47 @@ defmodule Amarula.Protocol.Messages.MessageContent do
   def view_once?(%Proto.Message{}), do: false
 
   @doc """
-  The stanza `type` and `<meta>` attributes for an *outgoing* poll or event
-  (Baileys `getMessageType`, whatsmeow `getTypeFromMessage`/`getMessageContent`).
-  `nil` for anything else.
+  The `type` attribute of an *outgoing* `<message>` stanza (Baileys
+  `getMessageType`, whatsmeow `getTypeFromMessage`): `"reaction"`, `"poll"`,
+  `"event"`, `"media"` or `"text"`.
   """
-  @spec stanza_meta(Proto.Message.t()) :: {String.t(), %{String.t() => String.t()}} | nil
-  def stanza_meta(%Proto.Message{} = message), do: message |> unwrap() |> do_stanza_meta()
+  @spec stanza_type(Proto.Message.t()) :: String.t()
+  def stanza_type(%Proto.Message{} = message) do
+    inner = unwrap(message)
 
-  @poll_creation_fields [
+    cond do
+      inner.reactionMessage || inner.encReactionMessage -> "reaction"
+      poll?(inner) -> "poll"
+      inner.eventMessage -> "event"
+      do_media_type(inner) -> "media"
+      true -> "text"
+    end
+  end
+
+  @doc """
+  The `<meta>` attributes for an *outgoing* poll or event (whatsmeow
+  `getMessageContent`). `nil` for anything else.
+  """
+  @spec stanza_meta(Proto.Message.t()) :: %{String.t() => String.t()} | nil
+  def stanza_meta(%Proto.Message{} = message) do
+    inner = unwrap(message)
+
+    cond do
+      inner.pollUpdateMessage -> %{"polltype" => "vote"}
+      poll?(inner) -> %{"polltype" => "creation"}
+      inner.eventMessage -> %{"event_type" => "creation"}
+      true -> nil
+    end
+  end
+
+  @poll_fields [
     :pollCreationMessage,
     :pollCreationMessageV2,
-    :pollCreationMessageV3
+    :pollCreationMessageV3,
+    :pollUpdateMessage
   ]
 
-  defp do_stanza_meta(%Proto.Message{pollUpdateMessage: m}) when not is_nil(m),
-    do: {"poll", %{"polltype" => "vote"}}
-
-  defp do_stanza_meta(%Proto.Message{eventMessage: m}) when not is_nil(m),
-    do: {"event", %{"event_type" => "creation"}}
-
-  defp do_stanza_meta(message) do
-    if Enum.any?(@poll_creation_fields, &Map.get(message, &1)),
-      do: {"poll", %{"polltype" => "creation"}}
-  end
+  defp poll?(message), do: Enum.any?(@poll_fields, &Map.get(message, &1))
 
   @doc """
   The `mediatype` stanza attribute for an *outgoing* message (Baileys
@@ -151,6 +170,10 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     do: unwrap(inner)
 
   defp unwrap(%Proto.Message{viewOnceMessageV2Extension: %{message: inner}})
+       when not is_nil(inner),
+       do: unwrap(inner)
+
+  defp unwrap(%Proto.Message{documentWithCaptionMessage: %{message: inner}})
        when not is_nil(inner),
        do: unwrap(inner)
 

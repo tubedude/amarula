@@ -1080,6 +1080,112 @@ defmodule Amarula.Protocol.Socket.SendFlowTest do
     assert {:ok, _} = await_send_result(task)
   end
 
+  defp send_dm_and_capture(ctx, message) do
+    task = Task.async(fn -> Connection.send_message(ctx.pid, @jid, message) end)
+    usync_iq = recv_frame()
+    inject(ctx, usync_devices_reply(attr(usync_iq, "id")))
+    bundle_iq = recv_frame()
+    inject(ctx, bundle_reply(attr(bundle_iq, "id")))
+    stanza = recv_frame()
+    ack(ctx, stanza.attrs["id"])
+    assert {:ok, _} = await_send_result(task)
+    stanza
+  end
+
+  test "a poll vote goes out as type=poll with <meta polltype=vote>", ctx do
+    key = %Proto.MessageKey{remoteJid: @jid, id: "POLL1", fromMe: false}
+    secret = :crypto.strong_rand_bytes(32)
+    vote = MessageEncoder.poll_vote(key, @jid, @me_jid, secret, ["Yes"])
+
+    stanza = send_dm_and_capture(ctx, vote)
+
+    assert stanza.attrs["type"] == "poll"
+
+    assert %Node{attrs: %{"polltype" => "vote"}} =
+             NodeUtils.get_binary_node_child(stanza, "meta")
+  end
+
+  test "a contact goes out as type=media with mediatype=vcard on every <enc>", ctx do
+    stanza = send_dm_and_capture(ctx, MessageEncoder.contact("Ann", "BEGIN:VCARD\nEND:VCARD"))
+
+    assert stanza.attrs["type"] == "media"
+
+    assert encs(stanza) != []
+    assert Enum.all?(encs(stanza), &(&1.attrs["mediatype"] == "vcard"))
+  end
+
+  defp encs(stanza) do
+    stanza
+    |> NodeUtils.get_binary_node_child("participants")
+    |> Map.get(:content)
+    |> Enum.map(&NodeUtils.get_binary_node_child(&1, "enc"))
+  end
+
+  defp key(from_me, jid \\ @jid),
+    do: %Proto.MessageKey{remoteJid: jid, id: "MSG1", fromMe: from_me}
+
+  # {message, expected edit attr, expected decrypt-fail} — whatsmeow getEditAttribute.
+  for {name, build, edit, hide} <- [
+        {"plain text", quote(do: MessageEncoder.text("hi")), nil, nil},
+        {"own revoke", quote(do: MessageEncoder.revoke(key(true))), "7", "hide"},
+        {"DM revoke without fromMe", quote(do: MessageEncoder.revoke(key(nil))), "7", "hide"},
+        {"edit", quote(do: MessageEncoder.edit(key(true), "new")), "1", "hide"},
+        {"pin", quote(do: MessageEncoder.pin(key(false), true)), "2", "hide"},
+        {"unpin", quote(do: MessageEncoder.pin(key(false), false)), "2", "hide"},
+        {"reaction", quote(do: MessageEncoder.reaction(key(false), "👍")), nil, "hide"},
+        {"reaction removal", quote(do: MessageEncoder.reaction(key(false), "")), "7", "hide"},
+        {"own undo-keep", quote(do: MessageEncoder.keep(key(true), false)), "7", "hide"},
+        {"keep", quote(do: MessageEncoder.keep(key(true), true)), nil, nil},
+        {"undo-keep of their message", quote(do: MessageEncoder.keep(key(false), false)), nil,
+         nil}
+      ] do
+    test "#{name}: edit=#{inspect(edit)}, decrypt-fail=#{inspect(hide)}", ctx do
+      stanza = send_dm_and_capture(ctx, unquote(build))
+
+      assert stanza.attrs["edit"] == unquote(edit)
+      assert encs(stanza) != []
+      assert Enum.all?(encs(stanza), &(&1.attrs["decrypt-fail"] == unquote(hide)))
+    end
+  end
+
+  test "admin revoke in a group sends edit=8 and hides decrypt failures on the skmsg", ctx do
+    group = "120363000000000001@g.us"
+    members = [@me_jid, @jid]
+    revoke = MessageEncoder.revoke(key(false, group))
+
+    task = Task.async(fn -> Connection.send_message(ctx.pid, group, revoke) end)
+    meta_iq = recv_frame()
+    inject(ctx, group_metadata_reply(attr(meta_iq, "id"), group, members))
+    usync_iq = recv_frame()
+    inject(ctx, usync_members_reply(attr(usync_iq, "id"), members))
+
+    message = drain_until_message(ctx)
+
+    assert message.attrs["edit"] == "8"
+
+    assert %Node{attrs: %{"type" => "skmsg", "decrypt-fail" => "hide"}} =
+             NodeUtils.get_binary_node_child(message, "enc")
+
+    ack(ctx, message.attrs["id"])
+    assert {:ok, _} = await_send_result(task)
+  end
+
+  test "a poll vote hides decrypt failures", ctx do
+    secret = :crypto.strong_rand_bytes(32)
+    vote = MessageEncoder.poll_vote(key(false), @jid, @me_jid, secret, ["Yes"])
+    stanza = send_dm_and_capture(ctx, vote)
+
+    assert Enum.all?(encs(stanza), &(&1.attrs["decrypt-fail"] == "hide"))
+  end
+
+  test "a reaction goes out as type=reaction with no <meta>", ctx do
+    key = %Proto.MessageKey{remoteJid: @jid, id: "MSG1", fromMe: false}
+    stanza = send_dm_and_capture(ctx, MessageEncoder.reaction(key, "👍"))
+
+    assert stanza.attrs["type"] == "reaction"
+    assert NodeUtils.get_binary_node_child(stanza, "meta") == nil
+  end
+
   test "an event group send goes out as type=event with <meta event_type=creation>", ctx do
     group = "120363000000000001@g.us"
     members = [@me_jid, @jid]

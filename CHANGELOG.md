@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-26
+
+### Changed
+
+- **Pinned WhatsApp Web version bumped to `2.3000.1056364523`.**
+- **Polls and events are sent as `type="poll"` / `type="event"`** with a
+  `<meta polltype>` or `<meta event_type>` child, as WhatsApp clients do. They used
+  to go out as `type="text"` (whatsmeow `c2ce5c339a`).
+
 ## [0.6.0] - 2026-11-17
 
 The stable 0.6 release. It contains everything in the `0.6.0-rc.*` entries below.
@@ -1636,7 +1645,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/tubedude/amarula/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tubedude/amarula/compare/v0.5.13...v0.6.0
 [0.6.0-rc.4]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.3...v0.6.0-rc.4
 [0.6.0-rc.3]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.2...v0.6.0-rc.3

@@ -14,8 +14,8 @@ This document tracks our current Baileys review watermark and serves as a runboo
 | Field | Value |
 | --- | --- |
 | Baileys version | `7.0.0-rc14` (master, unreleased) |
-| Commit | `81345beb67ca3fb0eb79a2c20cd4ac24da517929` |
-| Date | 2026-10-26 |
+| Commit | `bb0a87e0326ca8f882fe716c7ee42da362f73fc0` |
+| Date | 2026-11-13 |
 
 *(To re-verify: dereference `refs/tags/v7.0.0-rc14` on the real Baileys repo to get the commit the tag resolves to, rather than the tag object's own SHA.)*
 
@@ -331,3 +331,16 @@ whatsmeow `main` or from open Baileys PRs.
   collections, so its wait covers them all.
 - **[whatsmeow #1309](https://github.com/tulir/whatsmeow/pull/1309) — contact removal.**
   Surfaces as `%Amarula.Contact{removed: true}`.
+
+**Ported from upstream review (2026-11-26):**
+
+Baileys `master` gained #2900 (not needed: Amarula already builds downloads from
+`direct_path` on `mmg.whatsapp.net`) and an `.editorconfig` change.
+
+- **[whatsmeow `c2ce5c339a`](https://github.com/tulir/whatsmeow/commit/c2ce5c339a) —
+  poll and event stanzas.** Polls and events go out as `type="poll"`/`"event"` with
+  `<meta polltype="creation|vote"/>` or `<meta event_type="creation"/>`, resends too.
+- **WA protocol version** bumped `1054943879` → `1056364523`.
+- **Deferred:** unwrapping `documentWithCaption`, `lottieSticker`, `groupMentioned`,
+  `spoiler` and `audioSticker` wrappers on receive (whatsmeow `73fc6275f1`,
+  `bd3b693072`). The last two need a proto update.

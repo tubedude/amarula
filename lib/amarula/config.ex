@@ -1,5 +1,5 @@
 defmodule Amarula.Config do
-  @wa_version [2, 3000, 1_054_943_879]
+  @wa_version [2, 3000, 1_056_364_523]
 
   @moduledoc """
   Connection config + the single source of truth for protocol/connection defaults.

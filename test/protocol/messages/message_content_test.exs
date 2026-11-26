@@ -110,6 +110,24 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     assert {:media, :image, _} = MessageContent.classify(wrapped)
   end
 
+  test "unwraps lottie-sticker, group-mention, spoiler and audio-sticker envelopes" do
+    text = %Proto.Message{conversation: "hidden"}
+
+    for field <- [:lottieStickerMessage, :groupMentionedMessage, :spoilerMessage] do
+      wrapped = struct(Proto.Message, [{field, %Proto.Message.FutureProofMessage{message: text}}])
+      assert MessageContent.classify(wrapped) == {:text, "hidden"}
+    end
+
+    audio = MessageEncoder.media(:audio, @info, [])
+
+    wrapped = %Proto.Message{
+      audioStickerMessage: %Proto.Message.FutureProofMessage{message: audio}
+    }
+
+    assert {:media, :audio, _} = MessageContent.classify(wrapped)
+    assert MessageContent.media_type(wrapped) == "audio"
+  end
+
   test "unwraps documentWithCaptionMessage to the inner document" do
     inner = MessageEncoder.media(:document, @info, caption: "report")
 

@@ -25,9 +25,10 @@ defmodule Amarula.Protocol.Messages.MessageContent do
     * `{:sender_key, skdm}`                        — Signal group-session-key plumbing (filtered before emit)
     * `{:other, message}`                          — anything not yet classified
 
-  WhatsApp may wrap the real content in `deviceSentMessage` (our own other
-  devices), `ephemeralMessage`, a view-once wrapper or `documentWithCaptionMessage`;
-  those are unwrapped first.
+  WhatsApp may wrap the real content in an envelope (`deviceSentMessage`,
+  `ephemeralMessage`, view-once, `documentWithCaptionMessage`, `lottieStickerMessage`,
+  `groupMentionedMessage`, `spoilerMessage`, `audioStickerMessage`); those are
+  unwrapped first.
   """
 
   alias Amarula.Protocol.Proto
@@ -153,31 +154,27 @@ defmodule Amarula.Protocol.Messages.MessageContent do
   defp do_media_type(%Proto.Message{groupInviteMessage: m}) when not is_nil(m), do: "url"
   defp do_media_type(_message), do: nil
 
-  # Unwrap device-sent / ephemeral envelopes to the inner content message.
-  defp unwrap(%Proto.Message{deviceSentMessage: %{message: inner}}) when not is_nil(inner),
-    do: unwrap(inner)
+  # Envelopes whose `message` is the real content (whatsmeow `UnwrapMessage`). The
+  # view-once ones carry media; "open once" is the recipient app's concern.
+  @wrappers [
+    :deviceSentMessage,
+    :ephemeralMessage,
+    :viewOnceMessage,
+    :viewOnceMessageV2,
+    :viewOnceMessageV2Extension,
+    :documentWithCaptionMessage,
+    :lottieStickerMessage,
+    :groupMentionedMessage,
+    :spoilerMessage,
+    :audioStickerMessage
+  ]
 
-  defp unwrap(%Proto.Message{ephemeralMessage: %{message: inner}}) when not is_nil(inner),
-    do: unwrap(inner)
-
-  # View-once wrappers (V1/V2/extension) carry the real media inside; unwrap so it
-  # classifies as ordinary media. (The "open once" semantics are the recipient
-  # app's concern; the content is the same.)
-  defp unwrap(%Proto.Message{viewOnceMessage: %{message: inner}}) when not is_nil(inner),
-    do: unwrap(inner)
-
-  defp unwrap(%Proto.Message{viewOnceMessageV2: %{message: inner}}) when not is_nil(inner),
-    do: unwrap(inner)
-
-  defp unwrap(%Proto.Message{viewOnceMessageV2Extension: %{message: inner}})
-       when not is_nil(inner),
-       do: unwrap(inner)
-
-  defp unwrap(%Proto.Message{documentWithCaptionMessage: %{message: inner}})
-       when not is_nil(inner),
-       do: unwrap(inner)
-
-  defp unwrap(message), do: message
+  defp unwrap(%Proto.Message{} = message) do
+    case Enum.find_value(@wrappers, &get_in(message, [Access.key(&1), Access.key(:message)])) do
+      %Proto.Message{} = inner -> unwrap(inner)
+      nil -> message
+    end
+  end
 
   defp do_classify(%Proto.Message{conversation: body}) when is_binary(body), do: {:text, body}
 

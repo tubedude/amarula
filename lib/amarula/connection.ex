@@ -289,19 +289,18 @@ defmodule Amarula.Connection do
         # `init` stops with {:already_registered, winner} when it loses the
         # profile-registration race; the Supervisor wraps that in
         # {:shutdown, {:failed_to_start_child, Connection, reason}}. Unwrap it to
-        # the same {:already_running, winner} the fast-path returns.
-        case already_running_reason(reason) do
-          {:already_running, _pid} = mapped -> {:error, mapped}
-          nil -> {:error, reason}
-        end
+        # the same {:already_running, winner} the fast-path returns. Unreadable
+        # creds surface as {:creds_unreadable, reason}.
+        {:error, start_error(reason) || reason}
     end
   end
 
-  defp already_running_reason({:shutdown, {:failed_to_start_child, _child, inner}}),
-    do: already_running_reason(inner)
+  defp start_error({:shutdown, {:failed_to_start_child, _child, inner}}),
+    do: start_error(inner)
 
-  defp already_running_reason({:already_registered, pid}), do: {:already_running, pid}
-  defp already_running_reason(_), do: nil
+  defp start_error({:already_registered, pid}), do: {:already_running, pid}
+  defp start_error({:creds_unreadable, _reason} = r), do: r
+  defp start_error(_), do: nil
 
   # Internal: the documented entry point is `Amarula.connect/2`.
   @doc false
@@ -624,19 +623,24 @@ defmodule Amarula.Connection do
     config = conn.config
     warn_if_android(config)
 
+    # Resolve auth credentials, in precedence order:
+    #   1. an explicit config[:auth] (tests / advanced callers that manage creds);
+    #   2. the profile's stored creds (the normal path — Amarula owns persistence
+    #      via the Storage seam, so the consumer only names a :profile);
+    #   3. freshly generated creds (first run → triggers QR pairing).
+    case resolve_auth_creds(conn, config) do
+      {:ok, auth_creds} -> init_state(conn, config, parent_pid, instance_id, auth_creds)
+      {:error, reason} -> {:stop, {:creds_unreadable, reason}}
+    end
+  end
+
+  defp init_state(conn, config, parent_pid, instance_id, auth_creds) do
     # A Connection-owned Task.Supervisor for off-process work (media prep,
     # history-sync downloads). Started LINKED here so it dies with this Connection
     # — killing any in-flight task rather than leaving it to run against a stale
     # pid — and a fresh one is created on restart. Every Connection has one, tree
     # or bare, so there is no unsupervised fallback path.
     {:ok, task_supervisor} = Task.Supervisor.start_link([])
-
-    # Resolve auth credentials, in precedence order:
-    #   1. an explicit config[:auth] (tests / advanced callers that manage creds);
-    #   2. the profile's stored creds (the normal path — Amarula owns persistence
-    #      via the Storage seam, so the consumer only names a :profile);
-    #   3. freshly generated creds (first run → triggers QR pairing).
-    auth_creds = resolve_auth_creds(conn, config)
 
     state = %__MODULE__{
       websocket_client: nil,
@@ -3503,17 +3507,26 @@ defmodule Amarula.Connection do
     case Map.get(config, :auth) do
       creds when is_map(creds) and map_size(creds) > 0 ->
         Logger.info("Using auth credentials from config")
-        creds
+        {:ok, creds}
 
       _ ->
-        case Amarula.Storage.get(conn.storage, conn.profile, :creds, :self) do
+        # A failed read is not "never paired": generating fresh creds would
+        # overwrite the stored identity on the next save. Stop instead.
+        case Amarula.Storage.read(conn.storage, conn.profile, :creds, :self) do
           {:ok, creds} ->
             Logger.info("Loaded stored credentials for profile #{inspect(conn.profile)}")
-            creds
+            {:ok, creds}
 
           :error ->
             Logger.info("No stored credentials for #{inspect(conn.profile)} — generating new")
-            AuthUtils.init_auth_creds()
+            {:ok, AuthUtils.init_auth_creds()}
+
+          {:error, reason} ->
+            Logger.error(
+              "Could not read credentials for #{inspect(conn.profile)}: #{inspect(reason)}"
+            )
+
+            {:error, reason}
         end
     end
   end
@@ -3524,7 +3537,14 @@ defmodule Amarula.Connection do
   # :creds_update event — the consumer never handles credentials.
   defp update_creds(state, new_creds) do
     state = %{state | auth_creds: new_creds}
-    Amarula.Storage.put(scope(state), profile(state), :creds, :self, new_creds)
+
+    with {:error, reason} <-
+           Amarula.Storage.put(scope(state), profile(state), :creds, :self, new_creds) do
+      Logger.error(
+        "Could not save credentials for #{inspect(profile(state))}: #{inspect(reason)}"
+      )
+    end
+
     state
   end
 

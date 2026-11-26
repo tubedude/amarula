@@ -357,6 +357,10 @@ defmodule Amarula do
   that's already live returns `{:error, {:already_running, pid}}` — use `whereis/1`
   to get the existing one.
 
+  If the profile's stored credentials exist but cannot be read (I/O error, corrupt
+  file), `connect/2` returns `{:error, {:creds_unreadable, reason}}` instead of
+  starting a fresh pairing that would overwrite them.
+
   `opts` here are **process/runtime** wiring, distinct from the **config map**
   passed to `new/1` (the WhatsApp/protocol settings like `:mark_online_on_connect`):
     * `:parent`     — the event sink (`t:Amarula.Connection.sink/0`): a pid, a

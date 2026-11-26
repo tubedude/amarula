@@ -19,8 +19,8 @@ defmodule Amarula.Storage.DETS do
   profile — fewer files, O(1) keyed access, but a table lifecycle. The table is
   opened lazily on first use (per `{root, profile}`) and left open for the VM's
   lifetime; DETS auto-repairs an uncleanly-closed table on reopen and serialises
-  concurrent ops. A corrupt/unreadable lookup is treated as a miss, matching
-  `File`'s fail-soft behaviour.
+  concurrent ops. A failed lookup is logged and returned as `{:error, reason}`,
+  like `File`. Credential writes are synced to disk at once.
 
   ## Options
 
@@ -42,13 +42,18 @@ defmodule Amarula.Storage.DETS do
     end
   rescue
     e ->
-      Logger.warning("Storage.DETS: get failed (#{inspect(e)}) — treating as miss")
-      :error
+      Logger.warning("Storage.DETS: get failed (#{inspect(e)})")
+      {:error, e}
   end
 
   @impl true
   def put(%{root: root}, profile, namespace, key, value) do
-    :dets.insert(open(root, profile), {{namespace, key}, value})
+    table = open(root, profile)
+
+    with :ok <- :dets.insert(table, {{namespace, key}, value}) do
+      # DETS flushes on its own timer; creds must survive a crash right after pairing.
+      if namespace == :creds, do: :dets.sync(table), else: :ok
+    end
   end
 
   @impl true

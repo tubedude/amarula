@@ -161,6 +161,24 @@ defmodule Amarula.ConnectionTest do
       assert Amarula.whereis(profile) == pid
     end
 
+    test "unreadable stored creds stop the start instead of minting a new identity",
+         %{conn: conn, profile: profile} do
+      Process.flag(:trap_exit, true)
+      %{state: %{root: root}} = conn.storage
+      creds = Path.join([root, to_string(profile), "creds.term"])
+      File.mkdir_p!(Path.dirname(creds))
+      File.write!(creds, "not a term")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, {:creds_unreadable, :corrupt}} = Connection.make_socket(conn)
+        end)
+
+      assert log =~ "Could not read credentials"
+      assert File.read!(creds) == "not a term"
+      assert Amarula.whereis(profile) == nil
+    end
+
     test "a second start for a live profile is {:error, {:already_running, pid}}",
          %{conn: conn} do
       {_sup, pid} = start_tree(conn)

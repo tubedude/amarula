@@ -303,11 +303,10 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
       # Extra <message> stanza attrs (e.g. category/push_priority for a peer
       # message). Empty for a normal send.
       stanza_attrs: stanza_attrs,
-      # Extra attrs for every per-device <enc> child — media sends stamp
-      # `mediatype` here (the server 479s a media payload without it).
+      # Extra caller attrs for every <enc>; `mediatype`/`decrypt-fail` are derived
+      # in `enc_attrs/1`.
       enc_attrs: enc_attrs,
-      # The `edit` attr on the <message> stanza, required for delete/edit/pin
-      # (Baileys messages-send.ts): "7" delete-for-everyone, "1" edit. nil = none.
+      # The `edit` attr on the <message> stanza (see `edit_attr/1`). nil = none.
       edit_attr: edit_attr(message),
       # Who may see a status post (`:status` kind only). WhatsApp's server does not
       # know it: the sender picks the audience and hands each device our sender key.
@@ -378,11 +377,26 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
   defp message_content(%{message: %Proto.Message{} = m}), do: m
   defp message_content(%{text: text}) when is_binary(text), do: MessageEncoder.text(text)
 
-  # The `edit` stanza attr the server needs to apply delete/edit (Baileys). A
-  # plain message has none. Delete-for-everyone (our own) = "7"; MESSAGE_EDIT = "1".
-  defp edit_attr(%Proto.Message{protocolMessage: %{type: :REVOKE}}), do: "7"
+  # The `edit` stanza attr (whatsmeow getEditAttribute): "7" sender revoke, "8"
+  # admin revoke (groups only, as Baileys), "1" edit, "2" pin. Removing a reaction
+  # and undoing our own keep are sender revokes.
+  defp edit_attr(%Proto.Message{protocolMessage: %{type: :REVOKE, key: key}})
+       when not is_nil(key),
+       do: if(key.fromMe != true and group_jid?(key.remoteJid), do: "8", else: "7")
+
   defp edit_attr(%Proto.Message{protocolMessage: %{type: :MESSAGE_EDIT}}), do: "1"
+  defp edit_attr(%Proto.Message{reactionMessage: %{text: text}}) when text in ["", nil], do: "7"
+
+  defp edit_attr(%Proto.Message{
+         keepInChatMessage: %{keepType: :UNDO_KEEP_FOR_ALL, key: %{fromMe: true}}
+       }),
+       do: "7"
+
+  defp edit_attr(%Proto.Message{pinInChatMessage: m}) when not is_nil(m), do: "2"
   defp edit_attr(_message), do: nil
+
+  defp group_jid?(jid) when is_binary(jid), do: String.ends_with?(jid, "@g.us")
+  defp group_jid?(_jid), do: false
 
   # Persist our own PN↔LID mapping so own-device bundle fetches resolve to the
   # LID wire jid (the server won't serve our own PN bundle).
@@ -744,7 +758,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         ctx.creds.account,
         edit: ctx.edit_attr,
         extra_attrs: stanza_attrs(ctx),
-        enc_attrs: ctx.enc_attrs,
+        enc_attrs: enc_attrs(ctx),
         extra_children: meta_children(ctx)
       )
 
@@ -770,7 +784,7 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         ctx.creds.account,
         edit: ctx.edit_attr,
         extra_attrs: stanza_attrs(ctx),
-        enc_attrs: ctx.enc_attrs,
+        enc_attrs: enc_attrs(ctx),
         extra_children: tctoken_children(ctx) ++ meta_children(ctx)
       )
 
@@ -792,19 +806,35 @@ defmodule Amarula.Protocol.Messages.ConversationSender do
         else: []
 
     case MessageContent.stanza_meta(ctx.message) do
-      {_type, attrs} -> view_once ++ [Node.create("meta", attrs, nil)]
       nil -> view_once
+      attrs -> view_once ++ [Node.create("meta", attrs, nil)]
     end
   end
 
-  # Polls and events go out as type="poll"/"event", not "text". Explicit
-  # stanza_attrs (e.g. a media send's "media") still win.
-  defp stanza_attrs(ctx) do
-    case MessageContent.stanza_meta(ctx.message) do
-      {type, _attrs} -> Map.merge(%{"type" => type}, ctx.stanza_attrs)
-      nil -> ctx.stanza_attrs
-    end
+  # `type` and `mediatype` come from the message on every relay, so a resend
+  # matches the first send (media without type="media" + per-<enc> mediatype is
+  # rejected with 479). Explicit attrs (peer category, ...) still win.
+  defp stanza_attrs(ctx),
+    do: Map.merge(%{"type" => MessageContent.stanza_type(ctx.message)}, ctx.stanza_attrs)
+
+  defp enc_attrs(ctx) do
+    derived =
+      %{}
+      |> put_if("mediatype", MessageContent.media_type(ctx.message))
+      |> put_if("decrypt-fail", if(hide_decrypt_fail?(ctx), do: "hide"))
+
+    Map.merge(derived, ctx.enc_attrs)
   end
+
+  # Recipients that can't decrypt an edit, revoke, pin, reaction or vote show
+  # nothing rather than a "waiting for this message" bubble (whatsmeow).
+  defp hide_decrypt_fail?(ctx) do
+    ctx.edit_attr != nil or MessageContent.stanza_type(ctx.message) == "reaction" or
+      MessageContent.stanza_meta(ctx.message) == %{"polltype" => "vote"}
+  end
+
+  defp put_if(map, _key, nil), do: map
+  defp put_if(map, key, value), do: Map.put(map, key, value)
 
   # True for a plain 1:1 send — not a group, not a peer stanza
   # (PEER_DATA_OPERATION), which Baileys never attaches/issues a tctoken for

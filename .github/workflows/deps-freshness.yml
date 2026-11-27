@@ -1,6 +1,6 @@
 name: Dependency freshness
 
-# Two questions, weekly, that regular CI structurally cannot answer:
+# Weekly questions that regular CI structurally cannot answer:
 #
 #   1. Does the newest tree our bounds ALLOW still build and pass?  Our mix.lock
 #      pins exact versions, so a push-triggered run proves nothing about what a
@@ -13,6 +13,10 @@ name: Dependency freshness
 # (2) is what makes the tight pin defensible: the bound stays narrow, but it is
 # not allowed to go stale quietly. A failure here is a prompt to review and
 # widen deliberately, not a sign that main is broken.
+#
+# The `upstream-drift` job asks a third: has WhatsApp Web moved past us? A stale
+# pinned version silently breaks pairing; new top-level Message fields decode to
+# `:other` until the proto is regenerated (CLAUDE.md, "Protocol Buffer Compilation").
 #
 # Kept out of elixir.yml on purpose — the per-push signal should be a statement
 # about our code, not about what Hex published this week.
@@ -86,3 +90,36 @@ jobs:
       # Nothing is pushed from here. The updated mix.lock is a probe, not a
       # deliverable — refreshing it is a reviewed commit (see CLAUDE.md), and the
       # checkout is discarded with the runner.
+
+  upstream-drift:
+    name: WhatsApp Web drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: mix deps.get && mix compile
+
+      # Advisory: WA Web moves most weeks and an older pin keeps working for a
+      # while, so this warns instead of turning the run red. Bump at release time.
+      - name: Pinned WA Web version vs live
+        continue-on-error: true
+        run: |
+          mix run --no-compile scripts/update_wa_version.exs --check ||
+            { echo "::warning::Pinned WA Web version is behind live (or the check failed)"; exit 1; }
+
+      # Independent of the version step: a new message type matters even on a
+      # week the version also moved.
+      - name: Proto fields vs live WA Web
+        if: ${{ !cancelled() }}
+        run: |
+          bash scripts/extract_proto.sh "$RUNNER_TEMP/wa.proto"
+          mix run --no-compile --no-start scripts/check_proto_drift.exs "$RUNNER_TEMP/wa.proto"

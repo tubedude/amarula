@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-27
+
+### Changed
+
+- **Pinned WhatsApp Web version bumped to `2.3000.1056384307`.**
+- **Proto regenerated from live WhatsApp Web** (`2.3000.1056384307`, was
+  `1023047013`). Adds 25 top-level message types, among them `spoilerMessage` and
+  `audioStickerMessage`. No field changed number. If you read raw protos
+  (`{:other, msg}` / `msg.raw`): a few unused fields were renamed or dropped (e.g.
+  `mediaKeyDomain`), and some fields now decode an absent value as `nil`.
+
+### Fixed
+
+- **Reactions are sent as `type="reaction"`**, not `type="text"`.
+- **Stanza `type` and `mediatype` come from the message on every send.** A media
+  message resent through the `get_message` callback no longer loses `type="media"`
+  (ack 479). Contacts, live locations, lists and other media-typed messages sent
+  with `send_message` now go out as `type="media"` too, as in Baileys and whatsmeow.
+- **`edit` attribute follows whatsmeow.** Pins send `edit="2"`. Deleting someone
+  else's message in a group as admin sends `"8"` (was `"7"`). Removing a reaction or
+  undoing your own keep sends `"7"`.
+- **`decrypt-fail="hide"` on edits, revokes, pins, reactions and votes**, so a
+  recipient that can't decrypt them shows nothing instead of "waiting for this message".
+- **`documentWithCaptionMessage` is unwrapped.** A captioned document now arrives as
+  `:media` instead of `:other`.
+- **`send_media(:document, caption: …)` sends the caption.** It was dropped.
+- **`send_event` events show on phones.** They now carry a `messageSecret`, like
+  Baileys. New `:message_secret` option.
+- **Spoiler, audio-sticker, Lottie-sticker and group-mention envelopes are
+  unwrapped**, so their content arrives classified instead of as `:other`.
+- **Unreadable stored credentials stop the connection** with
+  `{:error, {:creds_unreadable, reason}}`. They used to be treated as "never paired",
+  so a fresh identity replaced the stored one. `Amarula.SupervisedConnection` stays up
+  and retries every minute instead of crashing its supervisor. A failed credentials
+  save is logged.
+- **`Amarula.Storage.read/4`** tells a miss (`:error`) apart from a failed read
+  (`{:error, reason}`). `get/4` is unchanged. Adapters may now return `{:error, reason}`.
+- **DETS storage syncs credentials to disk on save.**
+
 ## [0.6.1] - 2026-11-26
 
 ### Changed
@@ -1645,7 +1684,8 @@ First public release.
   the supervision tree down and frees the profile slot). The server-side
   device-unlink now lives only in `wipe_credentials/1`.
 
-[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/tubedude/amarula/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/tubedude/amarula/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tubedude/amarula/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tubedude/amarula/compare/v0.5.13...v0.6.0
 [0.6.0-rc.4]: https://github.com/tubedude/amarula/compare/v0.6.0-rc.3...v0.6.0-rc.4

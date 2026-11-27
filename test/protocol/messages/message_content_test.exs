@@ -110,6 +110,36 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     assert {:media, :image, _} = MessageContent.classify(wrapped)
   end
 
+  test "unwraps lottie-sticker, group-mention, spoiler and audio-sticker envelopes" do
+    text = %Proto.Message{conversation: "hidden"}
+
+    for field <- [:lottieStickerMessage, :groupMentionedMessage, :spoilerMessage] do
+      wrapped = struct(Proto.Message, [{field, %Proto.Message.FutureProofMessage{message: text}}])
+      assert MessageContent.classify(wrapped) == {:text, "hidden"}
+    end
+
+    audio = MessageEncoder.media(:audio, @info, [])
+
+    wrapped = %Proto.Message{
+      audioStickerMessage: %Proto.Message.FutureProofMessage{message: audio}
+    }
+
+    assert {:media, :audio, _} = MessageContent.classify(wrapped)
+    assert MessageContent.media_type(wrapped) == "audio"
+  end
+
+  test "unwraps documentWithCaptionMessage to the inner document" do
+    inner = MessageEncoder.media(:document, @info, caption: "report")
+
+    wrapped = %Proto.Message{
+      documentWithCaptionMessage: %Proto.Message.FutureProofMessage{message: inner}
+    }
+
+    assert {:media, :document, _} = MessageContent.classify(wrapped)
+    assert MessageContent.stanza_type(wrapped) == "media"
+    assert MessageContent.media_type(wrapped) == "document"
+  end
+
   describe "view_once?/1" do
     test "true for all three view-once wrappers, false otherwise" do
       wrapper = %Proto.Message.FutureProofMessage{message: %Proto.Message{}}
@@ -121,8 +151,8 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
     end
   end
 
-  describe "stanza_meta/1" do
-    test "polls and events get their stanza type and meta attrs" do
+  describe "stanza_type/1 and stanza_meta/1" do
+    test "polls and events get their type and meta attrs" do
       {poll, _secret} = MessageEncoder.poll("Lunch?", ["Yes", "No"], [])
       {multi, _secret} = MessageEncoder.poll("Pick", ["A", "B"], selectable: 0)
       {announce, _secret} = MessageEncoder.poll("News", ["A", "B"], announcement: true)
@@ -132,16 +162,35 @@ defmodule Amarula.Protocol.Messages.MessageContentTest do
       }
 
       vote = %Proto.Message{pollUpdateMessage: %Proto.Message.PollUpdateMessage{}}
+      event = MessageEncoder.event("Party")
 
-      assert {"poll", %{"polltype" => "creation"}} = MessageContent.stanza_meta(poll)
-      assert {"poll", %{"polltype" => "creation"}} = MessageContent.stanza_meta(multi)
-      assert {"poll", %{"polltype" => "creation"}} = MessageContent.stanza_meta(announce)
-      assert {"poll", %{"polltype" => "creation"}} = MessageContent.stanza_meta(ephemeral)
-      assert {"poll", %{"polltype" => "vote"}} = MessageContent.stanza_meta(vote)
+      for m <- [poll, multi, announce, ephemeral] do
+        assert MessageContent.stanza_type(m) == "poll"
+        assert MessageContent.stanza_meta(m) == %{"polltype" => "creation"}
+      end
 
-      assert {"event", %{"event_type" => "creation"}} =
-               MessageContent.stanza_meta(MessageEncoder.event("Party"))
+      assert MessageContent.stanza_type(vote) == "poll"
+      assert MessageContent.stanza_meta(vote) == %{"polltype" => "vote"}
+      assert MessageContent.stanza_type(event) == "event"
+      assert MessageContent.stanza_meta(event) == %{"event_type" => "creation"}
+    end
 
+    test "reactions, media and text" do
+      key = %Proto.MessageKey{remoteJid: "x@s.whatsapp.net", id: "ABC"}
+      video = %Proto.Message{videoMessage: %Proto.Message.VideoMessage{}}
+
+      view_once = %Proto.Message{
+        viewOnceMessage: %Proto.Message.FutureProofMessage{message: video}
+      }
+
+      enc_reaction = %Proto.Message{encReactionMessage: %Proto.Message.EncReactionMessage{}}
+
+      assert MessageContent.stanza_type(MessageEncoder.reaction(key, "👍")) == "reaction"
+      assert MessageContent.stanza_type(enc_reaction) == "reaction"
+      assert MessageContent.stanza_type(view_once) == "media"
+      assert MessageContent.media_type(view_once) == "video"
+      assert MessageContent.stanza_type(MessageEncoder.contact("A", "BEGIN:VCARD")) == "media"
+      assert MessageContent.stanza_type(%Proto.Message{conversation: "hi"}) == "text"
       assert MessageContent.stanza_meta(%Proto.Message{conversation: "hi"}) == nil
     end
   end

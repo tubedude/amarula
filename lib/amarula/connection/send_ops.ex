@@ -16,7 +16,7 @@ defmodule Amarula.Connection.SendOps do
   most sends use `default_send_reply/2`, polls override it to carry the secret.
   """
 
-  alias Amarula.Protocol.Messages.{MessageContent, MessageEncoder}
+  alias Amarula.Protocol.Messages.MessageEncoder
 
   @type target :: term()
   @type payload :: map()
@@ -67,27 +67,7 @@ defmodule Amarula.Connection.SendOps do
   ready message for dispatch.
   """
   @spec media(term(), struct()) :: build()
-  def media(jid, message) do
-    # A media message is NOT `type="text"` with a `mediatype` hint on <message> —
-    # the server rejects that shape with ack error 479 ("smax-invalid"). The
-    # accepted wire shape (verified against a live whatsmeow document send, and
-    # whatsmeow send.go getTypeFromMessage / encAttrs): `type="media"` on the
-    # <message> node, and `mediatype` on EVERY per-device <enc> child.
-    payload =
-      case MessageContent.media_type(message) do
-        nil ->
-          %{message: message}
-
-        type ->
-          %{
-            message: message,
-            stanza_attrs: %{"type" => "media"},
-            enc_attrs: %{"mediatype" => type}
-          }
-      end
-
-    {jid, payload, &default_send_reply/2}
-  end
+  def media(jid, message), do: message(jid, message)
 
   @doc """
   Placeholder-resend request: a PEER_DATA_OPERATION sent to OURSELVES (`me_id`)
@@ -206,8 +186,8 @@ defmodule Amarula.Connection.SendOps do
 
   @doc """
   Build the fire-and-forget resend payload for a cached message requested by a
-  retry receipt, preserving original `stanza_attrs` and re-deriving `mediatype`
-  per-`<enc>` attributes.
+  retry receipt, preserving original `stanza_attrs`. `ConversationSender`
+  re-derives `type`/`mediatype` from the message.
   """
   @spec resend_payload(String.t(), struct(), map()) :: map()
   def resend_payload(msg_id, message, stanza_attrs) do
@@ -215,21 +195,11 @@ defmodule Amarula.Connection.SendOps do
     # rather than duplicates). A fresh ConversationSender pass picks up the
     # session the retry's <keys> bundle just injected. Replay the original
     # stanza_attrs so a peer/edit stanza keeps its category/edit on resend.
-    # Per-enc attrs aren't cached — re-derive them from the message itself
-    # (deterministic), so a retried MEDIA resend keeps its `mediatype` and
-    # the server doesn't 479 the retry.
     # Fire-and-forget: no caller is waiting, so `from` is nil.
-    enc_attrs =
-      case MessageContent.media_type(message) do
-        nil -> %{}
-        type -> %{"mediatype" => type}
-      end
-
     %{
       msg_id: msg_id,
       message: message,
-      stanza_attrs: stanza_attrs,
-      enc_attrs: enc_attrs
+      stanza_attrs: stanza_attrs
     }
   end
 end

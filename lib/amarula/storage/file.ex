@@ -12,8 +12,8 @@ defmodule Amarula.Storage.File do
   file is Elixir-specific, not interchangeable with Baileys' JSON state.
 
   Writes are atomic (temp file + rename) so a crash mid-write can't corrupt
-  state. A genuinely corrupt or unreadable entry is logged and treated as a miss,
-  matching the prior stores' fail-soft behaviour — but a valid, self-written term
+  state. A genuinely corrupt or unreadable entry is logged and returned as
+  `{:error, reason}` (see the `Amarula.Storage` contract) — but a valid, self-written term
   is always recovered, even when it carries atoms not yet loaded on a cold BEAM
   (see `decode/2`).
 
@@ -54,7 +54,7 @@ defmodule Amarula.Storage.File do
 
       {:error, reason} ->
         Logger.warning("Storage.File: could not read #{path}: #{inspect(reason)}")
-        :error
+        {:error, reason}
     end
   end
 
@@ -141,8 +141,8 @@ defmodule Amarula.Storage.File do
     {:ok, :erlang.binary_to_term(bin)}
   rescue
     _ ->
-      Logger.warning("Storage.File: corrupt entry at #{path} — treating as miss")
-      :error
+      Logger.warning("Storage.File: corrupt entry at #{path}")
+      {:error, :corrupt}
   end
 
   # Per-connection directory: <root>/<profile>.

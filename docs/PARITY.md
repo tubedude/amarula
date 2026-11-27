@@ -341,6 +341,6 @@ Baileys `master` gained #2900 (not needed: Amarula already builds downloads from
   poll and event stanzas.** Polls and events go out as `type="poll"`/`"event"` with
   `<meta polltype="creation|vote"/>` or `<meta event_type="creation"/>`, resends too.
 - **WA protocol version** bumped `1054943879` → `1056364523`.
-- **Deferred:** unwrapping `documentWithCaption`, `lottieSticker`, `groupMentioned`,
-  `spoiler` and `audioSticker` wrappers on receive (whatsmeow `73fc6275f1`,
-  `bd3b693072`). The last two need a proto update.
+- **Unwrapping** `documentWithCaption`, `lottieSticker`, `groupMentioned`, `spoiler`
+  and `audioSticker` envelopes (whatsmeow `73fc6275f1`, `bd3b693072`). Proto
+  regenerated from live WA Web `2.3000.1056384307` with `scripts/extract_proto.sh`.

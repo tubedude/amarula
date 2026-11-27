@@ -97,6 +97,27 @@ defmodule Amarula.SupervisedConnectionTest do
       Supervisor.stop(sup)
     end
 
+    test "unreadable stored creds keep the owner up instead of crashing its supervisor" do
+      profile = uniq_profile()
+      config = profile |> offline_config(self()) |> Map.delete(:auth)
+      {Amarula.Storage.File, root: root} = config.storage
+      creds = Path.join([root, to_string(profile), "creds.term"])
+      File.mkdir_p!(Path.dirname(creds))
+      File.write!(creds, "not a term")
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, sup} = Supervisor.start_link([{Amarula, config}], strategy: :one_for_one)
+        Process.sleep(200)
+
+        assert Process.alive?(sup)
+        assert [{_, owner, _, _}] = Supervisor.which_children(sup)
+        assert is_pid(owner)
+        assert Amarula.whereis(profile) == nil
+        assert File.read!(creds) == "not a term"
+        Supervisor.stop(sup)
+      end)
+    end
+
     test "a deliberate shutdown tears the connection down" do
       profile = uniq_profile()
 

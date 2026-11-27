@@ -38,8 +38,11 @@ defmodule Amarula.Storage do
 
   ## Contract
 
-  Values are arbitrary Elixir terms. `get/4` returns `{:ok, value}` on a hit and
-  `:error` on a miss (a corrupt/unreadable entry is treated as a miss). `put/5`
+  Values are arbitrary Elixir terms. An adapter's `get/4` returns `{:ok, value}`
+  on a hit, `:error` on a miss and `{:error, reason}` when the entry exists but
+  can't be read (I/O error, corruption) — never `:error` for that, or lost
+  credentials look like "never paired". `Storage.get/4` folds a failed read into a
+  miss; `Storage.read/4` keeps it. `put/5`
   and `delete/4` return `:ok` or `{:error, reason}`. Adapters must be safe to
   call concurrently from multiple processes for the same scope/name.
   """
@@ -72,8 +75,9 @@ defmodule Amarula.Storage do
   """
   @callback new(opts :: keyword()) :: adapter_state()
 
-  @doc "Fetch the value at `{profile, namespace, key}`. `:error` on miss/corruption."
-  @callback get(adapter_state(), profile(), namespace(), key()) :: {:ok, term()} | :error
+  @doc "Fetch the value at `{profile, namespace, key}`: hit, miss, or failed read."
+  @callback get(adapter_state(), profile(), namespace(), key()) ::
+              {:ok, term()} | :error | {:error, term()}
 
   @doc "Store `value` at `{profile, namespace, key}`, overwriting any prior value."
   @callback put(adapter_state(), profile(), namespace(), key(), value :: term()) ::
@@ -130,7 +134,24 @@ defmodule Amarula.Storage do
 
   @doc "Fetch the value at `{profile, namespace, key}`. `:error` on miss/corruption."
   @spec get(Scope.t(), profile(), namespace(), key()) :: {:ok, term()} | :error
-  def get(%Scope{adapter: a, state: s}, profile, namespace, key),
+  def get(scope, profile, namespace, key) do
+    case read(scope, profile, namespace, key) do
+      {:error, _reason} ->
+        :error
+
+      result ->
+        result
+    end
+  end
+
+  @doc """
+  Like `get/4`, but tells a miss (`:error`) apart from a failed read
+  (`{:error, reason}`: I/O error, corrupt entry). Used for credentials, where
+  treating a failed read as a miss would silently re-pair the profile.
+  """
+  @spec read(Scope.t(), profile(), namespace(), key()) ::
+          {:ok, term()} | :error | {:error, term()}
+  def read(%Scope{adapter: a, state: s}, profile, namespace, key),
     do: a.get(s, profile, namespace, key)
 
   @doc "Like `get/4`, returning `default` (nil) instead of `:error` on a miss."

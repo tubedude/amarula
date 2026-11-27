@@ -50,6 +50,7 @@ defmodule Amarula.SupervisedConnection do
   # rest_for_one restart even with slow (DETS) storage init.
   @readopt_interval_ms 100
   @readopt_max_tries 20
+  @creds_retry_ms 60_000
 
   @doc false
   def start_link(config) when is_map(config) do
@@ -75,12 +76,7 @@ defmodule Amarula.SupervisedConnection do
   end
 
   @impl true
-  def handle_continue(:connect, state) do
-    case establish(state) do
-      {:ok, state} -> {:noreply, state}
-      {:error, reason} -> {:stop, reason, state}
-    end
-  end
+  def handle_continue(:connect, state), do: connect_or_stop(state)
 
   @impl true
   # The connection process we were watching actually died — rare, since routine
@@ -112,12 +108,14 @@ defmodule Amarula.SupervisedConnection do
       nil ->
         # The profile stayed gone well past a rest_for_one restart — the tree is
         # really dead. Start fresh, or escalate to our supervisor if that fails.
-        case establish(state) do
-          {:ok, state} -> {:noreply, state}
-          {:error, reason} -> {:stop, reason, state}
-        end
+        connect_or_stop(state)
     end
   end
+
+  # Unreadable stored creds won't fix themselves on a fast restart, and crashing
+  # would take the consumer's supervisor (and its other profiles) down with us.
+  # Stay up and retry slowly until the storage is fixed.
+  def handle_info(:retry_connect, state), do: connect_or_stop(state)
 
   # Our supervisor is shutting us down (trap_exit turns the signal into a message).
   # A `:normal` EXIT from anything we might later be linked to is not a shutdown.
@@ -138,6 +136,20 @@ defmodule Amarula.SupervisedConnection do
   end
 
   # --- helpers ---
+
+  defp connect_or_stop(state) do
+    case establish(state) do
+      {:ok, state} ->
+        {:noreply, state}
+
+      {:error, {:creds_unreadable, _}} ->
+        Process.send_after(self(), :retry_connect, @creds_retry_ms)
+        {:noreply, state}
+
+      {:error, reason} ->
+        {:stop, reason, state}
+    end
+  end
 
   # Bring the connection up: adopt it if the profile is already registered
   # (started elsewhere, or an already-settled restart), otherwise start a fresh

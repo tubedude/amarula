@@ -308,10 +308,8 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
     end
 
     test "a retried MEDIA resend re-derives mediatype onto every enc (479 fix)", ctx do
-      # The retry cache doesn't store enc_attrs, so `resend_from_cache/3` re-derives
-      # them from the message. Without that, a retried media send goes back out in
-      # the shape the server rejects with ack 479 — the original bug, resurrected
-      # only on the retry path (where it's hardest to notice).
+      # ConversationSender derives type/mediatype from the message on every relay,
+      # so a retried media send keeps the shape the server accepts (not ack 479).
       task =
         Task.async(fn ->
           Connection.send_message(ctx.pid, @jid, %Proto.Message{
@@ -321,6 +319,7 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
 
       sent = drain_to_message(ctx)
       msg_id = sent.attrs["id"]
+      assert sent.attrs["type"] == "media"
       inject(ctx, Node.create("ack", %{"class" => "message", "id" => msg_id}, nil))
       assert {:ok, ^msg_id} = Task.await(task, 2000)
 
@@ -331,6 +330,7 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
 
       resent = drain_to_message(ctx)
       assert resent.attrs["id"] == msg_id
+      assert resent.attrs["type"] == "media"
 
       encs =
         resent
@@ -340,6 +340,26 @@ defmodule Amarula.Protocol.Socket.ReceiveFlowTest do
 
       assert encs != []
       assert Enum.all?(encs, &(&1.attrs["mediatype"] == "image"))
+    end
+
+    test "a retried poll keeps type=poll and its <meta polltype>", ctx do
+      {poll, _secret} = MessageEncoder.poll("Lunch?", ["Yes", "No"], [])
+      task = Task.async(fn -> Connection.send_message(ctx.pid, @jid, poll) end)
+
+      sent = drain_to_message(ctx)
+      msg_id = sent.attrs["id"]
+      inject(ctx, Node.create("ack", %{"class" => "message", "id" => msg_id}, nil))
+      assert {:ok, ^msg_id} = Task.await(task, 2000)
+
+      inject(ctx, retry_receipt(msg_id, @jid))
+      assert recv_frame().tag == "ack"
+
+      resent = drain_to_message(ctx)
+      assert resent.attrs["id"] == msg_id
+      assert resent.attrs["type"] == "poll"
+
+      assert %Node{attrs: %{"polltype" => "creation"}} =
+               NodeUtils.get_binary_node_child(resent, "meta")
     end
 
     test "a retry receipt without an id is acked and otherwise ignored", ctx do

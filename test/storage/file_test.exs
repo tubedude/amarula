@@ -85,6 +85,11 @@ defmodule Amarula.Storage.FileTest do
     File.mkdir_p!(profile_dir)
     File.write!(Path.join(profile_dir, "session-#{safe}.term"), "not a term")
     assert :error = Storage.get(s, @profile, :session, "bad")
+    assert {:error, :corrupt} = Storage.read(s, @profile, :session, "bad")
+  end
+
+  test "read/4 tells a miss apart from a failed read", %{scope: s} do
+    assert :error = Storage.read(s, @profile, :session, "absent")
   end
 
   # Regression: a valid self-written term whose atom isn't loaded yet (e.g. a generated

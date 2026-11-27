@@ -71,6 +71,12 @@ The tree is supervised by the library, not linked to the caller. If a connection
 crashes, the consumer sees that as an event through `parent_pid`, not as an exit
 signal that could take the consumer down.
 
+Unreadable stored credentials stop `Connection.init` with `{:creds_unreadable,
+reason}`, so a fresh identity never overwrites them. On first start, `connect/2`
+returns that error. On a restart, the tree gives up after its restart limit and
+the profile is no longer registered (`whereis/1` → `nil`).
+`Amarula.SupervisedConnection` retries every minute instead of crashing.
+
 No per-tree registry is needed for the internal wiring. The tree supervisor, its
 sibling roles, every `ConversationSender`, and every `SessionCustodian` are all
 named from the app-level `Amarula.InstanceRegistry`, keyed by the connection's

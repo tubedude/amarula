@@ -1159,6 +1159,10 @@ defmodule Amarula do
                      extra_guests_allowed: [
                        type: :boolean,
                        doc: "whether guests may invite others."
+                     ],
+                     message_secret: [
+                       type: :string,
+                       doc: "32-byte secret RSVPs are encrypted under (random if omitted)."
                      ]
                    )
 

@@ -462,7 +462,10 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
       documentMessage:
         struct(
           Proto.Message.DocumentMessage,
-          Map.merge(common, take(opts, [:title, :file_name, :page_count, :jpeg_thumbnail]))
+          Map.merge(
+            common,
+            take(opts, [:caption, :title, :file_name, :page_count, :jpeg_thumbnail])
+          )
         )
     }
   end
@@ -538,11 +541,18 @@ defmodule Amarula.Protocol.Messages.MessageEncoder do
     * `:join_link` — a call/meeting URL.
     * `:start_time` / `:end_time` — unix seconds.
     * `:extra_guests_allowed` — boolean.
+    * `:message_secret` — 32-byte RSVP-encryption key (default: random). Phones
+      do not show an event without one.
   """
   @spec event(String.t(), keyword()) :: Proto.Message.t()
   def event(name, opts \\ []) when is_binary(name) do
+    secret = Keyword.get(opts, :message_secret) || :crypto.strong_rand_bytes(32)
+
     %Proto.Message{
+      messageContextInfo: %Proto.MessageContextInfo{messageSecret: secret},
       eventMessage: %Proto.Message.EventMessage{
+        isCanceled: false,
+        isScheduleCall: false,
         name: name,
         description: opts[:description],
         location: event_location(opts[:location]),

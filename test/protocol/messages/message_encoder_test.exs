@@ -92,6 +92,18 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
       assert msg.eventMessage.location.name == "Park"
     end
 
+    test "carries a messageSecret and the Baileys defaults (phones hide it otherwise)" do
+      msg = MessageEncoder.event("X")
+      assert byte_size(msg.messageContextInfo.messageSecret) == 32
+      assert msg.eventMessage.isCanceled == false
+      assert msg.eventMessage.isScheduleCall == false
+
+      secret = :binary.copy(<<7>>, 32)
+
+      assert MessageEncoder.event("X", message_secret: secret).messageContextInfo.messageSecret ==
+               secret
+    end
+
     test "no location → nil" do
       assert MessageEncoder.event("Bare").eventMessage.location == nil
     end
@@ -508,6 +520,7 @@ defmodule Amarula.Protocol.Messages.MessageEncoderTest do
       {:audio, :seconds, 5, :audioMessage, :seconds},
       {:audio, :ptt, true, :audioMessage, :ptt},
       {:audio, :waveform, <<1, 2>>, :audioMessage, :waveform},
+      {:document, :caption, "cap", :documentMessage, :caption},
       {:document, :title, "t", :documentMessage, :title},
       {:document, :file_name, "invoice.pdf", :documentMessage, :fileName},
       {:document, :page_count, 7, :documentMessage, :pageCount},
